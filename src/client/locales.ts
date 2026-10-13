@@ -107,6 +107,17 @@ export const en = {
   'config.readonly': 'This composition does not allow editing these values here.',
   'config.loading': 'Reading configuration…',
   'config.openPanel': 'Open the workbench',
+  'config.keyLabel': 'API key',
+  'config.keyPlaceholder': 'Paste the key, then Save key',
+  'config.keySave': 'Save key',
+  'config.keySaving': 'Saving…',
+  'config.keyClear': 'Remove key',
+  'config.keyStored': 'Key stored.',
+  'config.keyRemoved': 'Key removed.',
+  'config.keyExists': 'A key is already stored for {ref}; saving a new one replaces it.',
+  'config.keyReadOnly': 'This credential comes from a read-only source; change it where it is defined.',
+  'config.keyUnavailable': 'The host credential service is unavailable, so keys cannot be set from here.',
+  'config.keyRequired': 'Enter a key first.',
 } as const
 
 export type VideoForgeKey = keyof typeof en
@@ -213,4 +224,15 @@ export const zh: Record<VideoForgeKey, string> = {
   'config.readonly': '当前组合不允许在这里修改这些值。',
   'config.loading': '正在读取配置…',
   'config.openPanel': '打开工作台',
+  'config.keyLabel': 'API Key',
+  'config.keyPlaceholder': '粘贴密钥，然后点“保存密钥”',
+  'config.keySave': '保存密钥',
+  'config.keySaving': '保存中…',
+  'config.keyClear': '删除密钥',
+  'config.keyStored': '密钥已保存。',
+  'config.keyRemoved': '密钥已删除。',
+  'config.keyExists': '{ref} 已存在密钥；保存新的会覆盖它。',
+  'config.keyReadOnly': '该凭据来自只读来源，请到它的定义处修改。',
+  'config.keyUnavailable': '宿主的凭据服务不可用，因此无法在这里设置密钥。',
+  'config.keyRequired': '请先输入密钥。',
 }

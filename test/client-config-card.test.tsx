@@ -13,7 +13,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SettingsCard, type ClientConfigShape, type ConfigPatch } from '../src/client/settings-card.tsx'
+import { SettingsCard, type ClientConfigShape, type ConfigPatch, type CredentialState } from '../src/client/settings-card.tsx'
 import { formatBytes, safeUrl } from '../src/client/panel.tsx'
 import { en } from '../src/client/locales.ts'
 import type { VideoForgeKey } from '../src/client/locales.ts'
@@ -41,18 +41,54 @@ const CONFIG: ClientConfigShape = {
   requestTimeoutMs: 120_000,
 }
 
-function bench(): {
+interface Bench {
   save: ReturnType<typeof vi.fn<(ops: readonly ConfigPatch[]) => Promise<boolean>>>
+  describeCredential: ReturnType<typeof vi.fn<(ref: string) => Promise<CredentialState>>>
+  setCredential: ReturnType<typeof vi.fn<(ref: string, value: string) => Promise<string | null>>>
+  unsetCredential: ReturnType<typeof vi.fn<(ref: string) => Promise<string | null>>>
   useConfig: () => { status: 'ready'; value: ClientConfigShape; writable: boolean }
-} {
+}
+
+function bench(over: {
+  writable?: boolean
+  credential?: Partial<CredentialState>
+  setCredential?: (ref: string, value: string) => Promise<string | null>
+} = {}): Bench {
   const save = vi.fn(async () => true)
-  return { save, useConfig: () => ({ status: 'ready', value: CONFIG, writable: true }) }
+  const describeCredential = vi.fn(async (): Promise<CredentialState> => ({
+    configured: false,
+    source: null,
+    writable: true,
+    error: null,
+    ...over.credential,
+  }))
+  const setCredential = vi.fn(over.setCredential ?? (async () => null))
+  const unsetCredential = vi.fn(async () => null)
+  return {
+    save,
+    describeCredential,
+    setCredential,
+    unsetCredential,
+    useConfig: () => ({ status: 'ready', value: CONFIG, writable: over.writable ?? true }),
+  }
+}
+
+/** Props for one render, so each test states only what it varies. */
+function props(b: Bench, t: (key: VideoForgeKey, params?: Record<string, unknown>) => string) {
+  return {
+    t,
+    useConfig: b.useConfig,
+    save: b.save,
+    describeCredential: b.describeCredential,
+    setCredential: b.setCredential,
+    unsetCredential: b.unsetCredential,
+  }
 }
 
 describe('configuration card', () => {
   it('writes a changed scalar as one path op', async () => {
     const b = bench()
-    render(<SettingsCard t={t} useConfig={b.useConfig} save={b.save} />)
+    render(<SettingsCard {...props(b, t)} />)
 
     const field = screen.getByLabelText(en['config.maxConcurrent'])
     fireEvent.change(field, { target: { value: '3' } })
@@ -64,7 +100,7 @@ describe('configuration card', () => {
 
   it('refuses invalid provider JSON instead of writing it', async () => {
     const b = bench()
-    render(<SettingsCard t={t} useConfig={b.useConfig} save={b.save} />)
+    render(<SettingsCard {...props(b, t)} />)
 
     const editor = screen.getByLabelText(`${en['config.providers']} (JSON)`)
     fireEvent.change(editor, { target: { value: '{ not json' } })
@@ -76,7 +112,7 @@ describe('configuration card', () => {
 
   it('writes a valid provider array through the same op', async () => {
     const b = bench()
-    render(<SettingsCard t={t} useConfig={b.useConfig} save={b.save} />)
+    render(<SettingsCard {...props(b, t)} />)
 
     const editor = screen.getByLabelText(`${en['config.providers']} (JSON)`) as HTMLTextAreaElement
     const next = [{ id: 'relay', protocol: 'generic-openai-videos', baseUrl: 'https://relay.example/v1', models: [] }]
@@ -89,7 +125,7 @@ describe('configuration card', () => {
 
   it('reports a refusal as not saved', async () => {
     const save = vi.fn(async () => false)
-    render(<SettingsCard t={t} useConfig={() => ({ status: 'ready', value: CONFIG, writable: true })} save={save} />)
+    render(<SettingsCard {...props({ ...bench(), save }, t)} />)
     fireEvent.change(screen.getByLabelText(en['config.maxConcurrent']), { target: { value: '5' } })
     fireEvent.click(screen.getByText(en['config.save']))
     await waitFor(() => { expect(screen.getByText(en['config.saveFailed'])).toBeTruthy() })
@@ -97,7 +133,7 @@ describe('configuration card', () => {
 
   it('keeps the save control disabled until something changes', () => {
     const b = bench()
-    render(<SettingsCard t={t} useConfig={b.useConfig} save={b.save} />)
+    render(<SettingsCard {...props(b, t)} />)
     expect((screen.getByText(en['config.save']) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(screen.getByLabelText(en['config.pollInterval']), { target: { value: '9000' } })
     expect((screen.getByText(en['config.save']) as HTMLButtonElement).disabled).toBe(false)
@@ -105,9 +141,76 @@ describe('configuration card', () => {
 
   it('says so when the composition does not allow editing', () => {
     const b = bench()
-    render(<SettingsCard t={t} useConfig={() => ({ status: 'ready', value: CONFIG, writable: false })} save={b.save} />)
+    render(<SettingsCard {...props(bench({ writable: false }), t)} />)
     expect(screen.getByText(en['config.readonly'])).toBeTruthy()
     expect((screen.getByText(en['config.save']) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('configuration card: API keys', () => {
+  it('stores a key, clears the field, and never keeps the value on the page', async () => {
+    const b = bench()
+    const { container } = render(<SettingsCard {...props(b, t)} />)
+
+    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
+    fireEvent.change(field, { target: { value: 'sk-super-secret-value' } })
+    fireEvent.click(screen.getByText(en['config.keySave']))
+
+    await waitFor(() => { expect(b.setCredential).toHaveBeenCalledWith('ARK_API_KEY', 'sk-super-secret-value') })
+    await waitFor(() => { expect(screen.getByText(en['config.keyStored'])).toBeTruthy() })
+    // The write-only contract: after the host has it, the page does not.
+    expect((field as HTMLInputElement).value).toBe('')
+    expect(container.innerHTML).not.toContain('sk-super-secret-value')
+    // And the state is re-read from the host rather than assumed.
+    await waitFor(() => { expect(b.describeCredential).toHaveBeenCalledWith('ARK_API_KEY') })
+  })
+
+  it('refuses to send an empty value and says why', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b, t)} />)
+    fireEvent.click(await screen.findByText(en['config.keySave']))
+    await waitFor(() => { expect(screen.getByText(en['config.keyRequired'])).toBeTruthy() })
+    expect(b.setCredential).not.toHaveBeenCalled()
+  })
+
+  it('shows a refusal from the host verbatim', async () => {
+    const b = bench({ setCredential: async () => 'credential/rejected: read-only source shadows this reference' })
+    render(<SettingsCard {...props(b, t)} />)
+    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
+    fireEvent.change(field, { target: { value: 'x' } })
+    fireEvent.click(screen.getByText(en['config.keySave']))
+    await waitFor(() => { expect(screen.getByText(/read-only source shadows this reference/)).toBeTruthy() })
+  })
+
+  it('disables entry for a credential the host reports as read-only', async () => {
+    const b = bench({ credential: { configured: true, source: 'file', writable: false } })
+    render(<SettingsCard {...props(b, t)} />)
+    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
+    await waitFor(() => { expect((field as HTMLInputElement).disabled).toBe(true) })
+    expect(screen.getByText(en['config.keyReadOnly'])).toBeTruthy()
+  })
+
+  it('offers removal only when a key is actually configured', async () => {
+    const present = bench({ credential: { configured: true, source: 'user-env' } })
+    render(<SettingsCard {...props(present, t)} />)
+    const remove = await screen.findByText(en['config.keyClear'])
+    await waitFor(() => { expect((remove as HTMLButtonElement).disabled).toBe(false) })
+    fireEvent.click(remove)
+    await waitFor(() => { expect(present.unsetCredential).toHaveBeenCalledWith('ARK_API_KEY') })
+
+    cleanup()
+    const absent = bench()
+    render(<SettingsCard {...props(absent, t)} />)
+    const disabled = await screen.findByText(en['config.keyClear'])
+    await waitFor(() => { expect((disabled as HTMLButtonElement).disabled).toBe(true) })
+  })
+
+  it('shows no key row for a provider that needs no credential', async () => {
+    const b = bench()
+    const keyless = { ...CONFIG, providers: [{ ...CONFIG.providers[0]!, authRef: '' }] }
+    render(<SettingsCard {...props({ ...b, useConfig: () => ({ status: 'ready' as const, value: keyless, writable: true }) }, t)} />)
+    await waitFor(() => { expect(screen.queryByText(en['config.keySave'])).toBeNull() })
+    expect(b.describeCredential).not.toHaveBeenCalled()
   })
 })
 

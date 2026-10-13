@@ -52,17 +52,34 @@ export interface ConfigSnapshot {
   writable: boolean
 }
 
+/** Host-reported credential state for one reference; never carries a value. */
+export interface CredentialState {
+  configured: boolean
+  source: string | null
+  writable: boolean
+  error: string | null
+}
+
 /** What `apply` hands the card; the component never sees `ctx`. */
 export interface ConfigFace {
   useConfig(): ConfigSnapshot
   /** Resolves true when the host accepted the write. */
   save(ops: readonly ConfigPatch[]): Promise<boolean>
+  /** Ask the host whether one reference resolves, and from where. */
+  describeCredential(ref: string): Promise<CredentialState>
+  /** Store a secret. Resolves null on success, else a message to show verbatim. */
+  setCredential(ref: string, value: string): Promise<string | null>
+  /** Remove a stored secret. Resolves null on success, else a message. */
+  unsetCredential(ref: string): Promise<string | null>
 }
 
 export interface SettingsCardProps {
   t: Translate
   useConfig: ConfigFace['useConfig']
   save: ConfigFace['save']
+  describeCredential: ConfigFace['describeCredential']
+  setCredential: ConfigFace['setCredential']
+  unsetCredential: ConfigFace['unsetCredential']
 }
 
 const WRAP: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '14px', padding: '4px 0' }
@@ -81,18 +98,24 @@ const MUTED: CSSProperties = { fontSize: '0.82em', opacity: 0.75 }
 const ERROR: CSSProperties = { fontSize: '0.85em', color: 'var(--dsw-alias-danger, #d4380d)' }
 const OK: CSSProperties = { fontSize: '0.85em', color: 'var(--dsw-alias-success, #237804)' }
 const HEADING: CSSProperties = { margin: 0, fontSize: '0.95em' }
+const BUTTON: CSSProperties = { ...INPUT, cursor: 'pointer', flex: '0 0 auto' }
 const TABLE: CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }
 const CELL: CSSProperties = { textAlign: 'left', padding: '4px 8px 4px 0', verticalAlign: 'top' }
 
 /** The configuration card. */
 export function SettingsCard(props: SettingsCardProps): ReactNode {
-  const { t, useConfig, save } = props
+  const { t, useConfig, save, describeCredential, setCredential, unsetCredential } = props
   const snapshot = useConfig()
+  const config = snapshot.value
   const [providers, setProviders] = useState<PanelProvider[] | null>(null)
   const [providersDraft, setProvidersDraft] = useState<string | null>(null)
   const [draft, setDraft] = useState<Partial<ClientConfigShape>>({})
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [credentials, setCredentials] = useState<Record<string, CredentialState>>({})
+  const [keyDraft, setKeyDraft] = useState<Record<string, string>>({})
+  const [keyBusy, setKeyBusy] = useState<string | null>(null)
+  const [keyNotice, setKeyNotice] = useState<string | null>(null)
 
   useEffect(() => {
     let live = true
@@ -104,7 +127,30 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
     return () => { live = false }
   }, [])
 
-  const config = snapshot.value
+  // Credential state comes from the host's own authority on the question, not from
+  // the cached overview: only the host knows whether a key now exists.
+  const refreshCredentials = useCallback(async (refs: readonly string[]) => {
+    const entries = await Promise.all(refs.map(async ref => [ref, await describeCredential(ref)] as const))
+    setCredentials(Object.fromEntries(entries))
+  }, [describeCredential])
+
+  // The key rows come from the configuration, not from the workbench API: the
+  // credential channel is independent of it, and a provider whose status could not
+  // be fetched is exactly the one whose key the operator may need to fix. Refs are
+  // deduplicated because two providers may legitimately share one.
+  const credentialRefs = useMemo(() => {
+    const refs = new Set<string>()
+    for (const provider of config?.providers ?? []) {
+      const ref = (provider as { authRef?: unknown } | null)?.authRef
+      if (typeof ref === 'string' && ref.trim() !== '') refs.add(ref.trim())
+    }
+    return [...refs]
+  }, [config?.providers])
+
+  useEffect(() => {
+    if (credentialRefs.length > 0) void refreshCredentials(credentialRefs)
+  }, [credentialRefs, refreshCredentials])
+
   const effective = useMemo(() => ({ ...config, ...draft }) as Partial<ClientConfigShape>, [config, draft])
   const dirty = Object.keys(draft).length > 0 || providersDraft !== null
 
@@ -171,6 +217,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
 
       {readOnly ? <div style={MUTED}>{t('config.readonly')}</div> : null}
       {error === null ? null : <div style={ERROR}>{error}</div>}
+      {keyNotice === null ? null : <div style={MUTED}>{keyNotice}</div>}
 
       <section style={SECTION}>
         <strong style={HEADING}>{t('config.defaults')}</strong>
@@ -283,6 +330,49 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
                 </table>
               )}
         <div style={MUTED}>{t('config.credentialHint')}</div>
+        {credentialRefs.map(ref => (
+          <CredentialRow
+            key={ref}
+            ref_={ref}
+            t={t}
+            state={credentials[ref]}
+            draft={keyDraft[ref] ?? ''}
+            busy={keyBusy === ref}
+            onDraft={value => {
+              setKeyNotice(null)
+              setKeyDraft(current => ({ ...current, [ref]: value }))
+            }}
+            onSave={async () => {
+              const value = (keyDraft[ref] ?? '').trim()
+              if (value === '') {
+                setKeyNotice(t('config.keyRequired'))
+                return
+              }
+              setKeyBusy(ref)
+              const failure = await setCredential(ref, value)
+              setKeyBusy(null)
+              if (failure !== null) {
+                setKeyNotice(failure)
+                return
+              }
+              // Never keep the secret in component state after it reached the host.
+              setKeyDraft(current => ({ ...current, [ref]: '' }))
+              setKeyNotice(t('config.keyStored'))
+              await refreshCredentials([ref])
+            }}
+            onClear={async () => {
+              setKeyBusy(ref)
+              const failure = await unsetCredential(ref)
+              setKeyBusy(null)
+              if (failure !== null) {
+                setKeyNotice(failure)
+                return
+              }
+              setKeyNotice(t('config.keyRemoved'))
+              await refreshCredentials([ref])
+            }}
+          />
+        ))}
         <label style={FIELD}>
           <span style={MUTED}>{`${t('config.providers')} (JSON)`}</span>
           <textarea
@@ -296,6 +386,64 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
           />
         </label>
       </section>
+    </div>
+  )
+}
+
+interface CredentialRowProps {
+  ref_: string
+  t: Translate
+  state: CredentialState | undefined
+  draft: string
+  busy: boolean
+  onDraft: (value: string) => void
+  onSave: () => Promise<void>
+  onClear: () => Promise<void>
+}
+
+/**
+ * The key entry for one credential reference.
+ *
+ * The value is write-only by construction: it is typed into a password field, sent
+ * to the host, and then dropped from component state. Nothing on this page can read
+ * a secret back — the host credential service has no method that returns one — so
+ * the only thing shown afterwards is whether the reference resolves and from where.
+ */
+function CredentialRow({ ref_, t, state, draft, busy, onDraft, onSave, onClear }: CredentialRowProps): ReactNode {
+  const writable = state?.writable !== false
+  return (
+    <div style={{ ...ROW, alignItems: 'flex-end' }}>
+      <label style={{ ...FIELD, flex: '1 1 220px' }}>
+        <span style={MUTED}>{`${t('config.keyLabel')} · ${ref_}`}</span>
+        <input
+          style={INPUT}
+          type="password"
+          autoComplete="off"
+          placeholder={t('config.keyPlaceholder')}
+          value={draft}
+          disabled={busy || !writable}
+          onChange={event => { onDraft(event.target.value) }}
+        />
+        {state?.configured === true ? <span style={MUTED}>{t('config.keyExists', { ref: ref_ })}</span> : null}
+        {state?.writable === false ? <span style={MUTED}>{t('config.keyReadOnly')}</span> : null}
+        {state?.error === null || state?.error === undefined ? null : <span style={ERROR}>{state.error}</span>}
+      </label>
+      <button
+        type="button"
+        style={BUTTON}
+        disabled={busy || !writable}
+        onClick={() => { void onSave() }}
+      >
+        {busy ? t('config.keySaving') : t('config.keySave')}
+      </button>
+      <button
+        type="button"
+        style={BUTTON}
+        disabled={busy || !writable || state?.configured !== true}
+        onClick={() => { void onClear() }}
+      >
+        {t('config.keyClear')}
+      </button>
     </div>
   )
 }

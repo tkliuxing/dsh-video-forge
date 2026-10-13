@@ -45,6 +45,7 @@ function bench(declared: readonly string[], withConfigForms = true): {
 
   const ctx = {
     get: (name: string) => (withConfigForms && name === 'configForms' ? configForms : undefined),
+    remote: { credentials: { describe: async () => ({ ok: true, value: {} }), set: async () => ({ ok: true }), unset: async () => ({ ok: true }) } },
     on: () => () => {},
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     effect: (fn: () => (() => void) | void, label?: string) => {
@@ -90,7 +91,9 @@ describe('client apply', () => {
     apply(b.ctx)
 
     expect(b.localeRegister).toHaveBeenCalledWith(NS, { zh, en })
-    expect(inject).toEqual(['slots', 'locale', 'configForms'])
+    // `remote.credentials` is the official channel for writing a key from the
+    // browser; the card is dead weight without it.
+    expect(inject).toEqual(['slots', 'locale', 'configForms', 'remote', 'remote.credentials'])
 
     const keys = b.registrations
       .filter(entry => entry.options['name'] === 'tool.call.toolview')

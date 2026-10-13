@@ -41,7 +41,13 @@ import { VideoActionRow, VideoGenerateRow, VideoStatusRow } from './cards.tsx'
 import { BUNDLE_CONFIG_SEAT, SETTINGS_TAB_SEAT, installConfigCard } from './config-card-seat.ts'
 import { en, zh, type VideoForgeKey } from './locales.ts'
 import { WorkbenchPage } from './panel.tsx'
-import { SettingsCard, type ClientConfigShape, type ConfigFace, type ConfigPatch } from './settings-card.tsx'
+import {
+  SettingsCard,
+  type ClientConfigShape,
+  type ConfigFace,
+  type ConfigPatch,
+  type CredentialState,
+} from './settings-card.tsx'
 
 /** Locale namespace owned by this plugin. */
 export const NS = 'tool.videoForge'
@@ -61,7 +67,21 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['slots', 'locale', 'configForms']
+export const inject = ['slots', 'locale', 'configForms', 'remote', 'remote.credentials']
+
+/**
+ * The credential Remote namespace, as this plugin needs it.
+ *
+ * Declared structurally: the generated remote contribution belongs to the
+ * settings-controller package, and an installed plugin cannot assume its types
+ * resolve to the same module identity as the host's. Every method that reads a
+ * credential returns state only — the seam has no method that returns a value.
+ */
+interface CredentialRemote {
+  describe(refs: readonly string[]): Promise<unknown>
+  set(ref: string, value: string): Promise<unknown>
+  unset(ref: string): Promise<unknown>
+}
 
 /** The slice of the settings form service this plugin uses. */
 interface ConfigFormsService {
@@ -81,9 +101,18 @@ export function apply(ctx: Context): void {
   const t = ctx.locale.bind(NS)
   const forms = ctx.get('configForms') as unknown as ConfigFormsService | undefined
 
+  const credentials = (): CredentialRemote | undefined => {
+    const remote = ctx.get('remote') as unknown as { credentials?: CredentialRemote } | undefined
+    const direct = remote?.credentials
+    return direct !== undefined && typeof direct.describe === 'function' ? direct : undefined
+  }
+
   const face: ConfigFace = {
     useConfig: () => useHostConfig(forms),
     save: ops => saveConfig(forms, ops),
+    describeCredential: ref => describeCredential(credentials(), ref),
+    setCredential: (ref, value) => writeCredential(credentials(), ref, value, 'set'),
+    unsetCredential: ref => writeCredential(credentials(), ref, '', 'unset'),
   }
 
   // --- tool cards ---------------------------------------------------------
@@ -160,6 +189,75 @@ function useHostConfig(forms: ConfigFormsService | undefined): ReturnType<Config
     return form.subscribe(() => { setSnapshot(form.getSnapshot()) })
   }, [forms])
   return snapshot
+}
+
+/**
+ * Read one credential's state from the host.
+ *
+ * A missing service is reported as "unavailable" rather than as "not configured":
+ * those are different facts, and conflating them would tell the operator to set a
+ * key that may already exist.
+ */
+async function describeCredential(remote: CredentialRemote | undefined, ref: string): Promise<CredentialState> {
+  if (remote === undefined) {
+    return { configured: false, source: null, writable: false, error: 'the host credential service is not loaded' }
+  }
+  try {
+    const response = unwrap<Record<string, { configured?: boolean; source?: string; writable?: boolean }>>(
+      await remote.describe([ref]),
+    )
+    if (!response.ok) return { configured: false, source: null, writable: true, error: response.error }
+    const view = response.value?.[ref]
+    return {
+      configured: view?.configured === true,
+      source: typeof view?.source === 'string' ? view.source : null,
+      // An unknown reference is treated as writable: the host is what refuses, and
+      // guessing a refusal here would disable a control that works.
+      writable: view?.writable !== false,
+      error: null,
+    }
+  } catch (error: unknown) {
+    return { configured: false, source: null, writable: true, error: messageOf(error) }
+  }
+}
+
+/** Store or remove one secret. Resolves null on success, else a message to show. */
+async function writeCredential(
+  remote: CredentialRemote | undefined,
+  ref: string,
+  value: string,
+  action: 'set' | 'unset',
+): Promise<string | null> {
+  if (remote === undefined) return 'the host credential service is not loaded'
+  try {
+    const response = action === 'set' ? await remote.set(ref, value) : await remote.unset(ref)
+    const result = unwrap<unknown>(response)
+    return result.ok ? null : result.error
+  } catch (error: unknown) {
+    // A refusal arrives as a RemoteError; its message is the seam's own wording and
+    // is more useful than anything this side could invent.
+    return messageOf(error)
+  }
+}
+
+/** Accept either a result envelope or a bare value, which is what remotes vary on. */
+function unwrap<T>(response: unknown): { ok: true; value: T } | { ok: false; error: string } {
+  if (typeof response === 'object' && response !== null && 'ok' in response) {
+    const envelope = response as { ok: unknown; value?: unknown; error?: unknown }
+    if (envelope.ok === true) return { ok: true, value: envelope.value as T }
+    return { ok: false, error: messageOf(envelope.error) }
+  }
+  return { ok: true, value: response as T }
+}
+
+function messageOf(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 async function saveConfig(forms: ConfigFormsService | undefined, ops: readonly ConfigPatch[]): Promise<boolean> {
