@@ -67,7 +67,7 @@ Then configure at least one provider (Settings → the `video-forge` row):
 | Chat | Result cards with a real `<video>` player, per tool call |
 | Sidebar → Video workbench | Submit a generation, watch tasks, cancel, play, export |
 | Bottom-right badge | How many tasks are in flight (hidden when none are) |
-| Sidebar → Plugins → Video Forge | Providers, credential state (masked), models, defaults, limits |
+| Sidebar → Plugins → Video Forge | Providers, models, defaults, limits, and the API key (stored through the harness credential service; only a masked tail is ever shown) |
 
 The browser side talks to `/video-forge/api/…`, which is loopback-only unless the
 browser is a paired device — the harness does not gate plugin routes, so this

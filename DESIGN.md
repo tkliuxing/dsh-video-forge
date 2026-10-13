@@ -128,7 +128,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 | `tool.call.toolview`（按线名 keyed） | `video_generate` / `video_status` 的结果卡片：`<video controls>` 播放器 + 任务状态 | — |
 | **`main` + `sidebar.panellist`（同一个 id）** | **工作台页**：提交生成、参数预设、任务与产物列表 | **原定 `shell.overlay`，实测改掉** |
 | `shell.overlay`（badge） | 会话内"有 N 个任务在跑"的环境提示 | 由工作台降级为提示 |
-| **`plugins.bundle.config`（主）→ `settings.plugins.tab`（回退）** | 供应商与模型配置：Base URL、Key（掩码）、模型能力矩阵 | **原定 `settings.section`** |
+| **`plugins.bundle.config`（主）→ `settings.plugins.tab`（回退）** | 供应商与模型配置：Base URL、**Key（掩码显示 + 可写入）**、模型能力矩阵 | **原定 `settings.section`** |
 | `conversation.view` | 任务/产物 tab（可选，二期） | — |
 
 三条实测理由（都会在开发手册里踩到）：
@@ -142,6 +142,8 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 > **工作台的浏览器侧不能调工具**（工具调用属于 agent 回合），所以它有自己的一族宿主路由：`/video-forge/api/{overview,generate,cancel,export}`。这一族**不是**薄壳——它调用的正是 `operations.ts` 里工具用的同一批函数，浏览器提交与模型提交不可能在校验、去重、盯守上分叉。
 >
 > **信任门**：harness 只认证自己的 index 与 bundle，**不**拦插件路由，所以这一族自带闸门——本机回环放行，已配对设备放行（`remoteWebUiPairing` 在时装），未配对的局域网浏览器 403；socket 地址为准，`X-Forwarded-For` 永不采信，并要求浏览器的同源标记。MEDIA 路由则用 128-bit token 授权，两者策略不同且都写明了理由。
+>
+> **密钥两条通道，职责不同**：**写**走官方的 `ctx.remote.credentials.{describe,set,unset}`（客户端 `inject` 需含 `'remote','remote.credentials'`）——凭据域归宿主管，插件不自己写文件、也不经自己的路由搬密钥；**读**（"已配置 / 来源 / `sk…1234`"）由本插件自己的 `/video-forge/api/overview` 算，因为官方通道**任何读方法都不返回密钥值**，只有 `{configured, source, writable}`。密钥值**只单向流动**：进 password 输入框 → 送宿主 → 立刻从组件状态里丢掉，页面上永不回显，也不进日志。凭据行按 **config 里声明的 `authRef`** 渲染（不是按 overview 返回的 provider），这样面板 API 不可达时——也就是最需要修 key 的时候——照样能设 key。
 
 ## 6. 长任务、恢复与取消
 
@@ -291,7 +293,7 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 | i18n | 无硬编码文案（走字典） |
 | 可选 | **真实在线 API e2e**（有 key 才跑，无 key 自动跳过） |
 
-**已落地（114 例，`pnpm check`）**：台账 11（损坏隔离、并发写、id 序列、token 成对校验）、协议 19（dot-path、方舟角色/状态映射、中转站路径与 state 归一化、几何与能力校验）、媒体路由 14（真 socket：200/206/416/HEAD/404/405）、工具面 17（互斥、几何、去重、并发上限、取消、导出）、fixture 端到端 9（两种协议的成功/失败/取消/放弃/进程内驱动）、**面板 API + 信任门 13**（真 socket + 伪造 socket：403、掩码不泄漏、提交/取消/导出、错误映射）、**座位策略 5**（主位/回退/晚到迁移/重入/释放）、**客户端注册 7**、**卡片推导与渲染 11**、**配置卡写路径 8**（jsdom + testing-library：path op 形状、非法 JSON 拒写、拒绝态）。绝大多数用例不依赖 DOM；只有配置卡那 8 例用 jsdom，卡片渲染用 `react-dom/server`。
+**已落地（120 例，`pnpm check`）**：台账 11（损坏隔离、并发写、id 序列、token 成对校验）、协议 19（dot-path、方舟角色/状态映射、中转站路径与 state 归一化、几何与能力校验）、媒体路由 14（真 socket：200/206/416/HEAD/404/405）、工具面 17（互斥、几何、去重、并发上限、取消、导出）、fixture 端到端 9（两种协议的成功/失败/取消/放弃/进程内驱动）、**面板 API + 信任门 13**（真 socket + 伪造 socket：403、掩码不泄漏、提交/取消/导出、错误映射）、**座位策略 5**（主位/回退/晚到迁移/重入/释放）、**客户端注册 7**、**卡片推导与渲染 11**、**配置卡写路径 14**（jsdom + testing-library：path op 形状、非法 JSON 拒写、拒绝态、密钥写入/清空/只读/空值拒发/拒绝信息原样显示/**值不回显也不残留在 DOM**）。绝大多数用例不依赖 DOM；只有配置卡那 14 例用 jsdom，卡片渲染用 `react-dom/server`。
 
 ## 13. 验证纪律（隔离实例，硬性）
 
@@ -337,12 +339,14 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 | 信任门 | `GET /video-forge/api/overview` 从回环 → 200；从伪造的非回环 socket → 403（单测覆盖）；`GET /` 仍 401（harness 自己的登录墙），说明面板 API 的放行策略与 UI 登录墙是**两件独立的事**，前者按 §5 的回环/配对门 |
 | **面板提交真实跑通** | `POST /video-forge/api/generate` → 200，任务落台账；宿主进程内盯守把 fixture 轮询到 `succeeded`，下载 64 KiB 到 `$DSH_HOME/dsh-video-forge/outputs/v-20261013-0001/`（`0700/0600`）；`overview` 随后返回 `progress: 1` 与文档相对的 `playUrl` |
 | 播放链路 | 面板给出的 `playUrl` 直接 `GET` → 200 `video/mp4` + `accept-ranges`；`Range: bytes=0-99` → 206；**sha256 与宿主写入的文件一致** |
+| 密钥写入通道存在 | 浏览器运行时确实装载了 `credentials` remote：预加载批次里能找到 settings-controller 生成的 remote client（`describe` 参数/结果 codec 齐全），方法签名与卡片调用的一致（`describe(refs[])` → `Record<ref,{configured,source?,writable}>`、`set(ref,value)`、`unset(ref)`） |
+| 密钥状态（掩码） | 往隔离 `$DSH_HOME/.credentials.yaml` 写入 `ARK_API_KEY` 后，`overview` 返回 `{configured:true, source:"file", masked:"sk…1234"}`，且响应体**不含密钥值** |
 
 ## 14. 里程碑
 
 - **M0 协议探针（先做）**：用 `fixtures/` 假 provider 钉死两家协议（`generic-openai-videos` / `ark-seedance`）的提交、查询、终态、失败、取消五种响应形状；**同时验证 `ctx.jobs` 承载 provider 侧轮询**这一无前例的设计原语——若不合适，退化为 iris 式自管任务存储（台账独立存在，退化成本低）。有真 key 时补打一次真实 Seedance 出片，钉死真实响应与耗时。
 - **M1 骨架（2026-10-13 完成，见 §13 实测表）**：包 + manifest + 4 个工具 + 台账 + 两家协议 + `$DSH_HOME` 产物 + 自建路由（Range/206）+ 播放卡片，81 例测试 + 隔离实例端到端。**未做**：`shell.overlay` 工作台浮层与 `settings.section` 设置卡片（原属 M2）、会话附件 id 素材（§4 说明）、真实在线 key 验证。
-- **M2 面板与配置（2026-10-13 完成，见 §13 实测表）**：工作台页（`main` + `sidebar.panellist`）、环境 badge（`shell.overlay`）、配置卡（`plugins.bundle.config` 主位 + `settings.plugins.tab` 回退）、面板 API 族 + 信任门、双语文案、114 例测试。**未做**：在工作台里**写入**密钥（浏览器写密文的官方通道是 `ctx.remote.credentials.set`，卡片目前只显示"已配置/来源/掩码尾 4 位"并指向 harness 的凭据入口）、会话附件 id 素材（§4）、真实在线 key 验证。
+- **M2 面板与配置（2026-10-13 完成，见 §13 实测表）**：工作台页（`main` + `sidebar.panellist`）、环境 badge（`shell.overlay`）、配置卡（`plugins.bundle.config` 主位 + `settings.plugins.tab` 回退）、面板 API 族 + 信任门、双语文案、114 例测试。**密钥写入**：走官方 `remote.credentials`（见 §5），卡片里可直接设/清；**未做**：会话附件 id 素材（§4）、真实在线 key 的端到端验证。
 - **M3 协议扩展**：可灵 →（可选）Veo，能力矩阵与成本门控。
 - **M4 收口**：测试补齐、打包（npm/tarball）、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
 
