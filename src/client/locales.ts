@@ -1,0 +1,62 @@
+/**
+ * Card copy. Chinese is the authoring language; English mirrors it key for key,
+ * because the locale service requires both shipped dictionaries.
+ */
+
+export const en = {
+  'generate.title': 'Generate video',
+  'generate.pending': 'Preparing the generation…',
+  'generate.running': 'Generating…',
+  'generate.queued': 'Queued at the provider…',
+  'generate.failed': 'Generation failed',
+  'generate.cancelled': 'Generation cancelled',
+  'generate.orphaned': 'Task state unknown after a restart',
+  'generate.play': 'Play',
+  'generate.open': 'Open the artifact',
+  'generate.meta': '{provider}/{model} · {status}',
+  'generate.progress': '{percent}%',
+  'status.title': 'Video tasks',
+  'status.running': 'Reading the task list…',
+  'status.empty': 'No video tasks yet.',
+  'status.error': 'Could not read the task list.',
+  'status.count': '{count} task(s)',
+  'status.play': 'Play',
+  'export.title': 'Export video',
+  'export.running': 'Copying the artifact…',
+  'export.done': 'Exported to {path}',
+  'export.failed': 'Export failed',
+  'cancel.title': 'Cancel video task',
+  'cancel.running': 'Asking the provider to cancel…',
+  'cancel.done': 'Cancellation requested',
+  'cancel.failed': 'Cancellation failed',
+} as const
+
+export type VideoForgeKey = keyof typeof en
+
+export const zh: Record<VideoForgeKey, string> = {
+  'generate.title': '生成视频',
+  'generate.pending': '正在准备生成…',
+  'generate.running': '生成中…',
+  'generate.queued': '已在供应商侧排队…',
+  'generate.failed': '生成失败',
+  'generate.cancelled': '生成已取消',
+  'generate.orphaned': '重启后任务状态未知',
+  'generate.play': '播放',
+  'generate.open': '打开产物',
+  'generate.meta': '{provider}/{model} · {status}',
+  'generate.progress': '{percent}%',
+  'status.title': '视频任务',
+  'status.running': '正在读取任务列表…',
+  'status.empty': '还没有视频任务。',
+  'status.error': '无法读取任务列表。',
+  'status.count': '{count} 个任务',
+  'status.play': '播放',
+  'export.title': '导出视频',
+  'export.running': '正在复制产物…',
+  'export.done': '已导出到 {path}',
+  'export.failed': '导出失败',
+  'cancel.title': '取消视频任务',
+  'cancel.running': '正在请求供应商取消…',
+  'cancel.done': '已请求取消',
+  'cancel.failed': '取消失败',
+}

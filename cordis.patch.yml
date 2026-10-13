@@ -1,0 +1,5 @@
+# Mounts the host half under the profile entry `video-forge`; the package
+# manifest additionally declares the browser bundle (`dsh.client`).
+- insert:
+    - id: video-forge
+      name: dsh-video-forge
