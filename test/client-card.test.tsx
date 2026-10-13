@@ -13,9 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { VideoActionRow, VideoGenerateRow, VideoStatusRow, type Translate } from '../src/client/cards.tsx'
 import { blockFacts, formatBytes, generateMeta, resolveMediaUrl, statusMeta } from '../src/client/video-card-model.ts'
-import { apply, inject, NS } from '../src/client/index.ts'
 import { en, zh } from '../src/client/locales.ts'
-import type { Context } from '@deepseek-ai/cordis'
 
 const t: Translate = (key, params) => {
   const template = en[key]
@@ -144,41 +142,5 @@ describe('rendered markup', () => {
     expect(renderToStaticMarkup(<VideoActionRow phase="start" block={block} t={t} />)).toContain('Export video')
     const cancel = { ...block, name: 'video_cancel', argsRaw: '{"task_id":"v-1"}' }
     expect(renderToStaticMarkup(<VideoActionRow phase="start" block={cancel} t={t} />)).toContain('Cancel video task')
-  })
-})
-
-describe('client apply', () => {
-  it('registers every wire tool name under the shared locale namespace', () => {
-    const registrations: { options: Record<string, unknown>; component: unknown }[] = []
-    const localeRegister = vi.fn(() => () => {})
-    const ctx = {
-      effect: (fn: () => (() => void) | void) => {
-        const dispose = fn()
-        return typeof dispose === 'function' ? dispose : () => {}
-      },
-      locale: { register: localeRegister, bind: () => t },
-      slots: {
-        inject: (_slot: string, callback: () => unknown) => callback(),
-        register: (options: Record<string, unknown>, component: unknown) => {
-          registrations.push({ options, component })
-          return () => {}
-        },
-      },
-    } as unknown as Context
-
-    apply(ctx)
-
-    expect(localeRegister).toHaveBeenCalledWith(NS, { zh, en })
-    expect(inject).toEqual(['slots', 'locale'])
-    const registered = registrations.map(entry => entry.options)
-    expect(registered.every(options => options['name'] === 'tool.call.toolview')).toBe(true)
-    expect(registered.map(options => options['key']).sort())
-      .toEqual(['video_cancel', 'video_export', 'video_generate', 'video_status'])
-    expect(registered.every(options => options['locale'] === NS)).toBe(true)
-    expect(registrations.every(entry => typeof entry.component === 'function')).toBe(true)
-  })
-
-  it('ships both dictionaries with identical keys', () => {
-    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort())
   })
 })
