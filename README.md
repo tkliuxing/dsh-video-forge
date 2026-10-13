@@ -4,11 +4,11 @@ Online-model video generation for [DeepSeek Harness](https://github.com/deepseek
 four model-facing tools plus inline playback, with every generation tracked in a
 durable ledger so a timeout or a restart never means paying twice.
 
-> **Status: M1.** Tools, ledger, two online protocols, artifact storage, the
-> Range-capable media route and the chat playback card are implemented and
-> verified against an offline provider double plus a live isolated DSH instance.
-> The workbench overlay and the settings card are M2. There is no local
-> inference path by design — this plugin is a client of online models only.
+> **Status: M2.** Tools, ledger, two online protocols, artifact storage, the
+> Range-capable media route, the chat playback cards, the workbench page and the
+> configuration card are implemented and verified against an offline provider
+> double plus a live isolated DSH instance. There is no local inference path by
+> design — this plugin is a client of online models only.
 
 ## What it does
 
@@ -59,6 +59,19 @@ Then configure at least one provider (Settings → the `video-forge` row):
     defaultProvider: ark
     defaultModel: doubao-seedance-1-0-pro-250528
 ```
+
+## Surfaces
+
+| Where | What |
+|---|---|
+| Chat | Result cards with a real `<video>` player, per tool call |
+| Sidebar → Video workbench | Submit a generation, watch tasks, cancel, play, export |
+| Bottom-right badge | How many tasks are in flight (hidden when none are) |
+| Sidebar → Plugins → Video Forge | Providers, credential state (masked), models, defaults, limits |
+
+The browser side talks to `/video-forge/api/…`, which is loopback-only unless the
+browser is a paired device — the harness does not gate plugin routes, so this
+plugin does.
 
 ## Where things live
 
