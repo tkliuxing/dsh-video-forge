@@ -20,6 +20,7 @@ import { resolveApiKey } from './credentials.ts'
 import { downloadArtifact } from './download.ts'
 import { Ledger, LedgerCorruptError } from './ledger.ts'
 import { mediaHandler } from './media-route.ts'
+import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, pluginHome, type VideoForgeRuntime } from './runtime.ts'
 import { resolveTarget, HOME_DIRECTORY, MEDIA_ROUTE_PREFIX, type ModelSetting, type ProviderSetting } from './settings.ts'
@@ -136,6 +137,15 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     path: MEDIA_ROUTE_PREFIX,
     handler: mediaHandler(ledger),
   }), `video-forge: GET ${MEDIA_ROUTE_PREFIX}/<task>/<token>/<name>`)
+
+  // The workbench's own surface. The panel cannot call a host tool — a tool call
+  // belongs to an agent turn — so browser submissions go through this family and
+  // land on exactly the same operations the tools use.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'prefix',
+    path: PANEL_ROUTE_PREFIX,
+    handler: panelHandler(runtime),
+  }), `video-forge: ${PANEL_ROUTE_PREFIX}/<action>`)
 
   registerTools(runtime)
 
