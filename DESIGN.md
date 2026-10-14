@@ -128,7 +128,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 | `tool.call.toolview`（按线名 keyed） | `video_generate` / `video_status` 的结果卡片：`<video controls>` 播放器 + 任务状态 | — |
 | **`main` + `sidebar.panellist`（同一个 id）** | **工作台页**：提交生成、参数预设、任务与产物列表 | **原定 `shell.overlay`，实测改掉** |
 | `shell.overlay`（badge） | 会话内"有 N 个任务在跑"的环境提示 | 由工作台降级为提示 |
-| **`plugins.bundle.config`（主）→ `settings.plugins.tab`（回退）** | 供应商与模型配置：Base URL、**Key（掩码显示 + 可写入）**、模型能力矩阵 | **原定 `settings.section`** |
+| **`plugins.bundle.config`（主）→ `settings.plugins.tab`（回退）** | 供应商与模型配置：**从「本版本支持的供应商」里挑（可加多个）**、协议/默认供应商/默认模型都是选项、Base URL、**Key（掩码显示 + 可写入）**、模型能力矩阵 | **原定 `settings.section`**；M2.1 由 JSON 文本框改为表单 + 选项 |
 | `conversation.view` | 任务/产物 tab（可选，二期） | — |
 
 三条实测理由（都会在开发手册里踩到）：
@@ -144,6 +144,8 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 > **信任门**：harness 只认证自己的 index 与 bundle，**不**拦插件路由，所以这一族自带闸门——本机回环放行，已配对设备放行（`remoteWebUiPairing` 在时装），未配对的局域网浏览器 403；socket 地址为准，`X-Forwarded-For` 永不采信，并要求浏览器的同源标记。MEDIA 路由则用 128-bit token 授权，两者策略不同且都写明了理由。
 >
 > **密钥两条通道，职责不同**：**写**走官方的 `ctx.remote.credentials.{describe,set,unset}`（客户端 `inject` 需含 `'remote','remote.credentials'`）——凭据域归宿主管，插件不自己写文件、也不经自己的路由搬密钥；**读**（"已配置 / 来源 / `sk…1234`"）由本插件自己的 `/video-forge/api/overview` 算，因为官方通道**任何读方法都不返回密钥值**，只有 `{configured, source, writable}`。密钥值**只单向流动**：进 password 输入框 → 送宿主 → 立刻从组件状态里丢掉，页面上永不回显，也不进日志。凭据行按 **config 里声明的 `authRef`** 渲染（不是按 overview 返回的 provider），这样面板 API 不可达时——也就是最需要修 key 的时候——照样能设 key。
+
+**配置界面（M2.1，2026-10-14）**：供应商列表原本是一个 JSON 文本框（"全能力、不自造控件"），实际用起来是把 schema 背给操作者。现在改为**行编辑器 + 预设目录**，细节见 §8.1。
 
 ## 6. 长任务、恢复与取消
 
@@ -256,6 +258,27 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 
 > 前例踩过的坑：`ctx.credentials.resolve()` 返回 `{ value, source } | undefined`，而某个插件写的是 `typeof resolved === 'string'`，导致它**从未命中**、实际只跑环境变量。
 
+### 8.1 配置界面（M2.1，2026-10-14）
+
+配置卡的第一版把 `providers` 当 JSON 文本框编辑，默认供应商/默认模型是自由文本输入框。问题不在能力（文本框确实能表达一切），而在**它要求操作者先把 schema 背下来**：协议名、`authRef` 的命名约定、模型 id 的一个字符之差，都只能在运行时报错。改动如下：
+
+| 原本 | 现在 | 为什么 |
+|---|---|---|
+| 默认供应商/默认模型 = 文本框 | **下拉选项**（供应商来自当前列表；模型来自所选供应商） | 二者必须是已声明集合里的元素，自由文本只能产生"未知供应商/未声明模型"这类运行时错误 |
+| 新增供应商 = 手写 JSON | **预设目录下拉 + 添加**（`provider-presets.ts`：方舟 Seedance / OpenAI Sora / 自建网关或中转） | "本版本支持的供应商"是有限的、已知的；预设把协议、Base URL、`authRef`、起步模型一次填好，仍可逐项改 |
+| 协议 = 字符串 | **下拉选项**（`SUPPORTED_PROTOCOLS`） | 协议名的唯一真值来自实现；文案走 locale（`config.protocol.<id>`），不复用协议名当界面文本 |
+| 模式 = 字符串数组 | **四个复选框**（`VIDEO_MODES`） | 少一个模式就是一个运行时会被拒的请求 |
+| 只能有 0/1 个供应商（要加就是整段重写） | **任意多个**，自动去重 id（`ark` → `ark-2`） | 同一家两条通道（如官方直连 + 自建中转）是正常配置 |
+
+四条实现约束（都会在别处再遇到）：
+
+1. **目录是数据，不是代码分支**。`provider-presets.ts` 不 import 任何适配器、任何 `node:` 内置，因此浏览器半区可以内联它；`SUPPORTED_PROTOCOLS` 是**单一声明**——`settings.ts` 的协议联合、`config.ts` 的 schemastery union、协议表 `providers/index.ts` 全部由它派生，并有一个编译期断言（`[Exclude<…>] extends [never]`）保证"实现了但没列进选项"不可能发生。预设的模型能力列表**故意留空**：按 `assertGeometry` 的语义，空 = "交给供应商决定"，凭空写一个时长才是真错。
+2. **表单与 JSON 是一个值的两个视图，不是两份状态**：`edit` 只有三种形态——"未改动"、"行编辑（drafts）"、"文本编辑（text）"。行编辑后文本由表单重新生成；文本编辑后行由文本解析生成。保存时以**当前活着的那个视图**为准，且**文本视图原样写入**（不重新规范化），所以两种入口不会各写一半。JSON 视图收在 `<details>` 里，JSON 坏掉时自动展开。
+3. **写之前先校验，且校验要能被读懂**：`validateDrafts` 返回带行号的 `DraftProblem`（供应商 id 空/重复、Base URL 空、模型 id 空/同供应商内重复），由 locale 组织成句子（如"第 3 个供应商没有 Base URL。"）。宿主 schema 仍是最终门禁，这里只是把错误从"保存失败"变成"改哪一行"。**JSON 视图也跑同一套校验**，否则文本框就成了绕过校验的后门。
+4. **表单没露出的字段原样带过**（`rest`）：`endpoints`（dot-path）、`sizes`、`pollIntervalMs`、`frameRole*` 等仍只能从 JSON 编辑，但一次行编辑**不会**把它们丢掉——"表单没显示"不等于"可以删除"。
+
+> 界面细节记录的坑：**带值的 key 会导致输入框失焦**。行与模型的 React key 必须用索引（这些行是按位置编辑的），用 `provider.id` 当 key 会在每次按键时重建整张卡片。同理，列表类字段（时长/分辨率/宽高比）以**文本**为准、按键即解析：严格受控的数组会让 `5, 1` 在输入中途被改写成 `5`。另外，从 JSON 派生的 drafts 必须 `useMemo` 在解析结果上——每次渲染新建数组会让凭据 effect 无限重跑。
+
 ## 9. 产物与播放
 
 - **落盘**：`$DSH_HOME/dsh-video-forge/outputs/<localId>/`，目录 `0700`、文件 `0600`（POSIX）。不写工作区，避免几十 MB 二进制污染仓库、也不让 `workspace/changes` 每轮把它算成变更。产物从 provider 的临时 URL 下载（provider 侧 URL 会过期，必须落盘）。
@@ -342,11 +365,25 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 | 密钥写入通道存在 | 浏览器运行时确实装载了 `credentials` remote：预加载批次里能找到 settings-controller 生成的 remote client（`describe` 参数/结果 codec 齐全），方法签名与卡片调用的一致（`describe(refs[])` → `Record<ref,{configured,source?,writable}>`、`set(ref,value)`、`unset(ref)`） |
 | 密钥状态（掩码） | 往隔离 `$DSH_HOME/.credentials.yaml` 写入 `ARK_API_KEY` 后，`overview` 返回 `{configured:true, source:"file", masked:"sk…1234"}`，且响应体**不含密钥值** |
 
+**2026-10-14 M2.1 追加实测（配置界面；隔离实例 + 真浏览器）**：
+
+环境同上（`DSH_HOME=/tmp/dsh-video-studio-verify/home`、端口 34781、npm 实包 `@deepseek-ai/dsh@0.2.0-rc.2`）。这次不只看字节：`dsh web` 启动时会打印带 token 的地址（`http://127.0.0.1:34781/?token=…`），因此可以用真浏览器把界面走一遍——**上一版"没在真浏览器里看过"的缺口这一轮补上了**（浏览器侧用 `agent-browser` 驱动一个独立 Chrome，不碰用户的浏览器）。
+
+| 检查 | 结果 |
+|---|---|
+| 安装与装载 | 删掉隔离 profile 重新 `dsh plugin --profile web add dsh-video-forge-0.1.0.tgz` → exit 0；装完的 `lib/client.js` 与仓库构建产物 **sha256 一致**（同版本 tarball 重装会被 pnpm 判 up-to-date、复用旧字节——这一步必须删 profile 重装，见 §13 纪律） |
+| 界面到位 | Plugins → Video Forge 详情页里，配置卡渲染出：供应商行、**协议下拉**（`Volcengine ARK · Seedance` / `OpenAI-Videos compatible`）、**"添加供应商"下拉**（方舟 / OpenAI(Sora) / 自建网关）、**默认供应商下拉**（选中的 `fixture`）、**默认模型下拉**（`Fixture Seedance (doubao-seedance-fixture)`）、模式复选框、能力列表、限额与存储字段——即 §8.1 的每一条都在真实宿主里生效 |
+| 从预设加一个供应商 | 选 `OpenAI (Sora)` → 点 Add → 出现第二张供应商卡片，**协议已被预设置为 OpenAI-Videos compatible**、`authRef` 为 `OPENAI_API_KEY`、模型为 `sora-2`；凭据行在同一次渲染里多出 `OPENAI_API_KEY` 一行（凭据行跟随编辑中的列表，不是跟随已保存的配置） |
+| **保存真的落进宿主** | 点 Save 后卡片显示 `Saved`；随后宿主自己的视图 `GET /video-forge/api/overview` 返回**两个** provider：`fixture / ark-seedance / http://127.0.0.1:34799/api/v3` 与 `openai / generic-openai-videos / https://api.openai.com/v1 / models=[sora-2]`——浏览器编辑 → 宿主配置 → 插件运行时这条链是通的 |
+| **客户端校验真的拦得住** | 再加一个"自建网关/中转"预设（Base URL 为空）→ Save → 卡片报 `Save failed` + **`Provider #3 has no base URL.`**，且**没有**发出任何写请求（配置仍是上面那两个 provider） |
+| 收尾 | 浏览器 `close --all`；`lsof -nP -iTCP:34781` 为空、`ps` 无遗留宿主进程；用户的 3080 实例（PID 75498）全程未被触碰 |
+
 ## 14. 里程碑
 
 - **M0 协议探针（先做）**：用 `fixtures/` 假 provider 钉死两家协议（`generic-openai-videos` / `ark-seedance`）的提交、查询、终态、失败、取消五种响应形状；**同时验证 `ctx.jobs` 承载 provider 侧轮询**这一无前例的设计原语——若不合适，退化为 iris 式自管任务存储（台账独立存在，退化成本低）。有真 key 时补打一次真实 Seedance 出片，钉死真实响应与耗时。
 - **M1 骨架（2026-10-13 完成，见 §13 实测表）**：包 + manifest + 4 个工具 + 台账 + 两家协议 + `$DSH_HOME` 产物 + 自建路由（Range/206）+ 播放卡片，81 例测试 + 隔离实例端到端。**未做**：`shell.overlay` 工作台浮层与 `settings.section` 设置卡片（原属 M2）、会话附件 id 素材（§4 说明）、真实在线 key 验证。
 - **M2 面板与配置（2026-10-13 完成，见 §13 实测表）**：工作台页（`main` + `sidebar.panellist`）、环境 badge（`shell.overlay`）、配置卡（`plugins.bundle.config` 主位 + `settings.plugins.tab` 回退）、面板 API 族 + 信任门、双语文案、114 例测试。**密钥写入**：走官方 `remote.credentials`（见 §5），卡片里可直接设/清；**未做**：会话附件 id 素材（§4）、真实在线 key 的端到端验证。
+- **M2.1 配置界面（2026-10-14 完成，见 §8.1 / §13 实测表）**：供应商改为**预设目录 + 行编辑器**（可加多个、id 自动去重），协议/默认供应商/默认模型改成选项，能力字段进表单，JSON 降级为高级视图；新增 `provider-presets.ts`（纯数据 + 读写/校验），`SUPPORTED_PROTOCOLS` 收成单一声明；客户端校验带行号、JSON 视图同一套校验。测试 120 → **161 例**，并在真浏览器里走通"加供应商 → 保存 → 宿主视图出现两个 provider"与"缺 Base URL 被拦下"。**仍未做**：会话附件 id 素材、真实在线 key 端到端、`conversation.view` 任务 tab。
 - **M3 协议扩展**：可灵 →（可选）Veo，能力矩阵与成本门控。
 - **M4 收口**：测试补齐、打包（npm/tarball）、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
 

@@ -4,11 +4,12 @@ Online-model video generation for [DeepSeek Harness](https://github.com/deepseek
 four model-facing tools plus inline playback, with every generation tracked in a
 durable ledger so a timeout or a restart never means paying twice.
 
-> **Status: M2.** Tools, ledger, two online protocols, artifact storage, the
+> **Status: M2.1.** Tools, ledger, two online protocols, artifact storage, the
 > Range-capable media route, the chat playback cards, the workbench page and the
 > configuration card are implemented and verified against an offline provider
-> double plus a live isolated DSH instance. There is no local inference path by
-> design — this plugin is a client of online models only.
+> double plus a live isolated DSH instance (the configuration card was driven in
+> a real browser there). There is no local inference path by design — this plugin
+> is a client of online models only.
 
 ## What it does
 
@@ -39,7 +40,12 @@ host's credential service first and the environment second
 dsh plugin --profile web add dsh-video-forge
 ```
 
-Then configure at least one provider (Settings → the `video-forge` row):
+Then configure at least one provider. The usual way is the plugin's page in the
+GUI (**Sidebar → Plugins → Video Forge**), which offers the providers this build
+supports — Volcengine ARK (Seedance), OpenAI (Sora), or a custom
+OpenAI-Videos-compatible gateway — as a pick list, fills in the base URL,
+credential reference and a starter model, and lets you add several. The same
+config can be written by hand:
 
 ```yaml
 - id: video-forge
@@ -67,7 +73,7 @@ Then configure at least one provider (Settings → the `video-forge` row):
 | Chat | Result cards with a real `<video>` player, per tool call |
 | Sidebar → Video workbench | Submit a generation, watch tasks, cancel, play, export |
 | Bottom-right badge | How many tasks are in flight (hidden when none are) |
-| Sidebar → Plugins → Video Forge | Providers, models, defaults, limits, and the API key (stored through the harness credential service; only a masked tail is ever shown) |
+| Sidebar → Plugins → Video Forge | Providers and models as a form — the supported providers are a pick list, several can be added, and the protocol, default provider and default model are all choices rather than text; the API key is stored through the harness credential service and only a masked tail is ever shown |
 
 The browser side talks to `/video-forge/api/…`, which is loopback-only unless the
 browser is a paired device — the harness does not gate plugin routes, so this
