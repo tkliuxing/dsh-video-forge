@@ -17,6 +17,14 @@ export type VideoTaskStatus =
 /** Input shape of a generation, exactly one mutually exclusive scenario. */
 export type VideoMode = 't2v' | 'i2v' | 'flf2v' | 's2v'
 
+/**
+ * Every mode, in the order a form should offer them. Declared once because the
+ * request validator, the capability schema and the configuration card all have
+ * to agree on the set — a mode that exists in one of them and not the others is
+ * a value the UI cannot express and the runtime cannot validate.
+ */
+export const VIDEO_MODES: readonly VideoMode[] = ['t2v', 'i2v', 'flf2v', 's2v']
+
 /** Where a piece of input material comes from. */
 export type MaterialKind = 'path' | 'attachment' | 'url'
 

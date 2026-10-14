@@ -13,8 +13,10 @@
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { SUPPORTED_PROTOCOLS } from './provider-presets.ts'
 import type { ProviderSetting, VideoForgeSettings } from './settings.ts'
 import { DEFAULT_ENDPOINTS } from './settings.ts'
+import { VIDEO_MODES } from './types.ts'
 
 /** The live reference-valued config DSH hands to `apply`. */
 export interface Config {
@@ -35,7 +37,7 @@ export interface Config {
 const model = z.object({
   id: z.string().description('Provider-side model id, e.g. doubao-seedance-1-0-pro-250528'),
   label: z.string().default('').description('Display name; falls back to the id'),
-  modes: z.array(z.union(['t2v', 'i2v', 'flf2v', 's2v'])).default(['t2v']),
+  modes: z.array(z.union([...VIDEO_MODES])).default(['t2v']),
   durations: z.array(z.number()).default([]).description('Allowed seconds; empty means provider default'),
   resolutions: z.array(z.string()).default([]),
   aspectRatios: z.array(z.string()).default([]),
@@ -67,7 +69,7 @@ const endpoints = z.object({
 
 const provider = z.object({
   id: z.string().description('Stable id referenced by providerId::modelId'),
-  protocol: z.union(['ark-seedance', 'generic-openai-videos']).default('generic-openai-videos'),
+  protocol: z.union([...SUPPORTED_PROTOCOLS]).default('generic-openai-videos'),
   baseUrl: z.string().description('API root, e.g. https://ark.cn-beijing.volces.com/api/v3'),
   authRef: z.string().default('').description('Credential reference name, e.g. ARK_API_KEY; empty for a keyless gateway'),
   models: z.array(model).default([]),

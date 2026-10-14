@@ -6,6 +6,7 @@
  * Nothing here touches a DSH service, so every rule below is unit-testable.
  */
 
+import type { SupportedProtocol } from './provider-presets.ts'
 import type { VideoMode } from './types.ts'
 
 /** Directory name under `$DSH_HOME` for the ledger, artifacts and quarantine files. */
@@ -74,7 +75,7 @@ export interface ModelSetting {
 
 export interface ProviderSetting {
   id: string
-  protocol: 'ark-seedance' | 'generic-openai-videos'
+  protocol: SupportedProtocol
   baseUrl: string
   /** Credential reference; empty means the endpoint needs no key. */
   authRef: string

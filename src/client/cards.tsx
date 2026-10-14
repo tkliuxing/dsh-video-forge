@@ -22,10 +22,12 @@ import {
   parseArgs,
   type StatusRow,
 } from './video-card-model.ts'
-import type { VideoForgeKey } from './locales.ts'
 
 /** The seat the framework injects when a registration declares `locale:`. */
-export type Translate = (key: VideoForgeKey, params?: Record<string, unknown>) => string
+import type { Translate } from './locales.ts'
+
+/** Re-exported for the surfaces composed from this module's cards. */
+export type { Translate }
 
 /** Props this card reads. Deliberately a subset of the composed slot props. */
 export interface VideoCardProps {

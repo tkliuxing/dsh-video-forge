@@ -7,20 +7,32 @@
  * - **The harness owns schema-driven field editing.** Every value here is written
  *   through the same settings form the harness generates, so validation, layering
  *   and revision conflict handling stay in one place.
- * - **This card owns what needs explaining**: whether each provider's credential
- *   actually resolves (masked, never the value), what each model can do, what the
- *   artifact directory is, and the cost-relevant limits.
+ * - **This card owns what needs explaining**: which providers this build
+ *   supports and how to add one, whether each credential actually resolves
+ *   (masked, never the value), what each model can do, where artifacts land, and
+ *   the cost-relevant limits.
  *
- * Provider definitions themselves are a nested array, so they are edited as JSON
- * rather than as a hand-built matrix editor — full capability, no invented
- * widgets, and a parse error is reported instead of silently dropped.
+ * The provider list has two views onto one value: rows (`providers-editor.tsx`)
+ * for the ordinary case, and a JSON textarea for the case rows cannot express.
+ * Editing either one is editing the list — the text is the authority while it is
+ * what the operator typed, the rows are the authority after a row edit, and no
+ * save ever writes a mix of the two.
  */
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { fetchOverview, type PanelProvider } from './panel-api.ts'
-import type { VideoForgeKey } from './locales.ts'
+import {
+  authRefs,
+  readProviders,
+  serializeProvider,
+  validateDrafts,
+  type DraftProblem,
+  type ProviderDraft,
+} from '../provider-presets.ts'
+import { fetchOverview, type PanelOverview, type PanelProvider } from './panel-api.ts'
+import { ProvidersEditor, credentialSummary } from './providers-editor.tsx'
+import type { Translate } from './locales.ts'
 
-export type Translate = (key: VideoForgeKey, params?: Record<string, unknown>) => string
+export type { Translate }
 
 /** Persisted plugin config as the browser sees it. */
 export interface ClientConfigShape {
@@ -82,6 +94,19 @@ export interface SettingsCardProps {
   unsetCredential: ConfigFace['unsetCredential']
 }
 
+/**
+ * How the provider list is currently being edited.
+ *
+ * `null` means "as stored". The other two variants are not two copies of the
+ * list but two *sources* for it: a row edit produces drafts, a text edit
+ * produces JSON, and each render derives the other view from whichever one is
+ * live. That is what keeps the form and the textarea from disagreeing.
+ */
+type ProviderEdit =
+  | { kind: 'form'; drafts: ProviderDraft[] }
+  | { kind: 'json'; text: string }
+  | null
+
 const WRAP: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '14px', padding: '4px 0' }
 const SECTION: CSSProperties = { display: 'flex', flexDirection: 'column', gap: '8px' }
 const ROW: CSSProperties = { display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end' }
@@ -99,16 +124,18 @@ const ERROR: CSSProperties = { fontSize: '0.85em', color: 'var(--dsw-alias-dange
 const OK: CSSProperties = { fontSize: '0.85em', color: 'var(--dsw-alias-success, #237804)' }
 const HEADING: CSSProperties = { margin: 0, fontSize: '0.95em' }
 const BUTTON: CSSProperties = { ...INPUT, cursor: 'pointer', flex: '0 0 auto' }
-const TABLE: CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }
-const CELL: CSSProperties = { textAlign: 'left', padding: '4px 8px 4px 0', verticalAlign: 'top' }
+const SUMMARY: CSSProperties = { cursor: 'pointer', fontSize: '0.85em', opacity: 0.8 }
 
 /** The configuration card. */
 export function SettingsCard(props: SettingsCardProps): ReactNode {
   const { t, useConfig, save, describeCredential, setCredential, unsetCredential } = props
   const snapshot = useConfig()
   const config = snapshot.value
-  const [providers, setProviders] = useState<PanelProvider[] | null>(null)
-  const [providersDraft, setProvidersDraft] = useState<string | null>(null)
+
+  const [overview, setOverview] = useState<PanelOverview | null>(null)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
+  const [edit, setEdit] = useState<ProviderEdit>(null)
+  const [jsonOpen, setJsonOpen] = useState(false)
   const [draft, setDraft] = useState<Partial<ClientConfigShape>>({})
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -121,76 +148,167 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
     let live = true
     void fetchOverview().then(result => {
       if (!live) return
-      if (result.ok) setProviders(result.value.providers)
-      else setError(result.error)
+      if (result.ok) {
+        setOverview(result.value)
+        setOverviewError(null)
+      } else {
+        setOverviewError(result.error)
+      }
     })
     return () => { live = false }
   }, [])
 
-  // Credential state comes from the host's own authority on the question, not from
-  // the cached overview: only the host knows whether a key now exists.
+  // --- the provider list, in whichever view is live -------------------------
+
+  const stored = useMemo(() => readProviders(config?.providers), [config?.providers])
+
+  // A text edit parses to a raw value, which is what a save would write; the
+  // rows are derived from the same text so both views show one list. The derived
+  // rows are memoised on the parse result rather than on the render, because a
+  // fresh array per render would re-run the credential effect forever.
+  const jsonValue = useMemo(() => (edit?.kind === 'json' ? parseJson(edit.text) : null), [edit])
+  const jsonBroken = edit?.kind === 'json' && (jsonValue === null || !jsonValue.ok)
+  const jsonDrafts = useMemo(
+    () => (jsonValue !== null && jsonValue.ok ? readProviders(jsonValue.value).drafts : []),
+    [jsonValue],
+  )
+
+  const drafts: ProviderDraft[] = edit === null
+    ? stored.drafts
+    : edit.kind === 'form'
+      ? edit.drafts
+      : jsonDrafts
+
+  const jsonText = useMemo(() => {
+    if (edit?.kind === 'json') return edit.text
+    if (stored.problem !== null) return JSON.stringify(config?.providers ?? [], null, 2)
+    return JSON.stringify(drafts.map(serializeProvider), null, 2)
+  }, [edit, stored.problem, config?.providers, drafts])
+
+  const statusById = useCallback(
+    (id: string): PanelProvider | undefined => overview?.providers.find(provider => provider.id === id),
+    [overview],
+  )
+
+  // --- credentials ----------------------------------------------------------
+
+  // Credential state comes from the host's own authority on the question, not
+  // from the cached overview: only the host knows whether a key now exists.
   const refreshCredentials = useCallback(async (refs: readonly string[]) => {
     const entries = await Promise.all(refs.map(async ref => [ref, await describeCredential(ref)] as const))
     setCredentials(Object.fromEntries(entries))
   }, [describeCredential])
 
-  // The key rows come from the configuration, not from the workbench API: the
-  // credential channel is independent of it, and a provider whose status could not
-  // be fetched is exactly the one whose key the operator may need to fix. Refs are
-  // deduplicated because two providers may legitimately share one.
-  const credentialRefs = useMemo(() => {
-    const refs = new Set<string>()
-    for (const provider of config?.providers ?? []) {
-      const ref = (provider as { authRef?: unknown } | null)?.authRef
-      if (typeof ref === 'string' && ref.trim() !== '') refs.add(ref.trim())
-    }
-    return [...refs]
-  }, [config?.providers])
+  // The key rows follow the *edited* list, so a provider that was just added
+  // already offers its key. An empty reference means "no key needed", which is
+  // why the refs are collected rather than rendered per row.
+  const credentialRefs = useMemo(() => authRefs(drafts), [drafts])
 
   useEffect(() => {
     if (credentialRefs.length > 0) void refreshCredentials(credentialRefs)
   }, [credentialRefs, refreshCredentials])
 
+  // --- derived values -------------------------------------------------------
+
   const effective = useMemo(() => ({ ...config, ...draft }) as Partial<ClientConfigShape>, [config, draft])
-  const dirty = Object.keys(draft).length > 0 || providersDraft !== null
+  const dirty = Object.keys(draft).length > 0 || edit !== null
+
+  const defaultProviderId = (effective.defaultProvider ?? '') !== ''
+    ? effective.defaultProvider ?? ''
+    : drafts[0]?.id ?? ''
+  const defaultModels = drafts.find(provider => provider.id === defaultProviderId)?.models ?? []
 
   const setField = useCallback((key: keyof ClientConfigShape, value: unknown) => {
     setState('idle')
     setDraft(current => ({ ...current, [key]: value }))
   }, [])
 
+  const editProviders = useCallback((next: ProviderDraft[]) => {
+    setState('idle')
+    setError(null)
+    setEdit({ kind: 'form', drafts: next })
+  }, [])
+
+  const discard = useCallback(() => {
+    setDraft({})
+    setEdit(null)
+    setError(null)
+    setState('idle')
+  }, [])
+
   const commit = useCallback(async () => {
     const ops: ConfigPatch[] = Object.entries(draft).map(([key, value]) => ({ op: 'set', path: [key], value }))
-    if (providersDraft !== null) {
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(providersDraft)
-      } catch (parseError) {
-        setState('failed')
-        setError(`providers is not valid JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`)
-        return
+
+    if (edit !== null) {
+      if (edit.kind === 'form') {
+        const problem = validateDrafts(edit.drafts)
+        if (problem !== null) {
+          setState('failed')
+          setError(problemMessage(t, problem))
+          return
+        }
+        ops.push({ op: 'set', path: ['providers'], value: edit.drafts.map(serializeProvider) })
+      } else {
+        const parsed = parseJson(edit.text)
+        if (parsed === null) {
+          setState('failed')
+          setJsonOpen(true)
+          setError(t('config.providersJsonEmpty'))
+          return
+        }
+        if (!parsed.ok) {
+          setState('failed')
+          setJsonOpen(true)
+          setError(t('config.providersJsonInvalid', { message: parsed.message }))
+          return
+        }
+        if (!Array.isArray(parsed.value)) {
+          setState('failed')
+          setJsonOpen(true)
+          setError(t('config.providersJsonNotArray'))
+          return
+        }
+        // The text is written verbatim, but not blindly: a list the runtime could
+        // not use — an entry that is not a provider, two rows under one id, a row
+        // with no base URL — is refused here, where the sentence can name the row.
+        const read = readProviders(parsed.value)
+        if (read.problem !== null) {
+          setState('failed')
+          setJsonOpen(true)
+          setError(t('config.providersJsonShape'))
+          return
+        }
+        const problem = validateDrafts(read.drafts)
+        if (problem !== null) {
+          setState('failed')
+          setJsonOpen(true)
+          setError(problemMessage(t, problem))
+          return
+        }
+        // What the operator typed is what gets written: the textarea is the
+        // lower-level view, so it is not re-normalised on the way through.
+        ops.push({ op: 'set', path: ['providers'], value: parsed.value })
       }
-      if (!Array.isArray(parsed)) {
-        setState('failed')
-        setError('providers must be a JSON array')
-        return
-      }
-      ops.push({ op: 'set', path: ['providers'], value: parsed })
     }
+
     if (ops.length === 0) return
 
     setState('saving')
     setError(null)
     const accepted = await save(ops)
     if (!accepted) {
+      // A refusal carries no detail — the form's `mutate` answers true or false —
+      // so the header's own "Save failed" is the whole message. A second copy of
+      // the same sentence here would be noise, which is why the error line stays
+      // reserved for problems the operator can act on.
       setState('failed')
-      setError(t('config.saveFailed'))
+      setError(null)
       return
     }
     setState('saved')
     setDraft({})
-    setProvidersDraft(null)
-  }, [draft, providersDraft, save, t])
+    setEdit(null)
+  }, [draft, edit, save, t])
 
   if (snapshot.status === 'loading') return <div style={{ ...WRAP, ...MUTED }}>{t('config.loading')}</div>
 
@@ -207,6 +325,14 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
           <button
             type="button"
             style={{ ...INPUT, cursor: dirty && !readOnly ? 'pointer' : 'default' }}
+            disabled={!dirty || readOnly}
+            onClick={discard}
+          >
+            {t('config.discard')}
+          </button>
+          <button
+            type="button"
+            style={{ ...INPUT, cursor: dirty && !readOnly ? 'pointer' : 'default' }}
             disabled={!dirty || readOnly || state === 'saving'}
             onClick={() => { void commit() }}
           >
@@ -217,119 +343,63 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
 
       {readOnly ? <div style={MUTED}>{t('config.readonly')}</div> : null}
       {error === null ? null : <div style={ERROR}>{error}</div>}
+      {overviewError === null ? null : <div style={MUTED}>{`${t('config.overviewUnavailable')} ${overviewError}`}</div>}
       {keyNotice === null ? null : <div style={MUTED}>{keyNotice}</div>}
 
       <section style={SECTION}>
-        <strong style={HEADING}>{t('config.defaults')}</strong>
-        <div style={ROW}>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.enabled')}</span>
-            <input
-              type="checkbox"
-              checked={effective.enabled === true}
-              disabled={readOnly}
-              onChange={event => { setField('enabled', event.target.checked) }}
-            />
-          </label>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.defaultProvider')}</span>
-            <input
-              style={INPUT}
-              value={effective.defaultProvider ?? ''}
-              disabled={readOnly}
-              onChange={event => { setField('defaultProvider', event.target.value) }}
-            />
-          </label>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.defaultModel')}</span>
-            <input
-              style={INPUT}
-              value={effective.defaultModel ?? ''}
-              disabled={readOnly}
-              onChange={event => { setField('defaultModel', event.target.value) }}
-            />
-          </label>
-        </div>
-      </section>
-
-      <section style={SECTION}>
-        <strong style={HEADING}>{t('config.limits')}</strong>
-        <div style={ROW}>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.maxConcurrent')}</span>
-            <input
-              style={INPUT}
-              type="number"
-              min={1}
-              value={effective.maxConcurrent ?? 1}
-              disabled={readOnly}
-              onChange={event => { setField('maxConcurrent', Number(event.target.value)) }}
-            />
-          </label>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.pollInterval')}</span>
-            <input
-              style={INPUT}
-              type="number"
-              min={1000}
-              value={effective.pollIntervalMs ?? 5000}
-              disabled={readOnly}
-              onChange={event => { setField('pollIntervalMs', Number(event.target.value)) }}
-            />
-          </label>
-          <label style={FIELD}>
-            <span style={MUTED}>{t('config.dedupeWindow')}</span>
-            <input
-              style={INPUT}
-              type="number"
-              min={0}
-              value={effective.dedupeWindowSeconds ?? 120}
-              disabled={readOnly}
-              onChange={event => { setField('dedupeWindowSeconds', Number(event.target.value)) }}
-            />
-          </label>
-        </div>
-        <div style={MUTED}>{`${t('config.outputRoot')}: ${effective.outputDir === undefined || effective.outputDir === '' ? '(default)' : effective.outputDir}`}</div>
-      </section>
-
-      <section style={SECTION}>
         <strong style={HEADING}>{t('config.providers')}</strong>
-        {providers === null
-          ? <div style={MUTED}>{t('config.loading')}</div>
-          : providers.length === 0
-            ? <div style={MUTED}>{t('config.noProviders')}</div>
-            : (
-                <table style={TABLE}>
-                  <tbody>
-                    {providers.map(provider => (
-                      <tr key={provider.id} style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #eee)' }}>
-                        <td style={CELL}>
-                          <strong>{provider.id}</strong>
-                          <div style={MUTED}>{provider.protocol}</div>
-                          <div style={MUTED}>{provider.baseUrl}</div>
-                        </td>
-                        <td style={CELL}>
-                          <div>{t('config.credential')}</div>
-                          <div style={provider.credential.configured ? MUTED : ERROR}>
-                            {credentialLabel(t, provider)}
-                          </div>
-                        </td>
-                        <td style={CELL}>
-                          <div>{t('config.models')}</div>
-                          {provider.models.map(model => (
-                            <div key={model.id} style={MUTED}>
-                              {`${model.label}: ${model.modes.join('/')}`}
-                              {model.durations.length === 0 ? '' : ` · ${model.durations.join('/')}s`}
-                              {model.resolutions.length === 0 ? '' : ` · ${model.resolutions.join('/')}`}
-                            </div>
-                          ))}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+        {stored.problem !== null && edit === null
+          ? <div style={MUTED}>{t('config.providersUnrepresentable')}</div>
+          : (
+              <ProvidersEditor
+                t={t}
+                providers={drafts}
+                status={statusById}
+                credential={ref => credentials[ref]}
+                readOnly={readOnly}
+                onChange={editProviders}
+              />
+            )}
+
+        <details
+          open={jsonOpen || jsonBroken}
+          onToggle={event => { setJsonOpen(event.currentTarget.open) }}
+        >
+          <summary style={SUMMARY}>{t('config.providersJson')}</summary>
+          <label style={{ ...FIELD, marginTop: '6px' }}>
+            <span style={MUTED}>{`${t('config.providers')} (JSON)`}</span>
+            <textarea
+              style={{
+                ...INPUT,
+                minHeight: '140px',
+                fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                fontSize: '0.85em',
+                borderColor: jsonBroken ? 'var(--dsw-alias-danger, #d4380d)' : undefined,
+              }}
+              value={jsonText}
+              disabled={readOnly}
+              onChange={event => {
+                setState('idle')
+                setEdit({ kind: 'json', text: event.target.value })
+              }}
+            />
+          </label>
+          <div style={MUTED}>{t('config.providersJsonHint')}</div>
+        </details>
+
         <div style={MUTED}>{t('config.credentialHint')}</div>
+        {credentialRefs.length === 0
+          ? null
+          : (
+              <button
+                type="button"
+                style={BUTTON}
+                disabled={readOnly}
+                onClick={() => { void refreshCredentials(credentialRefs) }}
+              >
+                {t('config.recheck')}
+              </button>
+            )}
         {credentialRefs.map(ref => (
           <CredentialRow
             key={ref}
@@ -373,18 +443,160 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
             }}
           />
         ))}
-        <label style={FIELD}>
-          <span style={MUTED}>{`${t('config.providers')} (JSON)`}</span>
-          <textarea
-            style={{ ...INPUT, minHeight: '120px', fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: '0.85em' }}
-            value={providersDraft ?? (config === undefined ? '' : JSON.stringify(config.providers, null, 2))}
-            disabled={readOnly}
-            onChange={event => {
-              setState('idle')
-              setProvidersDraft(event.target.value)
-            }}
-          />
-        </label>
+      </section>
+
+      <section style={SECTION}>
+        <strong style={HEADING}>{t('config.defaults')}</strong>
+        <div style={ROW}>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.enabled')}</span>
+            <input
+              type="checkbox"
+              checked={effective.enabled === true}
+              disabled={readOnly}
+              onChange={event => { setField('enabled', event.target.checked) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.defaultProvider')}</span>
+            <select
+              style={INPUT}
+              value={effective.defaultProvider ?? ''}
+              disabled={readOnly || drafts.length === 0}
+              onChange={event => {
+                // A model id belongs to one provider: carrying a stale one across
+                // a provider switch would make every default call fail the
+                // "does not declare model" check, so it is dropped with the switch.
+                setState('idle')
+                setDraft(current => ({ ...current, defaultProvider: event.target.value, defaultModel: '' }))
+              }}
+            >
+              <option value="">{t('config.defaultFirst')}</option>
+              {/* Index keys: a duplicate provider id is exactly what the editor
+                  refuses to save, so the option list must survive seeing one. */}
+              {drafts.map((provider, index) => <option key={index} value={provider.id}>{provider.id}</option>)}
+            </select>
+            {drafts.length === 0 ? <span style={MUTED}>{t('config.noProvidersYet')}</span> : null}
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.defaultModel')}</span>
+            <select
+              style={INPUT}
+              value={effective.defaultModel ?? ''}
+              disabled={readOnly || defaultModels.length === 0}
+              onChange={event => { setField('defaultModel', event.target.value) }}
+            >
+              <option value="">{t('config.defaultFirstModel')}</option>
+              {defaultModels.map((model, index) => (
+                <option key={index} value={model.id}>
+                  {model.label === '' ? model.id : `${model.label} (${model.id})`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section style={SECTION}>
+        <strong style={HEADING}>{t('config.limits')}</strong>
+        <div style={ROW}>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.maxConcurrent')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={1}
+              value={effective.maxConcurrent ?? 1}
+              disabled={readOnly}
+              onChange={event => { setField('maxConcurrent', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.pollInterval')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={1000}
+              value={effective.pollIntervalMs ?? 5000}
+              disabled={readOnly}
+              onChange={event => { setField('pollIntervalMs', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.dedupeWindow')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={0}
+              value={effective.dedupeWindowSeconds ?? 120}
+              disabled={readOnly}
+              onChange={event => { setField('dedupeWindowSeconds', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.waitSecondsMax')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={0}
+              value={effective.waitSecondsMax ?? 600}
+              disabled={readOnly}
+              onChange={event => { setField('waitSecondsMax', Number(event.target.value)) }}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section style={SECTION}>
+        <strong style={HEADING}>{t('config.storage')}</strong>
+        <div style={ROW}>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.maxTasks')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={1}
+              value={effective.maxTasks ?? 200}
+              disabled={readOnly}
+              onChange={event => { setField('maxTasks', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.maxGiB')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={0}
+              value={effective.maxGiB ?? 20}
+              disabled={readOnly}
+              onChange={event => { setField('maxGiB', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={FIELD}>
+            <span style={MUTED}>{t('config.requestTimeout')}</span>
+            <input
+              style={INPUT}
+              type="number"
+              min={1000}
+              value={effective.requestTimeoutMs ?? 120_000}
+              disabled={readOnly}
+              onChange={event => { setField('requestTimeoutMs', Number(event.target.value)) }}
+            />
+          </label>
+          <label style={{ ...FIELD, flex: '2 1 260px' }}>
+            <span style={MUTED}>{t('config.outputDir')}</span>
+            <input
+              style={INPUT}
+              placeholder={overview?.settings.outputRoot ?? ''}
+              value={effective.outputDir ?? ''}
+              disabled={readOnly}
+              onChange={event => { setField('outputDir', event.target.value) }}
+            />
+          </label>
+        </div>
+        <div style={MUTED}>
+          {`${t('config.outputRoot')}: ${overview?.settings.outputRoot ?? t('config.outputRootUnknown')}`}
+        </div>
       </section>
     </div>
   )
@@ -424,7 +636,9 @@ function CredentialRow({ ref_, t, state, draft, busy, onDraft, onSave, onClear }
           disabled={busy || !writable}
           onChange={event => { onDraft(event.target.value) }}
         />
-        {state?.configured === true ? <span style={MUTED}>{t('config.keyExists', { ref: ref_ })}</span> : null}
+        {state?.configured === true
+          ? <span style={MUTED}>{credentialSummary(t, ref_, undefined, state).text}</span>
+          : null}
         {state?.writable === false ? <span style={MUTED}>{t('config.keyReadOnly')}</span> : null}
         {state?.error === null || state?.error === undefined ? null : <span style={ERROR}>{state.error}</span>}
       </label>
@@ -448,11 +662,28 @@ function CredentialRow({ ref_, t, state, draft, busy, onDraft, onSave, onClear }
   )
 }
 
-function credentialLabel(t: Translate, provider: PanelProvider): string {
-  const { configured, masked, source, error } = provider.credential
-  if (!configured) {
-    return error === null ? t('config.credentialMissing') : `${t('config.credentialMissing')} — ${error}`
+/** Parse the JSON textarea; null when the text is empty, else the value or the reason. */
+function parseJson(text: string): { ok: true; value: unknown } | { ok: false; message: string } | null {
+  if (text.trim() === '') return null
+  try {
+    return { ok: true, value: JSON.parse(text) }
+  } catch (parseError: unknown) {
+    return { ok: false, message: parseError instanceof Error ? parseError.message : String(parseError) }
   }
-  if (masked === null) return t('config.credentialKeyless')
-  return t('config.credentialConfigured', { masked, source: source ?? '' })
+}
+
+/** Word a configuration mistake so the operator knows which row and field to fix. */
+function problemMessage(t: Translate, problem: DraftProblem): string {
+  switch (problem.code) {
+    case 'providerIdEmpty':
+      return t('config.problem.providerIdEmpty', { index: problem.index + 1 })
+    case 'providerIdDuplicate':
+      return t('config.problem.providerIdDuplicate', { index: problem.index + 1, id: problem.id })
+    case 'baseUrlEmpty':
+      return t('config.problem.baseUrlEmpty', { index: problem.index + 1 })
+    case 'modelIdEmpty':
+      return t('config.problem.modelIdEmpty', { index: problem.index + 1, model: problem.modelIndex + 1 })
+    case 'modelIdDuplicate':
+      return t('config.problem.modelIdDuplicate', { index: problem.index + 1, model: problem.modelIndex + 1, id: problem.id })
+  }
 }

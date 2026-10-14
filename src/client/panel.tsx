@@ -23,9 +23,11 @@ import {
   type SubmitInput,
 } from './panel-api.ts'
 import type { VideoMode } from '../types.ts'
-import type { VideoForgeKey } from './locales.ts'
 
-export type Translate = (key: VideoForgeKey, params?: Record<string, unknown>) => string
+import type { Translate } from './locales.ts'
+
+/** Re-exported for the surfaces composed from this module's cards. */
+export type { Translate }
 
 /** Props this page reads: a subset of the composed `main`-slot props. */
 export interface WorkbenchProps {
@@ -158,6 +160,17 @@ export function WorkbenchPage(props: WorkbenchProps): ReactNode {
   const providers = overview?.providers ?? []
   const tasks = overview?.tasks ?? []
 
+  // The selected target's declared capabilities drive the geometry controls: a
+  // model that declares its lengths, resolutions or aspect ratios is a choice,
+  // and one that declares none is free text. Offering a value the provider will
+  // refuse — or hiding one it accepts — is how a workbench turns into a guessing
+  // game, so each control follows the model rather than a house default.
+  const selectedProvider = providers.find(provider => provider.id === draft.provider) ?? providers[0]
+  const selectedModel = selectedProvider?.models.find(model => model.id === draft.model) ?? selectedProvider?.models[0]
+  const durations = selectedModel?.durations ?? []
+  const resolutions = selectedModel?.resolutions ?? []
+  const aspectRatios = selectedModel?.aspectRatios ?? []
+
   return (
     <div style={PAGE}>
       <section style={PANEL} aria-label={t('panel.title')}>
@@ -232,35 +245,59 @@ export function WorkbenchPage(props: WorkbenchProps): ReactNode {
             <select
               style={INPUT}
               value={draft.durationSeconds ?? ''}
+              disabled={durations.length === 0}
               onChange={event => {
                 const value = event.target.value
                 setDraft(current => ({ ...current, durationSeconds: value === '' ? null : Number(value) }))
               }}
             >
               <option value="">{t('panel.duration.any')}</option>
-              {(providers.find(provider => provider.id === draft.provider) ?? providers[0])?.models
-                .flatMap(model => model.durations)
-                .filter((value, index, all) => all.indexOf(value) === index)
-                .map(seconds => <option key={seconds} value={seconds}>{seconds}s</option>)}
+              {durations.map(seconds => <option key={seconds} value={seconds}>{`${seconds}s`}</option>)}
             </select>
           </label>
           <label style={FIELD}>
             <span style={MUTED}>{t('panel.resolution')}</span>
-            <input
-              style={INPUT}
-              value={draft.resolution ?? ''}
-              placeholder="720p"
-              onChange={event => { setDraft(current => ({ ...current, resolution: event.target.value })) }}
-            />
+            {resolutions.length === 0
+              ? (
+                  <input
+                    style={INPUT}
+                    value={draft.resolution ?? ''}
+                    placeholder={t('panel.undeclared')}
+                    onChange={event => { setDraft(current => ({ ...current, resolution: event.target.value })) }}
+                  />
+                )
+              : (
+                  <select
+                    style={INPUT}
+                    value={draft.resolution ?? ''}
+                    onChange={event => { setDraft(current => ({ ...current, resolution: event.target.value })) }}
+                  >
+                    <option value="">{t('panel.default')}</option>
+                    {resolutions.map(value => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                )}
           </label>
           <label style={FIELD}>
             <span style={MUTED}>{t('panel.aspectRatio')}</span>
-            <input
-              style={INPUT}
-              value={draft.aspectRatio ?? ''}
-              placeholder="16:9"
-              onChange={event => { setDraft(current => ({ ...current, aspectRatio: event.target.value })) }}
-            />
+            {aspectRatios.length === 0
+              ? (
+                  <input
+                    style={INPUT}
+                    value={draft.aspectRatio ?? ''}
+                    placeholder={t('panel.undeclared')}
+                    onChange={event => { setDraft(current => ({ ...current, aspectRatio: event.target.value })) }}
+                  />
+                )
+              : (
+                  <select
+                    style={INPUT}
+                    value={draft.aspectRatio ?? ''}
+                    onChange={event => { setDraft(current => ({ ...current, aspectRatio: event.target.value })) }}
+                  >
+                    <option value="">{t('panel.default')}</option>
+                    {aspectRatios.map(value => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                )}
           </label>
         </div>
 

@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describeProviders, exportArtifact, generate, listTasks, cancelTask, type GenerateInput } from './operations.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
 import { isTrustedRequest } from './trust.ts'
-import type { VideoMode } from './types.ts'
+import { VIDEO_MODES, type VideoMode } from './types.ts'
 
 /** Route prefix for the workbench API family. */
 export const PANEL_ROUTE_PREFIX = '/video-forge/api'
@@ -99,12 +99,10 @@ function stringListField(body: Record<string, unknown>, key: string): string[] |
   return value as string[]
 }
 
-const MODES: readonly VideoMode[] = ['t2v', 'i2v', 'flf2v', 's2v']
-
 function modeField(body: Record<string, unknown>, key: string): VideoMode | undefined {
   const value = stringField(body, key)
   if (value === undefined) return undefined
-  if (!MODES.includes(value as VideoMode)) throw new RequestError(`${key} must be one of ${MODES.join(', ')}`)
+  if (!VIDEO_MODES.includes(value as VideoMode)) throw new RequestError(`${key} must be one of ${VIDEO_MODES.join(', ')}`)
   return value as VideoMode
 }
 

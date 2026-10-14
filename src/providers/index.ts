@@ -8,14 +8,20 @@
  */
 
 import type { ModelSetting, ProviderSetting } from '../settings.ts'
+import { SUPPORTED_PROTOCOLS } from '../provider-presets.ts'
 import type { ProtocolAdapter } from './adapter.ts'
 import { arkVideosAdapter } from './ark-seedance.ts'
 import { openAiVideosAdapter } from './generic-openai-videos.ts'
 
 export type ProtocolId = ProviderSetting['protocol']
 
-/** Protocols this build knows how to speak. */
-export const SUPPORTED_PROTOCOLS: readonly ProtocolId[] = ['ark-seedance', 'generic-openai-videos']
+/**
+ * Protocols this build knows how to speak. Declared in `provider-presets.ts`
+ * beside the vendor catalogue, because the configuration card offers the same
+ * list as choices; re-exported here so the protocol table stays one import away
+ * from its call sites.
+ */
+export { SUPPORTED_PROTOCOLS }
 
 /** Build the adapter for one provider+model pair. */
 export function adapterFor(provider: ProviderSetting, model: ModelSetting): ProtocolAdapter {
