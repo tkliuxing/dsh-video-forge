@@ -48,7 +48,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
 
   const home = resolveHome(ctx)
   // One ledger object per file for the whole process; see `sharedLedger`.
-  const { ledger, fresh } = sharedLedger({
+  const ledger = sharedLedger({
     path: join(pluginHome(home), 'tasks.json'),
     maxTasks: config.maxTasks.get(),
     maxGiB: config.maxGiB.get(),
@@ -162,7 +162,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   // The rows a previous process left are exactly those on disk at load time. A
   // row submitted while boot waits for the credential store has a watch of its
   // own and must not be "reconciled" into a second one.
-  const inherited = (fresh ? ledger.load() : ledger.ready())
+  const inherited = ledger.ensureLoaded()
     .catch((error: unknown) => {
       if (error instanceof LedgerCorruptError) {
         logger.warn(`video-forge: ${error.message}; starting from an empty ledger`)

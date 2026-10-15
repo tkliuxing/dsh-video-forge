@@ -21,7 +21,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { isAbsolute, extname, resolve as resolveAgainst } from 'node:path'
+import { isAbsolute, extname, posix, win32 } from 'node:path'
 import type { MaterialRef, ResolvedMaterial } from './types.ts'
 import { fsErrorCode, type WorkspaceFs } from './workspace-fs.ts'
 
@@ -163,8 +163,19 @@ async function resolvePath(value: string, context: ResolveContext): Promise<Reso
     mime,
     // One spelling per file for the fingerprint: `./a.png` and `/ws/a.png` are
     // the same request, or dedupe and the moderation block could be sidestepped.
-    location: context.cwd === null ? value : resolveAgainst(context.cwd, value),
+    location: canonicalLocation(value, context.cwd),
   }
+}
+
+/**
+ * One spelling per file, whoever called: resolved against the workspace when
+ * relative, normalised when absolute, in the workspace's own path syntax (a
+ * POSIX workspace on an SSH host stays POSIX on a Windows harness).
+ */
+function canonicalLocation(value: string, cwd: string | null): string {
+  const syntax = (cwd ?? value).startsWith('/') ? posix : win32
+  if (cwd !== null) return syntax.resolve(cwd, value)
+  return syntax.isAbsolute(value) ? syntax.normalize(value) : value
 }
 
 /** Short, prompt-free descriptor stored in the ledger (never the bytes). */

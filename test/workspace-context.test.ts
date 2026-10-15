@@ -203,8 +203,41 @@ describe('the ledger for one file', () => {
     const dir = await mkdtemp(join(tmpdir(), 'video-forge-shared-'))
     const first = sharedLedger({ path: join(dir, 'tasks.json'), maxTasks: 10, maxGiB: 1 })
     const second = sharedLedger({ path: join(dir, '.', 'tasks.json'), maxTasks: 20, maxGiB: 2 })
-    expect(first.fresh).toBe(true)
-    expect(second.fresh).toBe(false)
-    expect(second.ledger).toBe(first.ledger)
+    expect(second).toBe(first)
+  })
+
+  it('never writes over the file before a read has succeeded, even when the first holder never loaded it', async () => {
+    const { sharedLedger } = await import('../src/ledger.ts')
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-shared-'))
+    const path = join(dir, 'tasks.json')
+    const now = new Date().toISOString()
+    const existing = {
+      localId: 'v-paid', provider: 'ark', protocol: 'ark-seedance', model: 'm', providerTaskId: 'cgt-1', status: 'running', progress: null,
+      submittedAt: now, updatedAt: now, paramsFingerprint: 'fp',
+      params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+      artifacts: [], error: null,
+    }
+    await writeFile(path, JSON.stringify({ version: 1, tasks: [existing] }))
+    // The first plugin instance failed before loading; a re-applied one gets the same object.
+    sharedLedger({ path, maxTasks: 10, maxGiB: 1 })
+    const ledger = sharedLedger({ path, maxTasks: 10, maxGiB: 1 })
+    await expect(ledger.add({ ...existing, localId: 'v-new' } as never)).rejects.toThrow(/not loaded \(it was never read\); not writing over it/)
+    // Loading through the shared object keeps every recorded task.
+    await ledger.ensureLoaded()
+    await ledger.add({ ...existing, localId: 'v-new' } as never)
+    const { readFile } = await import('node:fs/promises')
+    const onDisk = JSON.parse(await readFile(path, 'utf8')) as { tasks: { localId: string }[] }
+    expect(onDisk.tasks.map(task => task.localId).sort()).toEqual(['v-new', 'v-paid'])
+  })
+
+  it('retries a failed read instead of trusting an empty document', async () => {
+    const { Ledger } = await import('../src/ledger.ts')
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-shared-'))
+    // A directory where the file should be: the read fails with EISDIR, not "missing".
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(join(dir, 'tasks.json'))
+    const ledger = new Ledger({ path: join(dir, 'tasks.json'), maxTasks: 10, maxGiB: 1 })
+    await expect(ledger.ensureLoaded()).rejects.toThrow()
+    await expect(ledger.update('v-1', task => task)).rejects.toThrow(/reading it failed/)
   })
 })

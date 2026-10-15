@@ -48,6 +48,15 @@ export class Ledger {
   #sequence = new Map<string, number>()
   /** Settles once the latest {@link load} has, whatever its outcome. */
   #loading: Promise<void> | null = null
+  /**
+   * Whether the document in memory may be written over the file: only after a
+   * read that succeeded, found no file, or moved a corrupt one aside. A ledger
+   * that was never read, or whose read failed, would otherwise flush an empty
+   * document over every recorded task.
+   */
+  #readState: 'unread' | 'reading' | 'read' | 'failed' = 'unread'
+  #readFailure: unknown = null
+  #reading: Promise<void> | null = null
 
   constructor(options: LedgerOptions) {
     this.#options = options
@@ -74,9 +83,30 @@ export class Ledger {
    * recoverable, then we start empty.
    */
   load(): Promise<void> {
-    const loading = this.#read()
+    this.#readState = 'reading'
+    const loading = this.#read().then(
+      () => { this.#readState = 'read' },
+      (error: unknown) => {
+        // A corrupt file was moved aside first, so writing a fresh one is safe.
+        this.#readState = error instanceof LedgerCorruptError ? 'read' : 'failed'
+        this.#readFailure = error
+        throw error
+      },
+    )
+    this.#reading = loading
     this.#loading = loading.then(() => undefined, () => undefined)
     return loading
+  }
+
+  /**
+   * Load unless a load has succeeded or is in flight; after a failed one, try
+   * again. Whoever holds this ledger calls it — a shared ledger's state, not who
+   * created it, decides whether it still has to be read.
+   */
+  ensureLoaded(): Promise<void> {
+    if (this.#readState === 'read') return Promise.resolve()
+    if (this.#readState === 'reading' && this.#reading !== null) return this.#reading
+    return this.load()
   }
 
   /**
@@ -224,6 +254,12 @@ export class Ledger {
   async #exclusive<T>(work: () => Promise<T>): Promise<T> {
     const gated = async (): Promise<T> => {
       await this.ready()
+      if (this.#readState !== 'read') {
+        const why = this.#readState === 'unread'
+          ? 'it was never read'
+          : `reading it failed: ${this.#readFailure instanceof Error ? this.#readFailure.message : String(this.#readFailure)}`
+        throw new Error(`the task ledger at ${this.#options.path} is not loaded (${why}); not writing over it`)
+      }
       return work()
     }
     const run = this.#writes.then(gated, gated)
@@ -363,20 +399,21 @@ function isMissing(error: unknown): boolean {
  * previous instance's watches keep writing for a while. Two `Ledger` objects on
  * one file would each flush their own whole document, and the older one would
  * erase rows the newer one added — a paid task gone from the record. One shared
- * object means one document and one write lock. `fresh` says whether this call
- * created it and so must load it from disk; a re-applied instance must not
- * reload it under the old instance's in-flight writes.
+ * object means one document and one write lock. Holders call
+ * {@link Ledger.ensureLoaded}: the ledger's own read state decides whether it
+ * still needs reading, so a re-applied instance neither reloads it under the
+ * old instance's writes nor trusts a ledger whose read never happened.
  */
-export function sharedLedger(options: LedgerOptions): { ledger: Ledger; fresh: boolean } {
+export function sharedLedger(options: LedgerOptions): Ledger {
   const path = resolvePath(options.path)
   const existing = SHARED_LEDGERS.get(path)
   if (existing !== undefined) {
     existing.setLimits({ maxTasks: options.maxTasks, maxGiB: options.maxGiB })
-    return { ledger: existing, fresh: false }
+    return existing
   }
   const ledger = new Ledger({ ...options, path })
   SHARED_LEDGERS.set(path, ledger)
-  return { ledger, fresh: true }
+  return ledger
 }
 
 const SHARED_LEDGERS = new Map<string, Ledger>()
