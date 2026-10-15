@@ -29,7 +29,7 @@ import { VIDEO_MODES, type VideoMode } from './types.ts'
  * config schema and the protocol table all derive from this tuple, so adding a
  * vendor is one entry here plus one adapter file.
  */
-export const SUPPORTED_PROTOCOLS = ['ark-seedance', 'generic-openai-videos'] as const
+export const SUPPORTED_PROTOCOLS = ['ark-seedance', 'generic-openai-videos', 'minimax-video'] as const
 
 /** One protocol this build speaks. */
 export type SupportedProtocol = (typeof SUPPORTED_PROTOCOLS)[number]
@@ -56,6 +56,8 @@ export interface PresetModel {
   aspectRatios: readonly string[]
   /** Ask for a synchronized audio track; true only where the model can produce one. */
   generateAudio: boolean
+  /** Whether the vendor documents a cancel operation for this model. */
+  cancelable: boolean
 }
 
 /** One vendor this build can talk to today, as a starting point for a provider row. */
@@ -107,6 +109,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: true,
+    cancelable: true,
   },
   {
     id: 'doubao-seedance-2-0-260128',
@@ -116,6 +119,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p', '1080p', '4k'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: true,
+    cancelable: true,
   },
   {
     id: 'doubao-seedance-2-0-fast-260128',
@@ -125,6 +129,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: true,
+    cancelable: true,
   },
   {
     id: 'doubao-seedance-2-0-mini-260615',
@@ -134,6 +139,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: true,
+    cancelable: true,
   },
   {
     id: 'doubao-seedance-1-0-pro-250528',
@@ -143,6 +149,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: false,
+    cancelable: true,
   },
   {
     id: 'doubao-seedance-1-0-pro-fast-251015',
@@ -152,6 +159,44 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: SEEDANCE_RATIOS,
     generateAudio: false,
+    cancelable: true,
+  },
+]
+
+/** Every `ratio` MiniMax accepts; text-to-video refuses `adaptive` (the adapter enforces it). */
+const MINIMAX_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'] as const
+
+/**
+ * The MiniMax models served by `POST /v2/video_generation`, as the MiniMax
+ * reference states them on 2026-10-15 ([创建视频生成任务]). Resolutions keep the
+ * vendor's upper-case spelling because the adapter forwards them verbatim.
+ *
+ * Neither model documents an audio switch or a cancel operation. H3-Max's
+ * `extra.prompt_expansion_mode` is not surfaced: the config schema has no field
+ * for it yet.
+ *
+ * [创建视频生成任务]: https://platform.minimax.cn/docs/api-reference/video-generation-v2-create
+ */
+const MINIMAX_MODELS: readonly PresetModel[] = [
+  {
+    id: 'MiniMax-H3',
+    label: 'MiniMax H3',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(4, 15),
+    resolutions: ['768P', '2K'],
+    aspectRatios: MINIMAX_RATIOS,
+    generateAudio: false,
+    cancelable: false,
+  },
+  {
+    id: 'MiniMax-H3-Max',
+    label: 'MiniMax H3 Max',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(5, 15),
+    resolutions: ['480P', '768P'],
+    aspectRatios: MINIMAX_RATIOS,
+    generateAudio: false,
+    cancelable: false,
   },
 ]
 
@@ -175,7 +220,14 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     protocol: 'generic-openai-videos',
     baseUrl: 'https://api.openai.com/v1',
     authRef: 'OPENAI_API_KEY',
-    models: [{ id: 'sora-2', label: '', modes: ['t2v'], durations: [], resolutions: [], aspectRatios: [], generateAudio: false }],
+    models: [{ id: 'sora-2', label: '', modes: ['t2v'], durations: [], resolutions: [], aspectRatios: [], generateAudio: false, cancelable: true }],
+  },
+  {
+    id: 'minimax',
+    protocol: 'minimax-video',
+    baseUrl: 'https://api.minimax.cn',
+    authRef: 'MINIMAX_API_KEY',
+    models: MINIMAX_MODELS,
   },
   {
     id: 'relay',
@@ -403,6 +455,7 @@ export function modelFromPreset(model: PresetModel): ModelDraft {
     resolutions: [...model.resolutions],
     aspectRatios: [...model.aspectRatios],
     generateAudio: model.generateAudio,
+    cancelable: model.cancelable,
   }
 }
 

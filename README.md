@@ -29,6 +29,7 @@ support, so the chat card plays and seeks like any other video.
 |---|---|
 | `ark-seedance` | 火山方舟 Seedance (`POST/GET/DELETE {base}/contents/generations/tasks`) |
 | `generic-openai-videos` | OpenAI-Videos-shaped gateways (`/v1/videos`), every path and status word configurable |
+| `minimax-video` | MiniMax video generation V2 (`POST /v2/video_generation`, `GET /v2/query/video_generation/{id}`); no cancel |
 
 Models are referenced as `providerId::modelId`. Credentials resolve through the
 host's credential service first and the environment second
@@ -42,9 +43,9 @@ dsh plugin --profile web add dsh-video-forge
 
 Then configure at least one provider. The usual way is the plugin's page in the
 GUI (**Sidebar → Plugins → Video Forge**), which offers the providers this build
-supports — Volcengine ARK (Seedance), OpenAI (Sora), or a custom
+supports — Volcengine ARK (Seedance), MiniMax (H3), OpenAI (Sora), or a custom
 OpenAI-Videos-compatible gateway — as a pick list, fills in the base URL,
-credential reference and a starter model, and lets you add several. The same
+credential reference and the vendor's documented models, and lets you add several. The same
 config can be written by hand:
 
 ```yaml

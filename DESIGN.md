@@ -185,6 +185,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 |---|---|---|---|
 | `generic-openai-videos` | OpenAI 兼容 `/v1/videos` 的在线通道：各类中转站、Sora 类供应商、自建网关 | **首期** | 提交/查询路径与 taskId/状态/URL 字段用 dot-path 配置，端点不硬编码 |
 | `ark-seedance` | 火山方舟 Seedance（`doubao-seedance-*`） | **首期** | payload 形状与上一家不同（`content[]` 多模态 + `ratio`/`duration`/`watermark`），任务查询是 `GET /contents/generations/tasks/{id}`，按 `model` 名分流 |
+| `minimax-video` | MiniMax 视频生成 V2（`MiniMax-H3` / `MiniMax-H3-Max`） | **已接**（2026-10-15） | `content[]` 与 Seedance 同形同角色名，但提交/查询路径、`task_id`、查询体包在 `task` 下、`aigc_watermark`、**无取消**；`resolution`/`duration` 必填 |
 | `kling`（可灵） | 官方 API（AK/SK → JWT 签名）/ 官方 MCP（OAuth） | 二期 | 优先官方通道；OAuth 走 `mcp-remote` 时**不落任何 key** |
 | `gemini-veo` | 浏览器登录态 | 二期，**默认关闭** | 前例明示 ToS 与封号风险，开启需显式确认 |
 
@@ -236,6 +237,33 @@ status ∈ { queued, in_progress, completed, failed, cancelled }；completed 后
 
 - 已知差异（写进能力矩阵与降级路径）：`seconds` 有实现是字符串、有实现是数字；完成判定统一看 `status == 'completed'`，产物优先取 `url`/`data.0.url`（dot-path 可配），缺字段则回落到 `/content`。
 - 该协议**必须允许覆盖四个路径与提取点**（`endpoints.submit/query/content/cancel` + `statusPath`/`resultUrlPath`/`idPath`/`errorPath`），因为中转站的字段层级不保证。
+
+**`minimax-video`**（2026-10-15 按 [创建](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create) / [查询](https://platform.minimax.cn/docs/api-reference/video-generation-v2-query) 核对）
+
+```
+POST {base}/v2/video_generation                Authorization: Bearer $MINIMAX_API_KEY
+  body: { model, content:[{type:'text',text}|{type:'image_url',image_url:{url},role:'first_frame'|'last_frame'|'reference_image'}|…],
+          resolution, duration, ratio, extra?, callback_url?, aigc_watermark }
+  resp: { task_id: "424010985738629" }
+GET  {base}/v2/query/video_generation/{task_id}   # 只查得到 7 天内的任务
+  resp: { task: { id, model, status, error?:{code,message}, content?:{url}, resolution, duration, ratio, usage, … } }
+status ∈ { queued, running, succeeded, failed, cancelled }
+错误体是 OpenAI 风格 { type:'error', error:{ type, message, http_code }, request_id }，非 2xx 由 requestJson 统一带摘录抛出
+```
+
+- 默认 base：`https://api.minimax.cn`（路径自带 `/v2`，base 不带版本号）；产物 URL 有时效但文档未写多久，重新查询会给新地址 → 同样尽快落盘（§9）。
+- `content[]` 与 Seedance 同形、角色名相同，适配器直接复用 `buildArkContent`；角色名仍取模型的 `frameRole*` 配置。
+- **必填项在提交前拒绝，不替用户猜**：`resolution`、`duration` 必填且文档没有默认值；文生视频必须给具体 `ratio`（不收 `adaptive`）。首帧/首尾帧任务的 `ratio` 由图片决定，传了也被忽略，所以照传不拦。
+- **没有取消接口**：适配器 `cancelable: false`，预设模型的 `cancelable` 也是 `false`，配置卡上不会显示成"可取消"。`cancelled` 只作为状态出现。
+- 文档没有音轨开关，不发 `generate_audio`；`aigc_watermark` 显式发 `false`。
+- 模型目录（固化在 `provider-presets.ts`，分辨率保留官方的大写拼写，适配器原样转发）：
+
+  | Model ID | 模式 | resolution | duration（秒） |
+  |---|---|---|---|
+  | `MiniMax-H3` | t2v / i2v / flf2v / s2v | 768P, 2K | 4–15 |
+  | `MiniMax-H3-Max` | t2v / i2v / flf2v / s2v | 480P, 768P（默认 768P） | 5–15 |
+
+  `ratio` 取自 `21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / adaptive`。尚未接：H3-Max 的 `extra.prompt_expansion_mode`（config schema 没有对应字段）、参考视频/参考音频、仅尾帧任务（`VideoMode` 里没有这种形态）、`callback_url`。
 
 ## 8. 配置与凭据
 

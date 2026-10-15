@@ -56,7 +56,7 @@ const STORED = [
 
 describe('supported protocols', () => {
   it('is the list the protocol table speaks, with no protocol unimplemented', () => {
-    expect([...SUPPORTED_PROTOCOLS]).toEqual(['ark-seedance', 'generic-openai-videos'])
+    expect([...SUPPORTED_PROTOCOLS]).toEqual(['ark-seedance', 'generic-openai-videos', 'minimax-video'])
   })
 
   it('names every protocol in both shipped locales', () => {
@@ -77,7 +77,7 @@ describe('provider catalogue', () => {
     }
   })
 
-  it('covers both protocols, so no supported provider is missing from the picker', () => {
+  it('covers every protocol, so no supported provider is missing from the picker', () => {
     const covered = new Set(PROVIDER_PRESETS.map(preset => preset.protocol))
     for (const protocol of SUPPORTED_PROTOCOLS) expect(covered).toContain(protocol)
   })
@@ -127,12 +127,44 @@ describe('provider catalogue', () => {
   })
 
   it('writes resolutions exactly as the API spells them', () => {
-    // The adapter forwards `resolution` verbatim, so `1080P` would be a refused request.
+    // The adapters forward `resolution` verbatim, and each vendor spells it its
+    // own way: ARK refuses `1080P`, MiniMax documents `768P`.
+    const spelling: Record<string, RegExp> = {
+      'ark-seedance': /^(480p|720p|1080p|4k)$/,
+      'minimax-video': /^(480P|768P|2K)$/,
+    }
     for (const preset of PROVIDER_PRESETS) {
+      const pattern = spelling[preset.protocol]
       for (const model of preset.models) {
-        for (const resolution of model.resolutions) expect(resolution).toMatch(/^(480p|720p|1080p|4k)$/)
+        if (pattern === undefined) expect(model.resolutions).toEqual([])
+        for (const resolution of model.resolutions) expect(resolution, `${preset.id}/${model.id}`).toMatch(pattern ?? /^$/)
       }
     }
+  })
+
+  it('carries each MiniMax model\'s documented capabilities, and no cancel', () => {
+    const draft = providerFromPreset(providerPreset('minimax')!, [])
+    expect(draft).toMatchObject({ protocol: 'minimax-video', baseUrl: 'https://api.minimax.cn', authRef: 'MINIMAX_API_KEY' })
+    const rows = Object.fromEntries(draft.models.map(model => [model.id, model]))
+    const ratios = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive']
+
+    expect(rows['MiniMax-H3']).toMatchObject({
+      label: 'MiniMax H3',
+      modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+      resolutions: ['768P', '2K'],
+      aspectRatios: ratios,
+      generateAudio: false,
+      cancelable: false,
+    })
+    expect(rows['MiniMax-H3']?.durations).toEqual(Array.from({ length: 12 }, (_, i) => 4 + i))
+    // H3-Max has no 2K and no 4-second clip.
+    expect(rows['MiniMax-H3-Max']).toMatchObject({ resolutions: ['480P', '768P'], cancelable: false })
+    expect(rows['MiniMax-H3-Max']?.durations).toEqual(Array.from({ length: 11 }, (_, i) => 5 + i))
+  })
+
+  it('marks a row cancelable exactly when its vendor documents a cancel', () => {
+    expect(providerFromPreset(providerPreset('ark')!, []).models.every(model => model.cancelable)).toBe(true)
+    expect(providerFromPreset(providerPreset('minimax')!, []).models.some(model => model.cancelable)).toBe(false)
   })
 
   it('leaves the capability lists of an unchecked vendor empty', () => {

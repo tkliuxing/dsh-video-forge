@@ -317,6 +317,7 @@ function ModelRow(props: ModelRowProps): ReactNode {
       resolutions: [...known.resolutions],
       aspectRatios: [...known.aspectRatios],
       generateAudio: known.generateAudio,
+      cancelable: known.cancelable,
     })
   }
   const toggleMode = (mode: VideoMode, on: boolean): void => {

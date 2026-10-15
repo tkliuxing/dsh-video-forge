@@ -12,6 +12,7 @@ import { SUPPORTED_PROTOCOLS } from '../provider-presets.ts'
 import type { ProtocolAdapter } from './adapter.ts'
 import { arkVideosAdapter } from './ark-seedance.ts'
 import { openAiVideosAdapter } from './generic-openai-videos.ts'
+import { minimaxVideoAdapter } from './minimax-video.ts'
 
 export type ProtocolId = ProviderSetting['protocol']
 
@@ -39,6 +40,16 @@ export function adapterFor(provider: ProviderSetting, model: ModelSetting): Prot
       })
     case 'generic-openai-videos':
       return openAiVideosAdapter({ endpoints: provider.endpoints, model })
+    case 'minimax-video':
+      return minimaxVideoAdapter({
+        roles: {
+          first: model.frameRoleFirst,
+          last: model.frameRoleLast,
+          reference: model.frameRoleReference,
+        },
+        // MiniMax adds no watermark by default; the plugin keeps it that way.
+        watermark: false,
+      })
     default: {
       // Exhaustiveness: a new protocol in the union without an adapter fails here.
       const unreachable: never = provider.protocol
@@ -52,5 +63,5 @@ export function cancelSupported(provider: ProviderSetting, model: ModelSetting, 
   return model.cancelable && adapter.cancelable
 }
 
-export { arkVideosAdapter, openAiVideosAdapter }
+export { arkVideosAdapter, minimaxVideoAdapter, openAiVideosAdapter }
 export type { AdapterContext, ProtocolAdapter } from './adapter.ts'

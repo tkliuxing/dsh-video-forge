@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest'
 import { fillTemplate, readNumber, readPath, readString } from '../src/providers/dot-path.ts'
 import { buildArkBody, readArkState } from '../src/providers/ark-seedance.ts'
 import { buildOpenAiVideosBody, endpointPath, readState } from '../src/providers/generic-openai-videos.ts'
-import { DEFAULT_ENDPOINTS, assertGeometry, environmentFallbackName, resolveSize, resolveTarget, statusWords, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { buildMinimaxBody, minimaxVideoAdapter, readMinimaxState } from '../src/providers/minimax-video.ts'
+import { ConfigError, DEFAULT_ENDPOINTS, assertGeometry, environmentFallbackName, resolveSize, resolveTarget, statusWords, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { GenerationRequest } from '../src/types.ts'
 
 const MODEL = {
@@ -94,6 +95,86 @@ describe('ark-seedance', () => {
 
   it('keeps an unrecognized status unresolved', () => {
     expect(readArkState({ status: 'weird' })).toMatchObject({ status: 'unknown', terminal: false })
+  })
+})
+
+describe('minimax-video', () => {
+  const OPTIONS = { roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, watermark: false }
+  const MINIMAX: GenerationRequest = { ...REQUEST, model: 'MiniMax-H3', resolution: '768P' }
+
+  it('builds the Seedance-shaped content[] with MiniMax\'s own field names', () => {
+    const body = buildMinimaxBody(MINIMAX, OPTIONS)
+    expect(body).toEqual({
+      model: 'MiniMax-H3',
+      content: [
+        { type: 'text', text: 'a fox in snow' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' }, role: 'first_frame' },
+      ],
+      resolution: '768P',
+      duration: 5,
+      ratio: '16:9',
+      aigc_watermark: false,
+    })
+    // No audio switch is documented, so none is sent.
+    expect(body).not.toHaveProperty('generate_audio')
+  })
+
+  it('sends reference images for s2v and leaves the ratio out when none is asked for', () => {
+    const reference = { url: 'https://x/ref.png', digest: 'sha256:r', bytes: null, mime: null }
+    const body = buildMinimaxBody({ ...MINIMAX, mode: 's2v', firstFrame: null, referenceImages: [reference], aspectRatio: null }, OPTIONS)
+    expect(body.content).toEqual([
+      { type: 'text', text: 'a fox in snow' },
+      { type: 'image_url', image_url: { url: 'https://x/ref.png' }, role: 'reference_image' },
+    ])
+    expect(body).not.toHaveProperty('ratio')
+  })
+
+  it('refuses a request missing what MiniMax requires, before any call', () => {
+    expect(() => buildMinimaxBody({ ...MINIMAX, durationSeconds: null }, OPTIONS)).toThrowError(ConfigError)
+    expect(() => buildMinimaxBody({ ...MINIMAX, resolution: null }, OPTIONS)).toThrowError(/requires resolution/)
+    const textOnly = { ...MINIMAX, mode: 't2v' as const, firstFrame: null }
+    expect(() => buildMinimaxBody({ ...textOnly, aspectRatio: null }, OPTIONS)).toThrowError(/concrete aspect_ratio/)
+    expect(() => buildMinimaxBody({ ...textOnly, aspectRatio: 'adaptive' }, OPTIONS)).toThrowError(/adaptive is refused/)
+    expect(buildMinimaxBody({ ...textOnly, aspectRatio: '9:16' }, OPTIONS).ratio).toBe('9:16')
+  })
+
+  it('reads the state nested under task', () => {
+    expect(readMinimaxState({ task: { id: '1', status: 'succeeded', content: { url: 'https://x/y.mp4' } } })).toEqual({
+      status: 'succeeded', progress: null, videoUrl: 'https://x/y.mp4', error: null, terminal: true,
+    })
+    expect(readMinimaxState({ task: { status: 'queued' } })).toMatchObject({ status: 'queued', terminal: false })
+    expect(readMinimaxState({ task: { status: 'cancelled' } })).toMatchObject({ status: 'cancelled', terminal: true })
+    expect(readMinimaxState({ task: { status: 'failed', error: { code: '1026', message: 'video description contains sensitive content' } } }).error)
+      .toEqual({ code: '1026', message: 'video description contains sensitive content' })
+    expect(readMinimaxState({ task: { status: 'weird' } })).toMatchObject({ status: 'unknown', terminal: false })
+  })
+
+  it('submits to /v2/video_generation and queries by task_id', async () => {
+    const calls: { url: string; method: string; body: unknown; auth: string | undefined }[] = []
+    const fetch = (async (url: string, init: RequestInit) => {
+      const headers = init.headers as Record<string, string>
+      calls.push({ url, method: init.method ?? 'GET', body: init.body === undefined ? null : JSON.parse(init.body as string), auth: headers.authorization })
+      const payload = init.method === 'POST' ? { task_id: '424010985738629' } : { task: { id: '424010985738629', status: 'running' } }
+      return new Response(JSON.stringify(payload), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const adapter = minimaxVideoAdapter(OPTIONS)
+    const context = { baseUrl: 'https://api.minimax.cn/', apiKey: 'k', fetch, signal: undefined }
+
+    expect(await adapter.submit(context, MINIMAX)).toEqual({ providerTaskId: '424010985738629' })
+    expect(await adapter.query(context, '424010985738629')).toMatchObject({ status: 'running' })
+    expect(calls.map(call => `${call.method} ${call.url}`)).toEqual([
+      'POST https://api.minimax.cn/v2/video_generation',
+      'GET https://api.minimax.cn/v2/query/video_generation/424010985738629',
+    ])
+    expect(calls[0]?.auth).toBe('Bearer k')
+    expect(calls[0]?.body).toMatchObject({ model: 'MiniMax-H3', resolution: '768P' })
+  })
+
+  it('documents no cancel, so it never sends one', async () => {
+    const adapter = minimaxVideoAdapter(OPTIONS)
+    expect(adapter.cancelable).toBe(false)
+    const fetch = (() => { throw new Error('no request expected') }) as unknown as typeof globalThis.fetch
+    expect(await adapter.cancel({ baseUrl: 'https://api.minimax.cn', apiKey: 'k', fetch, signal: undefined }, '1')).toBe(false)
   })
 })
 
