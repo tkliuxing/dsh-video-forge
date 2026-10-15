@@ -14,6 +14,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { taskSessionOf } from './session-context.ts'
 import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
@@ -281,8 +282,21 @@ function normaliseStatus(task: VideoTask): VideoTask {
   // writer) is dropped, not trusted: the settlement pass asks the provider again.
   const billingOk = task.billing === undefined || task.billing === null || isBilling(task.billing)
   const error = errorOf(task.error)
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error) return task
-  return { ...task, status, providerTaskId, error, ...(billingOk ? {} : { billing: null }) }
+  // A session record this build cannot read is dropped: the task then counts as
+  // submitted outside any session, which only ever narrows what may be done with it.
+  const session = task.session === undefined ? null : taskSessionOf(task.session)
+  const sessionOk = task.session === undefined || (session !== null && session.id === task.session.id
+    && session.cwd === task.session.cwd && session.mode === task.session.mode)
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk) return task
+  const { session: _stored, ...withoutSession } = task
+  return {
+    ...withoutSession,
+    status,
+    providerTaskId,
+    error,
+    ...(billingOk ? {} : { billing: null }),
+    ...(session === null ? {} : { session }),
+  }
 }
 
 /**

@@ -73,7 +73,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
   }
 }
 
-const exec = { signal: AbortSignal.timeout(5_000), agent: { id: 'session-test' } } as unknown as ToolRunContext
+const exec = { signal: AbortSignal.timeout(5_000), agent: { id: 'session-test', session: { header: { cwd: tmpdir() } } } } as unknown as ToolRunContext
 
 async function makeLedger(): Promise<Ledger> {
   const root = await mkdtemp(join(tmpdir(), 'video-forge-tools-'))
@@ -150,9 +150,15 @@ describe('video_generate', () => {
       .rejects.toThrowError(/only a first frame/)
   })
 
-  it('refuses a relative path before touching the network', async () => {
-    await expect(generate().execute({ prompt: 'x', mode: 'i2v', first_frame: 'a.png' }, exec))
-      .rejects.toThrowError(/is not absolute/)
+  it('resolves a relative path against the session workspace, before touching the network', async () => {
+    const postsBefore = fixture.requests.filter(entry => entry.method === 'POST').length
+    await expect(generate().execute({ prompt: 'x', mode: 'i2v', first_frame: 'not-here-12345.png' }, exec))
+      .rejects.toThrowError(new RegExp(`no readable file at ${join(tmpdir(), 'not-here-12345.png').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    // A call no session made has no workspace to resolve against.
+    const sessionless = { signal: AbortSignal.timeout(5_000) } as unknown as ToolRunContext
+    await expect(generate().execute({ prompt: 'x', mode: 'i2v', first_frame: 'a.png' }, sessionless))
+      .rejects.toThrowError(/relative and this call has no session workspace/)
+    expect(fixture.requests.filter(entry => entry.method === 'POST')).toHaveLength(postsBefore)
   })
 
   it('refuses a missing file', async () => {
@@ -187,6 +193,8 @@ describe('video_generate', () => {
     expect(value.status).toBe('queued')
     expect(value.message).toContain('do not re-submit')
     expect(ledger.byId(value.task_id)?.providerTaskId).toMatch(/^cgt-fixture-/)
+    // The calling session is recorded with the task (no sandbox policy mounted here).
+    expect(ledger.byId(value.task_id)?.session).toEqual({ id: 'session-test', cwd: tmpdir(), mode: null })
   })
 
   it('refuses a duplicate submission inside the dedupe window and names the existing task', async () => {

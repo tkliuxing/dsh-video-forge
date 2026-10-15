@@ -20,7 +20,7 @@ import { Ledger, LedgerCorruptError } from './ledger.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
-import { artifactUrl, pluginHome, type VideoForgeRuntime } from './runtime.ts'
+import { artifactUrl, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
@@ -127,7 +127,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       return null
     },
     cancels: new Map(),
-    watching: new Set(),
+    watching: watchTableFor(ledger.path),
     activeCount: () => ledger.list().filter(task => task.status === 'submitting' || task.status === 'queued' || task.status === 'running').length,
   }
 

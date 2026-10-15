@@ -24,6 +24,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { cancelTask, exportArtifact, generate, listTasks } from './operations.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
+import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
 
 const ARTIFACT_SCHEMA = {
@@ -151,6 +152,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
         aspectRatio: args.aspect_ratio,
       }, {
         owner: exec.agent?.id,
+        session: sessionContextOf(runtime.ctx, exec.agent),
         signal: exec.signal,
         waitSeconds: args.wait_seconds ?? 0,
       })

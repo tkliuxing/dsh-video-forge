@@ -32,6 +32,8 @@ import {
   type VideoTask,
 } from './types.ts'
 import { describe } from './watch.ts'
+import type { TaskSession } from './session-context.ts'
+import { workspaceFsOf } from './workspace-fs.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN = new Set<VideoTask['status']>(['queued', 'running'])
@@ -70,6 +72,8 @@ export interface GenerateOutcome {
 export interface OperationOptions {
   /** Calling session id, when there is one. */
   owner?: string | undefined
+  /** The calling session's id, workspace and permission mode; recorded with the task. */
+  session?: TaskSession | null
   signal?: AbortSignal | undefined
   /** Bounded wait for a finished artifact; 0 returns as soon as it is submitted. */
   waitSeconds?: number
@@ -99,7 +103,7 @@ export async function generate(
     aspectRatio: request.aspectRatio,
   })
 
-  const resolved = await resolveMaterials(runtime, request, options.signal)
+  const resolved = await resolveMaterials(runtime, request, options.signal, options.session ?? null)
   const generation: GenerationRequest = {
     model: model.id,
     prompt: request.prompt,
@@ -133,6 +137,7 @@ export async function generate(
     provider: provider.id,
     protocol: provider.protocol,
     model: model.id,
+    ...(options.session === undefined || options.session === null ? {} : { session: options.session }),
     providerTaskId: null,
     status: 'submitting',
     progress: null,
@@ -615,8 +620,9 @@ async function resolveMaterials(
   runtime: VideoForgeRuntime,
   request: NormalisedRequest,
   signal: AbortSignal | undefined,
+  session: TaskSession | null,
 ): Promise<{ firstFrame: ResolvedMaterial | null; lastFrame: ResolvedMaterial | null; referenceImages: ResolvedMaterial[] }> {
-  const context = { workspaceRoot: null, signal }
+  const context = { fs: workspaceFsOf(runtime.ctx), cwd: session?.cwd ?? null, signal }
   const classify = (value: string): 'path' | 'url' =>
     (value.startsWith('http://') || value.startsWith('https://') ? 'url' : 'path')
 
@@ -636,7 +642,6 @@ async function resolveMaterials(
   }
   request.descriptors.firstFrame = first?.descriptor ?? null
   request.descriptors.lastFrame = last?.descriptor ?? null
-  void runtime
   return {
     firstFrame: first?.resolved ?? null,
     lastFrame: last?.resolved ?? null,

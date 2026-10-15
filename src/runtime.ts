@@ -61,3 +61,20 @@ export function artifactUrl(task: VideoTask, artifact: VideoArtifact): string {
   const name = artifact.path.split('/').pop() ?? 'video.mp4'
   return `${MEDIA_ROUTE_PREFIX.replace(/^\//, '')}/${task.localId}/${artifact.token}/${name}`
 }
+
+/**
+ * The live-watch table for one ledger file, shared by every plugin instance in
+ * this process. cordis re-applies the plugin when `tools` or `webServer` change,
+ * and the previous instance's watches keep running for a while; a per-instance
+ * table would let the new instance's boot pass reattach those rows a second time.
+ */
+export function watchTableFor(ledgerPath: string): Set<string> {
+  let table = WATCH_TABLES.get(ledgerPath)
+  if (table === undefined) {
+    table = new Set()
+    WATCH_TABLES.set(ledgerPath, table)
+  }
+  return table
+}
+
+const WATCH_TABLES = new Map<string, Set<string>>()

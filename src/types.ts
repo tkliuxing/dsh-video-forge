@@ -4,6 +4,8 @@
  * boundary the fixture-backed tests exercise.
  */
 
+import type { TaskSession } from './session-context.ts'
+
 /** Lifecycle of one generation task, as the ledger stores it. */
 export type VideoTaskStatus =
   /** Intent recorded; the create request is about to go out or is in flight. */
@@ -194,6 +196,12 @@ export interface VideoTask {
   params: VideoTaskParams
   artifacts: VideoArtifact[]
   error: VideoTaskError | null
+  /**
+   * The session that submitted the task: id, workspace and permission mode at
+   * submit time (DESIGN §17.2). Absent for a call no session made, and for rows
+   * written before this was recorded.
+   */
+  session?: TaskSession
   /**
    * Settled provider usage. Absent (or null) until the task has finished and the
    * provider has been asked; rows written before usage was recorded read the same.
