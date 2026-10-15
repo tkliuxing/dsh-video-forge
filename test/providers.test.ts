@@ -267,7 +267,7 @@ describe('provider error bodies', () => {
   // Shapes recorded from the real endpoints on 2026-10-15 (account id and request id redacted).
   it('lifts ARK\'s code and sentence', () => {
     const body = JSON.stringify({ error: { code: 'ModelNotOpen', message: 'Your account <redacted> has not activated the model doubao-seedance-2-0-fast-260128. Please activate the model service in the Ark Console.', param: '', type: 'Not Found' } })
-    expect(providerErrorOf(body)).toEqual({ code: 'ModelNotOpen', message: expect.stringMatching(/has not activated the model/) })
+    expect(providerErrorOf(body)).toEqual({ code: 'ModelNotOpen', message: expect.stringMatching(/has not activated the model/), requestId: null })
   })
 
   it('lifts ARK\'s parameter error', () => {
@@ -277,9 +277,13 @@ describe('provider error bodies', () => {
 
   it('falls back to the error type for MiniMax\'s OpenAI-style body, and reads base_resp', () => {
     expect(providerErrorOf(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'resolution is required', http_code: 400 } })))
-      .toEqual({ code: 'invalid_request_error', message: 'resolution is required' })
+      .toEqual({ code: 'invalid_request_error', message: 'resolution is required', requestId: null })
     expect(providerErrorOf(JSON.stringify({ base_resp: { status_code: 1004, status_msg: 'authentication failed' } })))
-      .toEqual({ code: '1004', message: 'authentication failed' })
+      .toEqual({ code: '1004', message: 'authentication failed', requestId: null })
+    // status_code 0 is MiniMax's "success" and explains nothing.
+    expect(providerErrorOf(JSON.stringify({ base_resp: { status_code: 0, status_msg: 'success' } }))).toBeNull()
+    // The request id a support ticket needs is kept.
+    expect(providerErrorOf(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'bad ratio' }, request_id: 'req-123' }))?.requestId).toBe('req-123')
   })
 
   it('returns null for anything that is not a structured error', () => {

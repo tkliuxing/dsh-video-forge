@@ -4,13 +4,17 @@
  * a price table is a separate, overridable estimate on top of these numbers.
  */
 
-import type { ProviderUsage, TaskBilling, VideoTask } from './types.ts'
+import type { ProviderStatus, ProviderUsage, TaskBilling, VideoTask } from './types.ts'
 
-/** The billing record for a task its provider has just settled. */
-export function settledBilling(usage: ProviderUsage | null, now = new Date()): TaskBilling {
-  return usage === null
-    ? { state: 'none', tokens: null, outputSeconds: null, fields: {}, settledAt: now.toISOString() }
-    : { state: 'reported', ...usage, settledAt: now.toISOString() }
+/**
+ * The billing record for a task its provider has just settled. No usage on a
+ * failed or cancelled task reads as "none reported" (MiniMax answers `{}` there);
+ * no usage on a *succeeded* task is unknown — that generation was billed, and an
+ * absent field must not read as free.
+ */
+export function settledBilling(usage: ProviderUsage | null, status: ProviderStatus, now = new Date()): TaskBilling {
+  if (usage !== null) return { state: 'reported', ...usage, settledAt: now.toISOString() }
+  return { state: status === 'succeeded' ? 'unknown' : 'none', tokens: null, outputSeconds: null, fields: {}, settledAt: now.toISOString() }
 }
 
 /** The provider's query window closed before anyone asked: unknown, never zero. */

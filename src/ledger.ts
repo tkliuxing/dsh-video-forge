@@ -14,7 +14,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type VideoTask, type VideoTaskStatus } from './types.ts'
+import { NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN_STATUSES: ReadonlySet<VideoTaskStatus> = new Set<VideoTaskStatus>(['queued', 'running'])
@@ -277,7 +277,23 @@ function normaliseStatus(task: VideoTask): VideoTask {
   const providerTaskId = typeof task.providerTaskId === 'string' && task.providerTaskId !== '' ? task.providerTaskId : null
   let status: VideoTaskStatus = VIDEO_TASK_STATUSES.includes(task.status) ? task.status : 'orphaned'
   if ((status === 'queued' || status === 'running') && providerTaskId === null) status = 'unconfirmed'
-  return status === task.status && providerTaskId === task.providerTaskId ? task : { ...task, status, providerTaskId }
+  // A usage record this build cannot read (hand-edited, or reshaped by a newer
+  // writer) is dropped, not trusted: the settlement pass asks the provider again.
+  const billingOk = task.billing === undefined || task.billing === null || isBilling(task.billing)
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk) return task
+  return { ...task, status, providerTaskId, ...(billingOk ? {} : { billing: null }) }
+}
+
+function isBilling(value: unknown): value is TaskBilling {
+  if (typeof value !== 'object' || value === null) return false
+  const billing = value as Partial<TaskBilling>
+  const numberOrNull = (field: unknown): boolean => field === null || (typeof field === 'number' && Number.isFinite(field))
+  return (billing.state === 'reported' || billing.state === 'none' || billing.state === 'unknown')
+    && numberOrNull(billing.tokens)
+    && numberOrNull(billing.outputSeconds)
+    && typeof billing.settledAt === 'string'
+    && typeof billing.fields === 'object' && billing.fields !== null
+    && Object.values(billing.fields).every(field => typeof field === 'number' && Number.isFinite(field))
 }
 
 function isTask(value: unknown): value is VideoTask {

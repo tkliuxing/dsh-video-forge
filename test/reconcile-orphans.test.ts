@@ -232,6 +232,23 @@ describe('boot scheduling', () => {
     expect(retry).toHaveBeenCalledTimes(2)
   })
 
+  it('asks again right after boot when the credential service arrived while boot ran', async () => {
+    vi.useFakeTimers()
+    const { host, injected } = fakeHost()
+    let finishBoot: () => void = () => undefined
+    const boot = vi.fn(() => new Promise<void>((resolve) => { finishBoot = resolve }))
+    const retry = vi.fn(async () => undefined)
+    scheduleReconciliation(host, boot, retry, () => undefined, { graceMs: 1_000, retryMs: 60_000 })
+    // The grace timer starts boot without keys; the service shows up mid-boot.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(boot).toHaveBeenCalledTimes(1)
+    injected[0]?.()
+    expect(retry).not.toHaveBeenCalled()
+    finishBoot()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
   it('boots after the grace period in a composition without a credential service', async () => {
     vi.useFakeTimers()
     const { host } = fakeHost()
@@ -361,5 +378,31 @@ describe('a paid generation whose bytes did not arrive', () => {
     expect(ledger.byId('v-20261015-0011')?.status).toBe('succeeded')
     expect(ledger.byId('v-20261015-0011')?.artifacts).toHaveLength(1)
     expect(posts(fake)).toBe(1)
+  })
+})
+
+describe('settled usage', () => {
+  it('reads a succeeded task without usage as unknown, a failed one as none', async () => {
+    const { settledBilling } = await import('../src/billing.ts')
+    expect(settledBilling(null, 'succeeded').state).toBe('unknown')
+    expect(settledBilling(null, 'failed').state).toBe('none')
+    expect(settledBilling({ tokens: 1, outputSeconds: null, fields: { completion_tokens: 1 } }, 'succeeded').state).toBe('reported')
+  })
+
+  it('records unknown at once for a task whose provider is no longer configured', async () => {
+    const fake = await fixture()
+    const ledger = await ledgerAt()
+    await ledger.add(row({ localId: 'v-gone', provider: 'removed', providerTaskId: 'cgt-1', status: 'succeeded' }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+    await settleBilling(runtime)
+    expect(ledger.byId('v-gone')?.billing?.state).toBe('unknown')
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it('drops a stored usage record this build cannot read', async () => {
+    const { parseDocument } = await import('../src/ledger.ts')
+    const doc = parseDocument(JSON.stringify({ version: 1, tasks: [row({ billing: { state: 'weird' } as never })] }))
+    expect(doc.tasks[0]?.billing).toBeNull()
   })
 })

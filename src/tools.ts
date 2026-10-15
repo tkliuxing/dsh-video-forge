@@ -57,7 +57,7 @@ const TASK_SCHEMA = {
           type: 'object',
           additionalProperties: false,
           properties: {
-            state: { type: 'string', required: true },
+            state: { type: 'string', enum: ['reported', 'none', 'unknown'], required: true },
             tokens: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
             output_seconds: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
             fields: { type: 'object', additionalProperties: true, required: true },
@@ -182,7 +182,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'List recent video generations with their provider, status, progress, error and (once finished) the artifact path and play URL.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
       'billing is what the provider reported a finished task consumed (tokens for ARK, output seconds for MiniMax, every raw field under fields) — usage, not money; null until settled, "unknown" when the provider\'s seven-day query window closed first.',
-      'Tasks marked orphaned could not be reconciled with the provider (for example its credential or the network was not available); the plugin keeps asking the provider about them for up to seven days and settles them on its own, and never re-submits them — check back here rather than generating again.',
+      'Tasks marked orphaned lost contact with the provider (credential not yet loaded, network failure, a download that broke); while the provider still answers for them — up to seven days, if the task id is known and its provider is still configured — the plugin keeps asking and settles them on its own. It never re-submits them: check back here rather than generating again, and read the error field for what is known.',
       'Tasks marked unconfirmed were sent but the provider\'s answer was lost (timeout, network failure, restart): the provider may already have created and billed them, so never submit the same request again — the error field says what is known.',
     ].join(' '),
     parameters: {

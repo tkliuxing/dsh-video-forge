@@ -69,7 +69,7 @@ export class ProviderRequestError extends Error {
  * `{ type: 'error', error: { type, message } }`) and MiniMax's older
  * `{ base_resp: { status_code, status_msg } }`.
  */
-export function providerErrorOf(text: string): { code: string | null; message: string } | null {
+export function providerErrorOf(text: string): { code: string | null; message: string; requestId: string | null } | null {
   let body: unknown
   try {
     body = JSON.parse(text)
@@ -82,16 +82,17 @@ export function providerErrorOf(text: string): { code: string | null; message: s
   if (nested !== null && typeof nested === 'object') {
     const error = nested as Record<string, unknown>
     const message = typeof error.message === 'string' ? error.message.trim() : ''
-    if (message !== '') return { code: codeOf(error.code) ?? codeOf(error.type), message }
+    if (message !== '') return { code: codeOf(error.code) ?? codeOf(error.type), message, requestId: codeOf(record.request_id) }
   }
   const base = record.base_resp
   if (base !== null && typeof base === 'object') {
     const resp = base as Record<string, unknown>
     const message = typeof resp.status_msg === 'string' ? resp.status_msg.trim() : ''
-    if (message !== '') return { code: codeOf(resp.status_code), message }
+    // status_code 0 is MiniMax's "success"; it explains nothing about a failure.
+    if (message !== '' && resp.status_code !== 0) return { code: codeOf(resp.status_code), message, requestId: codeOf(record.request_id) }
   }
   if (typeof record.message === 'string' && record.message.trim() !== '') {
-    return { code: codeOf(record.code), message: record.message.trim() }
+    return { code: codeOf(record.code), message: record.message.trim(), requestId: codeOf(record.request_id) }
   }
   return null
 }
@@ -156,7 +157,11 @@ export async function requestJson(
   const text = await response.text()
   if (!response.ok) {
     const provider = providerErrorOf(text)
-    const said = provider === null ? '' : `: ${provider.code === null ? '' : `${provider.code} — `}${excerpt(provider.message)}`
+    // A support ticket asks for the request id; ARK puts it in the message
+    // already, MiniMax beside it.
+    const requestId = provider?.requestId ?? null
+    const tail = requestId === null || provider?.message.includes(requestId) === true ? '' : ` (request_id ${requestId})`
+    const said = provider === null ? '' : `: ${provider.code === null ? '' : `${provider.code} — `}${excerpt(provider.message)}${tail}`
     throw new ProviderRequestError(`${init.method} ${url} failed with HTTP ${response.status}${said}`, {
       status: response.status,
       bodyExcerpt: excerpt(text),

@@ -25,9 +25,10 @@ import { resolveApiKey } from './credentials.ts'
 import { downloadArtifact } from './download.ts'
 import type { Ledger } from './ledger.ts'
 import { isSending, unconfirmedMessage } from './operations.ts'
+import { ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
-import { resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
+import { ConfigError, resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
 import { UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
 import { startInProcessWatch } from './watch.ts'
 
@@ -122,7 +123,7 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
         const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey, fetch, signal: AbortSignal.timeout(20_000) }
         const state = await adapterFor(provider, model).query(context, task.providerTaskId ?? '')
         if (!state.terminal) continue
-        await recordBilling(runtime.ledger, task, settledBilling(state.usage))
+        await recordBilling(runtime.ledger, task, settledBilling(state.usage, state.status))
         if (state.status === 'succeeded' && state.videoUrl !== null && task.artifacts.length === 0) {
           // A row an older build filed as failed (it gave up polling, or the
           // download broke) or as succeeded without its bytes, which the provider
@@ -133,6 +134,13 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
             : current))
         }
       } catch (error: unknown) {
+        // A provider no longer configured, or a task the provider no longer
+        // knows, will not answer next time either: record unknown now rather
+        // than asking two thousand more times before the window closes.
+        if (error instanceof ConfigError || (error instanceof ProviderRequestError && error.status === 404)) {
+          await recordBilling(runtime.ledger, task, unknownBilling())
+          continue
+        }
         runtime.logger.warn(`video-forge: usage of ${task.localId} not settled yet: ${messageOf(error)}`)
       }
     }
@@ -183,15 +191,23 @@ export function scheduleReconciliation(
   timing: { graceMs: number; retryMs: number } = { graceMs: CREDENTIALS_GRACE_MS, retryMs: ORPHAN_RETRY_MS },
 ): void {
   let phase: 'waiting' | 'booting' | 'ready' = 'waiting'
+  // A credential service that arrives while boot runs (boot started on the grace
+  // timer, without keys) asks again as soon as boot is done.
+  let recheck = false
   const start = (): void => {
     if (phase !== 'waiting') return
     phase = 'booting'
     void boot().catch(onError).finally(() => {
       phase = 'ready'
+      if (recheck) {
+        recheck = false
+        void retry().catch(onError)
+      }
     })
   }
   host.inject(['credentials'], () => {
     if (phase === 'ready') void retry().catch(onError)
+    else if (phase === 'booting') recheck = true
     else start()
   })
   host.effect(() => {
@@ -199,6 +215,9 @@ export function scheduleReconciliation(
     const timer = setInterval(() => {
       if (phase === 'ready') void retry().catch(onError)
     }, timing.retryMs)
+    // Housekeeping must not keep a process alive by itself; live watches do that.
+    grace.unref?.()
+    timer.unref?.()
     return () => {
       clearTimeout(grace)
       clearInterval(timer)
@@ -375,7 +394,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         if (artifact === null) {
           // Finished and paid, but the bytes did not arrive: stay an orphan so the
           // next pass fetches it again, with whatever fresh URL the provider gives.
-          await ledger.update(task.localId, current => (unchanged(current) ? { ...current, billing: settledBilling(state.usage) } : current))
+          await ledger.update(task.localId, current => (unchanged(current) ? { ...current, billing: settledBilling(state.usage, state.status) } : current))
           await markOrphaned(ledger, task, unchanged, 'generation succeeded but the artifact could not be downloaded yet')
           continue
         }
@@ -386,7 +405,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
               progress: 1,
               artifacts: [artifact],
               error: null,
-              billing: settledBilling(state.usage),
+              billing: settledBilling(state.usage, state.status),
               updatedAt: new Date().toISOString(),
             }
           : current))
@@ -398,7 +417,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             ...current,
             status: state.status === 'cancelled' ? 'cancelled' : 'failed',
             error: state.error ?? { message: `the provider reported status "${state.status}" while reconciling`, code: null },
-            billing: settledBilling(state.usage),
+            billing: settledBilling(state.usage, state.status),
             updatedAt: new Date().toISOString(),
           }
         : current))

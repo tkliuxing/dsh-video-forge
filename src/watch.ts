@@ -242,7 +242,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           ...current,
           status: 'failed',
           error: { message: 'the provider reported success without an artifact URL', code: null },
-          billing: settledBilling(state.usage),
+          billing: settledBilling(state.usage, state.status),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -264,7 +264,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           progress: 1,
           artifacts: [...current.artifacts.filter(entry => entry.path !== artifact.path), artifact],
           error: null,
-          billing: settledBilling(state.usage),
+          billing: settledBilling(state.usage, state.status),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -279,7 +279,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           // and saying so keeps the model from re-submitting it.
           status: 'orphaned',
           error: { message: `generation succeeded but the artifact download failed (${message}); the plugin keeps trying to fetch it and never re-submits it`, code: null },
-          billing: settledBilling(state.usage),
+          billing: settledBilling(state.usage, state.status),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -293,7 +293,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
       ...current,
       status: finalStatus,
       error: state.error ?? { message: `the provider reported status "${state.status}"`, code: null },
-      billing: settledBilling(state.usage),
+      billing: settledBilling(state.usage, state.status),
       updatedAt: new Date().toISOString(),
     }))
     core.onUpdate?.(updated)
