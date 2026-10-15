@@ -40,10 +40,11 @@ export interface TaskSession {
   /** The session's workspace folder, in the execution world's path syntax. */
   cwd: string | null
   /**
-   * Permission mode at submit time; null when the composition mounts no
-   * sandbox policy, which means writes are not fenced at all.
+   * Permission mode at submit time. Null when the composition mounts no
+   * sandbox policy, which means writes are not fenced at all; `unknown` when a
+   * policy is mounted but could not say — to be treated as the strictest case.
    */
-  mode: SandboxMode | null
+  mode: SandboxMode | 'unknown' | null
 }
 
 /** The calling session, or null for a call no session made (the workbench). */
@@ -52,10 +53,15 @@ export function sessionContextOf(ctx: Context, agent: AgentLike | undefined): Ta
   const header = agent.session?.header
   const cwd = typeof header?.cwd === 'string' && header.cwd !== '' ? header.cwd : null
   const policy = ctx.get('sandboxPolicy' as never) as SandboxPolicyLike | undefined
-  let mode: SandboxMode | null = null
-  if (policy !== undefined && agent.session !== undefined) {
-    const resolved = policy.resolve({ session: agent.session })
-    mode = SANDBOX_MODES.includes(resolved.mode) ? resolved.mode : null
+  let mode: TaskSession['mode'] = null
+  if (policy !== undefined) {
+    try {
+      const resolved = policy.resolve({ session: agent.session })
+      mode = SANDBOX_MODES.includes(resolved.mode) ? resolved.mode : 'unknown'
+    } catch {
+      // A policy that cannot answer for this session must not read as "unfenced".
+      mode = 'unknown'
+    }
   }
   return { id: agent.id, cwd, mode }
 }
@@ -68,6 +74,8 @@ export function taskSessionOf(value: unknown): TaskSession | null {
   return {
     id: session.id,
     cwd: typeof session.cwd === 'string' && session.cwd !== '' ? session.cwd : null,
-    mode: typeof session.mode === 'string' && SANDBOX_MODES.includes(session.mode) ? session.mode : null,
+    mode: session.mode === null || session.mode === undefined
+      ? null
+      : (typeof session.mode === 'string' && (SANDBOX_MODES as readonly string[]).includes(session.mode) ? session.mode : 'unknown'),
   }
 }

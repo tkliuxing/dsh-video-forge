@@ -622,7 +622,7 @@ async function resolveMaterials(
   signal: AbortSignal | undefined,
   session: TaskSession | null,
 ): Promise<{ firstFrame: ResolvedMaterial | null; lastFrame: ResolvedMaterial | null; referenceImages: ResolvedMaterial[] }> {
-  const context = { fs: workspaceFsOf(runtime.ctx), cwd: session?.cwd ?? null, signal }
+  const context = { fs: workspaceFsOf(runtime.ctx, session !== null), cwd: session?.cwd ?? null, signal }
   const classify = (value: string): 'path' | 'url' =>
     (value.startsWith('http://') || value.startsWith('https://') ? 'url' : 'path')
 

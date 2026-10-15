@@ -13,7 +13,7 @@
  */
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve as resolvePath } from 'node:path'
 import { taskSessionOf } from './session-context.ts'
 import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
 
@@ -40,7 +40,7 @@ export interface LedgerOptions {
 }
 
 export class Ledger {
-  readonly #options: LedgerOptions
+  #options: LedgerOptions
   #document: LedgerDocument = { version: 1, tasks: [] }
   /** Serialises writers so two tool calls cannot interleave a read-modify-write. */
   #writes: Promise<void> = Promise.resolve()
@@ -51,6 +51,11 @@ export class Ledger {
 
   constructor(options: LedgerOptions) {
     this.#options = options
+  }
+
+  /** Apply live retention limits (a shared ledger outlives the instance that created it). */
+  setLimits(limits: { maxTasks: number; maxGiB: number }): void {
+    this.#options = { ...this.#options, ...limits }
   }
 
   /** Absolute path of the ledger document. */
@@ -350,3 +355,28 @@ function formatDay(now: Date): string {
 function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT'
 }
+
+/**
+ * The ledger for one file, shared by every plugin instance in this process.
+ *
+ * cordis re-applies the plugin when `tools` or `webServer` change, and the
+ * previous instance's watches keep writing for a while. Two `Ledger` objects on
+ * one file would each flush their own whole document, and the older one would
+ * erase rows the newer one added — a paid task gone from the record. One shared
+ * object means one document and one write lock. `fresh` says whether this call
+ * created it and so must load it from disk; a re-applied instance must not
+ * reload it under the old instance's in-flight writes.
+ */
+export function sharedLedger(options: LedgerOptions): { ledger: Ledger; fresh: boolean } {
+  const path = resolvePath(options.path)
+  const existing = SHARED_LEDGERS.get(path)
+  if (existing !== undefined) {
+    existing.setLimits({ maxTasks: options.maxTasks, maxGiB: options.maxGiB })
+    return { ledger: existing, fresh: false }
+  }
+  const ledger = new Ledger({ ...options, path })
+  SHARED_LEDGERS.set(path, ledger)
+  return { ledger, fresh: true }
+}
+
+const SHARED_LEDGERS = new Map<string, Ledger>()

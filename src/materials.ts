@@ -21,7 +21,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { isAbsolute, extname } from 'node:path'
+import { isAbsolute, extname, resolve as resolveAgainst } from 'node:path'
 import type { MaterialRef, ResolvedMaterial } from './types.ts'
 import { fsErrorCode, type WorkspaceFs } from './workspace-fs.ts'
 
@@ -64,7 +64,13 @@ export function sniffMime(head: Uint8Array): string | null {
   if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg'
   if (ascii(0, 'GIF87a') || ascii(0, 'GIF89a')) return 'image/gif'
   if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp'
-  if (ascii(4, 'ftyp')) return ascii(8, 'qt  ') ? 'video/quicktime' : 'video/mp4'
+  if (ascii(4, 'ftyp')) {
+    // ISO base media is also HEIC/HEIF, AVIF and M4A: only the video brands count.
+    const brand = String.fromCharCode(...head.subarray(8, 12))
+    if (brand === 'qt  ') return 'video/quicktime'
+    if (/^(isom|iso[2-9]|mp41|mp42|avc1|M4V |M4VP|dash|3gp\d|3g2\w)$/.test(brand)) return 'video/mp4'
+    return null
+  }
   if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm'
   return null
 }
@@ -78,8 +84,8 @@ export class MaterialError extends Error {
 }
 
 export interface ResolveContext {
-  /** Where files are read: the host's `ctx.fs`, or a host-local stand-in. */
-  fs: WorkspaceFs
+  /** Where files are read; null when a session called and its filesystem service is not mounted. */
+  fs: WorkspaceFs | null
   /** The session's workspace folder; relative paths resolve against it. */
   cwd: string | null
   maxImageBytes?: number
@@ -115,8 +121,18 @@ async function resolvePath(value: string, context: ResolveContext): Promise<Reso
     throw new MaterialError(`"${value}" is relative and this call has no session workspace to resolve it against; pass an absolute path`)
   }
   const { fs, signal } = context
+  if (fs === null) {
+    throw new MaterialError(`the session's workspace filesystem is not available right now, so "${value}" cannot be read where the workspace lives; try again shortly`)
+  }
+  // Any filesystem failure here is about the path the model chose: say so in
+  // terms it can act on rather than passing a backend error through.
+  const cannotRead = (error: unknown): never => {
+    if (fsErrorCode(error) === null) throw error
+    throw new MaterialError(`cannot read "${value}": ${error instanceof Error ? error.message : String(error)}`)
+  }
   const target = await fs.resolve(value, context.cwd === null ? { ...(signal === undefined ? {} : { signal }) } : { cwd: context.cwd, ...(signal === undefined ? {} : { signal }) })
-  const info = await fs.stat(target, signal)
+    .catch(cannotRead)
+  const info = await fs.stat(target, signal).catch(cannotRead)
   if (info === undefined) {
     throw new MaterialError(`no readable file at ${target.displayPath}; verify the path with the read tool first`)
   }
@@ -124,7 +140,7 @@ async function resolvePath(value: string, context: ResolveContext): Promise<Reso
     throw new MaterialError(`${target.displayPath} is not a regular file`)
   }
 
-  const mime = mimeOfPath(value) ?? sniffMime(await fs.readByteRange(target, { offset: 0, length: SNIFF_BYTES }, signal))
+  const mime = mimeOfPath(value) ?? sniffMime(await fs.readByteRange(target, { offset: 0, length: SNIFF_BYTES }, signal).catch(cannotRead))
   if (mime === null) {
     throw new MaterialError(`${target.displayPath} is neither a recognized image nor video, by extension or by content; supported: ${[...Object.keys(IMAGE_MIME), ...Object.keys(VIDEO_MIME)].join(' ')}`)
   }
@@ -138,13 +154,16 @@ async function resolvePath(value: string, context: ResolveContext): Promise<Reso
     bytes = await fs.readBytes(target, signal, limit)
   } catch (error: unknown) {
     if (fsErrorCode(error) === 'FS_TOO_LARGE') throw tooLarge(info.size ?? limit + 1)
-    throw error
+    return cannotRead(error)
   }
   return {
     url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`,
     digest: `sha256:${sha256(bytes)}`,
     bytes: bytes.byteLength,
     mime,
+    // One spelling per file for the fingerprint: `./a.png` and `/ws/a.png` are
+    // the same request, or dedupe and the moderation block could be sidestepped.
+    location: context.cwd === null ? value : resolveAgainst(context.cwd, value),
   }
 }
 
@@ -152,7 +171,7 @@ async function resolvePath(value: string, context: ResolveContext): Promise<Reso
 export function describeMaterial(ref: MaterialRef, resolved: ResolvedMaterial): string {
   if (ref.kind === 'url') return `url:${ref.value}`
   if (ref.kind === 'attachment') return `attachment:${ref.value}`
-  return `path:${ref.value}#${resolved.digest.slice(0, 19)}`
+  return `path:${resolved.location ?? ref.value}#${resolved.digest.slice(0, 19)}`
 }
 
 function sha256(value: string | Uint8Array): string {

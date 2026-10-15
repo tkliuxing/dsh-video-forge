@@ -16,6 +16,7 @@ import { registerTools } from '../src/tools.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import type { VideoTask } from '../src/types.ts'
+import { hostWorkspaceFs } from '../src/workspace-fs.ts'
 
 const MODEL = {
   id: 'doubao-seedance-fixture',
@@ -57,7 +58,8 @@ function settingsWith(provider: ProviderSetting | null, over: Partial<VideoForge
 function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRuntime {
   const ctx = {
     tools: { register: (definition: ToolDefinition) => { definitions.set(definition.name, definition); return () => {} } },
-    get: () => undefined,
+    // The host's filesystem service, served by the host-local implementation.
+    get: (name: string) => (name === 'fs' ? hostWorkspaceFs : undefined),
   } as unknown as Context
   return {
     ctx,

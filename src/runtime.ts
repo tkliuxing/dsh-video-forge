@@ -3,7 +3,7 @@
  * URLs and paths everything else needs, so no tool re-derives them.
  */
 
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import type { Ledger } from './ledger.ts'
@@ -69,10 +69,12 @@ export function artifactUrl(task: VideoTask, artifact: VideoArtifact): string {
  * table would let the new instance's boot pass reattach those rows a second time.
  */
 export function watchTableFor(ledgerPath: string): Set<string> {
-  let table = WATCH_TABLES.get(ledgerPath)
+  // Keyed like `sharedLedger`: two spellings of one file must share one table.
+  const key = resolvePath(ledgerPath)
+  let table = WATCH_TABLES.get(key)
   if (table === undefined) {
     table = new Set()
-    WATCH_TABLES.set(ledgerPath, table)
+    WATCH_TABLES.set(key, table)
   }
   return table
 }

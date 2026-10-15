@@ -16,7 +16,7 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-tools'
 import { Config, snapshot, type Config as VideoForgeConfig } from './config.ts'
-import { Ledger, LedgerCorruptError } from './ledger.ts'
+import { LedgerCorruptError, sharedLedger } from './ledger.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
@@ -47,7 +47,8 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   }
 
   const home = resolveHome(ctx)
-  const ledger = new Ledger({
+  // One ledger object per file for the whole process; see `sharedLedger`.
+  const { ledger, fresh } = sharedLedger({
     path: join(pluginHome(home), 'tasks.json'),
     maxTasks: config.maxTasks.get(),
     maxGiB: config.maxGiB.get(),
@@ -161,7 +162,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   // The rows a previous process left are exactly those on disk at load time. A
   // row submitted while boot waits for the credential store has a watch of its
   // own and must not be "reconciled" into a second one.
-  const inherited = ledger.load()
+  const inherited = (fresh ? ledger.load() : ledger.ready())
     .catch((error: unknown) => {
       if (error instanceof LedgerCorruptError) {
         logger.warn(`video-forge: ${error.message}; starting from an empty ledger`)

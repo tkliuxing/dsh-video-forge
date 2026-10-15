@@ -7,9 +7,10 @@
  * opaque target that `resolve(path, { cwd })` returns; relative paths resolve
  * against the session's workspace.
  *
- * A composition without a filesystem service — tests, a minimal profile — has
- * nothing to delegate to; there the same interface is served by Node's `fs` on
- * the host, which is exactly what such a composition means.
+ * A call no session made (the workbench, tests) in a composition without a
+ * filesystem service has no workspace to respect; there the same interface is
+ * served by Node's `fs` on the host. A session call never falls back that way
+ * (see {@link workspaceFsOf}).
  */
 
 import { open, stat } from 'node:fs/promises'
@@ -30,9 +31,20 @@ export interface WorkspaceFs {
   readByteRange(target: WorkspaceTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array>
 }
 
-/** The host's filesystem service, or a host-local stand-in when none is mounted. */
-export function workspaceFsOf(ctx: Context): WorkspaceFs {
-  return (ctx.get('fs' as never) as WorkspaceFs | undefined) ?? HOST_FS
+/**
+ * The host's filesystem service; for a call no session made, a host-local
+ * stand-in when none is mounted; otherwise null.
+ *
+ * A session's workspace may live elsewhere: an SSH filesystem service exists
+ * only while its connection does, so `ctx.fs` can be briefly absent in a remote
+ * composition. Reading the same path on this machine then could upload a
+ * different file — and pay for a generation on it. So a session call without
+ * the service gets null, and the caller refuses.
+ */
+export function workspaceFsOf(ctx: Context, forSession: boolean): WorkspaceFs | null {
+  const mounted = ctx.get('fs' as never) as WorkspaceFs | undefined
+  if (mounted !== undefined) return mounted
+  return forSession ? null : hostWorkspaceFs
 }
 
 /** `FsError` codes (`@deepseek-ai/dsh-fs`) read by string, so no class identity is needed. */
@@ -41,8 +53,8 @@ export function fsErrorCode(error: unknown): string | null {
   return typeof code === 'string' && code.startsWith('FS_') ? code : null
 }
 
-/** Host-local stand-in with `ctx.fs` semantics: missing → `stat` undefined, too large → `FS_TOO_LARGE`. */
-const HOST_FS: WorkspaceFs = {
+/** Host-local stand-in with `ctx.fs` semantics (also what tests mount as `fs`): missing → `stat` undefined, too large → `FS_TOO_LARGE`. */
+export const hostWorkspaceFs: WorkspaceFs = {
   async resolve(path, options = {}) {
     const absolute = isAbsolute(path) ? path : resolvePath(options.cwd ?? process.cwd(), path)
     return { targetKey: absolute, displayPath: absolute }

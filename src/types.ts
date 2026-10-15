@@ -75,6 +75,8 @@ export interface ResolvedMaterial {
   digest: string
   bytes: number | null
   mime: string | null
+  /** For a file: the path it was read from, made absolute against the session workspace. */
+  location?: string
 }
 
 /** A generation request in provider-neutral terms. */

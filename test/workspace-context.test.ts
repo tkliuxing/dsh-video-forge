@@ -34,7 +34,7 @@ describe('recognising a file by its first bytes', () => {
 })
 
 describe('a material path', () => {
-  const hostFs = workspaceFsOf({ get: () => undefined } as unknown as Context)
+  const hostFs = workspaceFsOf({ get: () => undefined } as unknown as Context, false)
 
   it('with no extension, as DSH stores a dropped image, is read by its signature', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'video-forge-attach-'))
@@ -129,9 +129,58 @@ describe('a stored session record', () => {
     ] }))
     expect(doc.tasks.map(task => task.session ?? null)).toEqual([
       { id: 's', cwd: '/ws', mode: 'read-only' },
-      { id: 's', cwd: '/ws', mode: null },
+      { id: 's', cwd: '/ws', mode: 'unknown' },
       null,
     ])
+  })
+})
+
+describe('a session call without the host filesystem service', () => {
+  it('is refused rather than read on this machine, where a remote workspace does not live', async () => {
+    const fs = workspaceFsOf({ get: () => undefined } as unknown as Context, true)
+    expect(fs).toBeNull()
+    await expect(resolveMaterial({ kind: 'path', value: '/home/me/shots/a.png' }, { fs, cwd: '/home/me' }))
+      .rejects.toThrow(/workspace filesystem is not available right now/)
+  })
+
+  it('maps a backend failure on the path to something the model can act on', async () => {
+    const fs: WorkspaceFs = {
+      resolve: async () => { throw Object.assign(new Error('a path segment is a file'), { code: 'FS_NOT_FOUND' }) },
+      stat: async () => undefined,
+      readByteRange: async () => PNG,
+      readBytes: async () => PNG,
+    }
+    const error = await resolveMaterial({ kind: 'path', value: 'a.png/b.png' }, { fs, cwd: '/ws' }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(MaterialError)
+    expect(String(error)).toMatch(/cannot read "a\.png\/b\.png": a path segment is a file/)
+  })
+
+  it('fingerprints a relative path by the file it names, not by its spelling', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-loc-'))
+    await writeFile(join(dir, 'a.png'), PNG)
+    const fs = workspaceFsOf({ get: () => undefined } as unknown as Context, false)
+    const relative = await resolveMaterial({ kind: 'path', value: './a.png' }, { fs, cwd: dir })
+    const absolute = await resolveMaterial({ kind: 'path', value: join(dir, 'a.png') }, { fs, cwd: dir })
+    expect(relative.location).toBe(absolute.location)
+  })
+})
+
+describe('the ISO base media signature', () => {
+  it('is a video only for video brands; HEIC, AVIF and M4A are not', () => {
+    const box = (brand: string): Uint8Array => Uint8Array.from([0, 0, 0, 0x18, ...ascii('ftyp'), ...ascii(brand), 0, 0, 0, 0])
+    expect(sniffMime(box('mp42'))).toBe('video/mp4')
+    expect(sniffMime(box('avc1'))).toBe('video/mp4')
+    expect(sniffMime(box('heic'))).toBeNull()
+    expect(sniffMime(box('mif1'))).toBeNull()
+    expect(sniffMime(box('avif'))).toBeNull()
+    expect(sniffMime(box('M4A '))).toBeNull()
+  })
+})
+
+describe('a sandbox policy that cannot answer', () => {
+  it('records the mode as unknown, never as unfenced', () => {
+    const ctx = { get: (name: string) => (name === 'sandboxPolicy' ? { resolve: () => { throw new Error('projection not registered') } } : undefined) } as unknown as Context
+    expect(sessionContextOf(ctx, { id: 's', session: { header: { cwd: '/ws' } } })?.mode).toBe('unknown')
   })
 })
 
@@ -142,6 +191,20 @@ describe('the live-watch table', () => {
     expect(watchTableFor('/home/a/tasks.json')).toBe(first)
     expect(watchTableFor('/home/a/tasks.json').has('v-1')).toBe(true)
     expect(watchTableFor('/home/b/tasks.json').has('v-1')).toBe(false)
+    // Two spellings of one file share one table.
+    expect(watchTableFor('/home/a/../a/tasks.json')).toBe(first)
     first.delete('v-1')
+  })
+})
+
+describe('the ledger for one file', () => {
+  it('is one object for the whole process, so two plugin instances never flush over each other', async () => {
+    const { sharedLedger } = await import('../src/ledger.ts')
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-shared-'))
+    const first = sharedLedger({ path: join(dir, 'tasks.json'), maxTasks: 10, maxGiB: 1 })
+    const second = sharedLedger({ path: join(dir, '.', 'tasks.json'), maxTasks: 20, maxGiB: 2 })
+    expect(first.fresh).toBe(true)
+    expect(second.fresh).toBe(false)
+    expect(second.ledger).toBe(first.ledger)
   })
 })
