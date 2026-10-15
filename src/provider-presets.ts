@@ -86,6 +86,13 @@ const SEEDANCE_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'
  * [模型列表] for the ids). Console-only models (the 1.0 lite pair, Seaweed) are
  * left out because the API does not serve them.
  *
+ * The two 1.0 models are marked 即将下线 ("being retired", no date given) on
+ * the 模型列表 page as of 2026-10-15, and `doubao-seedance-1-0-pro-250528`
+ * already answered `404 InvalidEndpointOrModel.NotFound` to an account that
+ * had not activated it (where `1-0-pro-fast` still said `ModelNotOpen`). They
+ * stay in the catalog — an account that has them can still call them — but
+ * the label says so, so nobody picks one as a default.
+ *
  * Two per-task rules cannot be expressed as a per-model list, so the vendor
  * enforces them and its error reaches the operator:
  * - Seedance 2.5 accepts only `adaptive` for first-frame / first-and-last-frame
@@ -143,7 +150,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
   },
   {
     id: 'doubao-seedance-1-0-pro-250528',
-    label: 'Seedance 1.0 Pro',
+    label: 'Seedance 1.0 Pro (retiring)',
     modes: ['t2v', 'i2v', 'flf2v'],
     durations: seconds(2, 12),
     resolutions: ['480p', '720p', '1080p'],
@@ -153,7 +160,7 @@ const SEEDANCE_MODELS: readonly PresetModel[] = [
   },
   {
     id: 'doubao-seedance-1-0-pro-fast-251015',
-    label: 'Seedance 1.0 Pro Fast',
+    label: 'Seedance 1.0 Pro Fast (retiring)',
     modes: ['t2v', 'i2v'],
     durations: seconds(2, 12),
     resolutions: ['480p', '720p', '1080p'],
