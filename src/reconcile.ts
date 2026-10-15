@@ -22,6 +22,7 @@
 
 import { awaitingBilling, settledBilling, unknownBilling } from './billing.ts'
 import { resolveApiKey } from './credentials.ts'
+import { deliverArtifact, discardStaging } from './destination.ts'
 import { downloadArtifact } from './download.ts'
 import type { Ledger } from './ledger.ts'
 import { isSending, unconfirmedMessage } from './operations.ts'
@@ -402,6 +403,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             task: fresh,
             pollIntervalMs: model.pollIntervalMs,
             outputDirectory: runtime.outputDirectory(fresh.localId),
+            deliver: (owned, artifact, billing) => deliverArtifact(runtime, owned, artifact, billing),
             logger,
             onExit: () => {
               runtime.watching.delete(fresh.localId)
@@ -424,25 +426,46 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         continue
       }
       if (state.status === 'succeeded' && state.videoUrl !== null) {
-        const artifact = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
-        if (artifact === null) {
-          // Finished and paid, but the bytes did not arrive: stay an orphan so the
-          // next pass fetches it again, with whatever fresh URL the provider gives.
-          await ledger.update(task.localId, current => (unchanged(current) ? { ...current, billing: settledBilling(state.usage, state.status) } : current))
-          await markOrphaned(ledger, task, unchanged, 'generation succeeded but the artifact could not be downloaded yet')
-          continue
+        // Claim the row in the shared watch table before downloading, as a
+        // reattached watch does: a re-applied plugin instance must not fetch and
+        // deliver the same video a second time into the workspace.
+        let claimed = false
+        await ledger.update(task.localId, (current) => {
+          if (!unchanged(current)) return current
+          claimed = true
+          runtime.watching.add(current.localId)
+          return current
+        })
+        if (!claimed) continue
+        // While the claim is held, the row is ours if its status has not moved.
+        const owned = (current: VideoTask): boolean => current.status === task.status
+        try {
+          const downloaded = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
+          if (downloaded === null) {
+            // Finished and paid, but the bytes did not arrive: stay an orphan so the
+            // next pass fetches it again, with whatever fresh URL the provider gives.
+            await ledger.update(task.localId, current => (owned(current) ? { ...current, billing: settledBilling(state.usage, state.status) } : current))
+            await markOrphaned(ledger, task, owned, 'generation succeeded but the artifact could not be downloaded yet')
+            continue
+          }
+          const artifact = await deliverArtifact(runtime, task, downloaded, settledBilling(state.usage, state.status))
+          let recorded = false
+          await ledger.update(task.localId, current => (owned(current) && (recorded = true)
+            ? {
+                ...current,
+                status: 'succeeded',
+                progress: 1,
+                artifacts: [artifact],
+                error: null,
+                billing: settledBilling(state.usage, state.status),
+                updatedAt: new Date().toISOString(),
+              }
+            : current))
+          // Only a delivery the ledger recorded makes the download redundant.
+          if (recorded) await discardStaging(downloaded, artifact)
+        } finally {
+          runtime.watching.delete(task.localId)
         }
-        await ledger.update(task.localId, current => (unchanged(current)
-          ? {
-              ...current,
-              status: 'succeeded',
-              progress: 1,
-              artifacts: [artifact],
-              error: null,
-              billing: settledBilling(state.usage, state.status),
-              updatedAt: new Date().toISOString(),
-            }
-          : current))
         logger.info(`video-forge: ${task.localId} had already finished; recorded its artifact`)
         continue
       }

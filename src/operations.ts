@@ -32,6 +32,8 @@ import {
   type VideoTask,
 } from './types.ts'
 import { describe } from './watch.ts'
+import { describeLocation, planDestination } from './destination.ts'
+import { DEFAULT_SHOT, isShotName, MANIFEST_FILE, readProject, type ProjectState } from './project.ts'
 import type { TaskSession } from './session-context.ts'
 import { workspaceFsOf } from './workspace-fs.ts'
 
@@ -57,6 +59,8 @@ export interface GenerateInput {
   durationSeconds?: number | null | undefined
   resolution?: string | undefined
   aspectRatio?: string | undefined
+  /** Shot (directory under `renders/`) the artifact belongs to; defaults to `untitled`. */
+  shot?: string | undefined
 }
 
 export interface GenerateOutcome {
@@ -92,18 +96,45 @@ export async function generate(
   // Duplicate checks read the ledger, so it must have been read from disk first.
   await runtime.ledger.ready()
 
-  const { provider, model } = resolveTarget(settings, input.provider ?? null, input.model ?? null)
-  const request = normaliseRequest(input)
+  const session = options.session ?? null
+  const shot = blankToNull(input.shot) ?? DEFAULT_SHOT
+  if (!isShotName(shot)) throw new ConfigError(`shot "${shot}" must be letters, digits, "-", "_" or "." (it names a folder under renders/)`)
+
+  // The workspace's manifest, read before anything else is decided: its
+  // defaults fill what the request leaves out, and its paths say where the
+  // artifact goes. One that does not parse stops the request here, unpaid.
+  const project = await readSessionProject(runtime, session, options.signal)
+  const applied = withProjectDefaults(input, project)
+  const destination = await planDestination(runtime.ctx, session, project, shot)
+
+  let target: ReturnType<typeof resolveTarget>
+  try {
+    target = resolveTarget(settings, applied.input.provider ?? null, applied.input.model ?? null)
+  } catch (error: unknown) {
+    if (error instanceof ConfigError && applied.target.length > 0) {
+      throw new ConfigError(`${error.message} (${applied.target.join(' and ')} came from the defaults in ${MANIFEST_FILE})`)
+    }
+    throw error
+  }
+  const { provider, model } = target
+  const request = normaliseRequest(applied.input)
   if (!supportsMode(model, request.mode)) {
     throw new ConfigError(`model "${model.id}" does not declare mode ${request.mode}; it supports ${model.modes.join('/')}`)
   }
-  assertGeometry(model, {
-    durationSeconds: request.durationSeconds,
-    resolution: request.resolution,
-    aspectRatio: request.aspectRatio,
-  })
+  try {
+    assertGeometry(model, {
+      durationSeconds: request.durationSeconds,
+      resolution: request.resolution,
+      aspectRatio: request.aspectRatio,
+    })
+  } catch (error: unknown) {
+    if (error instanceof ConfigError && applied.from.length > 0) {
+      throw new ConfigError(`${error.message} (${applied.from.join(', ')} came from the defaults in ${MANIFEST_FILE})`)
+    }
+    throw error
+  }
 
-  const resolved = await resolveMaterials(runtime, request, options.signal, options.session ?? null)
+  const resolved = await resolveMaterials(runtime, request, options.signal, session)
   const generation: GenerationRequest = {
     model: model.id,
     prompt: request.prompt,
@@ -137,7 +168,8 @@ export async function generate(
     provider: provider.id,
     protocol: provider.protocol,
     model: model.id,
-    ...(options.session === undefined || options.session === null ? {} : { session: options.session }),
+    ...(session === null ? {} : { session }),
+    destination,
     providerTaskId: null,
     status: 'submitting',
     progress: null,
@@ -197,7 +229,7 @@ export async function generate(
     artifact,
     kind: done ? 'done' : 'job',
     message: done
-      ? `finished ${final.localId}: ${artifact.bytes} bytes at ${artifact.path}`
+      ? `finished ${final.localId}: ${artifact.bytes} bytes at ${describeLocation(artifact)}`
       : final.status === 'failed' || final.status === 'cancelled'
         ? describe(final).trim()
         : `submitted ${final.localId} (${provider.id}/${model.id}); track it with video_status — do not re-submit`,
@@ -453,6 +485,8 @@ export interface TaskRow {
   updatedAt: string
   playUrl: string | null
   artifactPath: string | null
+  /** Where the artifact is, for a reader: workspace-relative, or the path and why it is outside. */
+  artifactLocation: string | null
   artifactBytes: number | null
   error: string | null
   /** Provider-reported usage once settled; null while the task runs or before anyone asked. */
@@ -493,6 +527,7 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
         updatedAt: task.updatedAt,
         playUrl: artifact === undefined ? null : artifactUrl(task, artifact),
         artifactPath: artifact?.path ?? null,
+        artifactLocation: artifact === undefined ? null : describeLocation(artifact),
         artifactBytes: artifact?.bytes ?? null,
         error: task.error === null ? null : task.error.message,
         billing: task.billing ?? null,
@@ -714,6 +749,56 @@ async function waitForTerminal(runtime: VideoForgeRuntime, localId: string, time
     if (Date.now() >= deadline) return
     await new Promise(resolve => setTimeout(resolve, 2000))
   }
+}
+
+/** The workspace's project state, or null for a call with no workspace. */
+async function readSessionProject(
+  runtime: VideoForgeRuntime,
+  session: TaskSession | null,
+  signal: AbortSignal | undefined,
+): Promise<ProjectState | null> {
+  if (session === null || session.cwd === null) return null
+  const fs = workspaceFsOf(runtime.ctx, true)
+  if (fs === null) {
+    throw new ConfigError('the host filesystem service is not available (a remote workspace may be reconnecting); nothing was submitted — try again in a moment')
+  }
+  return readProject(fs, session.cwd, signal)
+}
+
+/**
+ * Fill what the request leaves out from the manifest's defaults. Provider and
+ * model come as a pair, and only when the request names neither: a model id
+ * from the manifest must not be paired with a provider the request chose.
+ */
+function withProjectDefaults(input: GenerateInput, project: ProjectState | null): { input: GenerateInput; from: string[]; target: string[] } {
+  if (project === null) return { input, from: [], target: [] }
+  const defaults = project.manifest.defaults
+  const from: string[] = []
+  const target: string[] = []
+  const next: GenerateInput = { ...input }
+  if (blankToNull(input.provider) === null && blankToNull(input.model) === null) {
+    if (defaults.provider !== null) {
+      next.provider = defaults.provider
+      target.push('provider')
+    }
+    if (defaults.model !== null) {
+      next.model = defaults.model
+      target.push('model')
+    }
+  }
+  if (blankToNull(input.resolution) === null && defaults.resolution !== null) {
+    next.resolution = defaults.resolution
+    from.push('resolution')
+  }
+  if (blankToNull(input.aspectRatio) === null && defaults.aspectRatio !== null) {
+    next.aspectRatio = defaults.aspectRatio
+    from.push('aspect_ratio')
+  }
+  if ((input.durationSeconds === undefined || input.durationSeconds === null) && defaults.durationSeconds !== null) {
+    next.durationSeconds = defaults.durationSeconds
+    from.push('duration_seconds')
+  }
+  return { input: next, from, target }
 }
 
 function blankToNull(value: string | undefined): string | null {

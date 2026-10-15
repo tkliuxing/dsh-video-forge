@@ -29,10 +29,11 @@
 import type { JobHandle, JobHooks, JobId, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-jobs'
 import { settledBilling } from './billing.ts'
+import { describeLocation, discardStaging } from './destination.ts'
 import { downloadArtifact } from './download.ts'
 import type { Ledger } from './ledger.ts'
 import type { AdapterContext, ProtocolAdapter } from './providers/index.ts'
-import type { VideoTask } from './types.ts'
+import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 
 declare module '@deepseek-ai/dsh-jobs' {
   /**
@@ -67,8 +68,13 @@ export interface WatchCore {
   context: AdapterContext
   task: VideoTask
   pollIntervalMs: number
-  /** Directory this task's artifacts are written into. */
+  /** Directory this task's artifacts are downloaded into. */
   outputDirectory: string
+  /**
+   * Move a downloaded artifact to its destination (the workspace); returns it as
+   * it now is. Must not throw. Absent: the artifact stays where it was downloaded.
+   */
+  deliver?: ((task: VideoTask, artifact: VideoArtifact, billing: TaskBilling | null) => Promise<VideoArtifact>) | undefined
   logger: WatchLogger
   /** Called after every ledger write, so a caller can refresh its view. */
   onUpdate?: ((task: VideoTask) => void) | undefined
@@ -250,7 +256,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
         return { status: 'failed', detail: 'no artifact URL', result: describe(updated) }
       }
       try {
-        const artifact = await downloadArtifact({
+        const downloaded = await downloadArtifact({
           url: state.videoUrl,
           apiKey: context.apiKey,
           apiOrigin: context.baseUrl,
@@ -260,17 +266,23 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           signal,
           mimeHint: 'video/mp4',
         })
+        const billing = settledBilling(state.usage, state.status)
+        const artifact = core.deliver === undefined
+          ? downloaded
+          : await core.deliver(ledger.byId(task.localId) ?? task, downloaded, billing)
         const updated = await ledger.update(task.localId, current => ({
           ...current,
           status: 'succeeded',
           progress: 1,
           artifacts: [...current.artifacts.filter(entry => entry.path !== artifact.path), artifact],
           error: null,
-          billing: settledBilling(state.usage, state.status),
+          billing,
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
-        reporter.line(`downloaded ${(artifact.bytes / 1024 / 1024).toFixed(1)} MiB to ${artifact.path}\n`)
+        // Only now, with the delivery on record, is the downloaded copy redundant.
+        await discardStaging(downloaded, artifact)
+        reporter.line(`downloaded ${(artifact.bytes / 1024 / 1024).toFixed(1)} MiB to ${describeLocation(artifact)}\n`)
         return { status: 'completed', result: describe(updated) }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
@@ -323,7 +335,7 @@ export function describe(task: VideoTask): string {
   const artifact = task.artifacts[0]
   const parts = [`${task.localId} ${task.status}`, `${task.provider}/${task.model}`]
   if (task.progress !== null) parts.push(`${Math.round(task.progress * 100)}%`)
-  if (artifact !== undefined) parts.push(`${artifact.path} (${(artifact.bytes / 1024 / 1024).toFixed(1)} MiB)`)
+  if (artifact !== undefined) parts.push(`${describeLocation(artifact)} (${(artifact.bytes / 1024 / 1024).toFixed(1)} MiB)`)
   if (task.error !== null) parts.push(task.error.message)
   return `${parts.join(' · ')}\n`
 }

@@ -49,6 +49,7 @@ const TASK_SCHEMA = {
     progress: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
     submitted_at: { type: 'string', required: true },
     play_url: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
+    location: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
     error: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
     moderation: { required: true, oneOf: [{ type: 'null' }, { type: 'string', enum: ['input', 'output', 'unknown'] }] },
     billing: {
@@ -92,6 +93,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'Inputs: prompt (required), optional provider/model, mode t2v (text only), i2v (first_frame), flf2v (first_frame + last_frame) or s2v (reference_images).',
       'A local image must be an absolute workspace path that already exists; verify it with the read tool first.',
       'Never re-submit the same prompt to work around a timeout: call video_status instead. A duplicate submission inside the dedupe window is refused.',
+      'The finished video is saved into the workspace as renders/<shot>/vNNN.mp4 (folders per video-project.yaml, whose defaults also fill omitted parameters), with a vNNN.json description beside it. A read-only conversation or a remote workspace is refused before anything is paid for.',
     ].join(' '),
     parameters: {
       prompt: { type: 'string', required: true, description: 'What the video should show. Be specific about subject, motion, camera and style.' },
@@ -219,6 +221,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           : value.tasks.map(row => [
             `${row.task_id} ${row.status}${row.progress === null ? '' : ` ${Math.round(row.progress * 100)}%`}`,
             `${row.provider}/${row.model}`,
+            row.location ?? '',
             row.play_url === null ? '' : row.play_url,
             usageText(row.billing),
             row.moderation === null ? '' : `refused by the provider's content review (${row.moderation})`,
@@ -242,6 +245,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           progress: row.progress,
           submitted_at: row.submittedAt,
           play_url: row.playUrl,
+          location: row.artifactLocation,
           error: row.error,
           moderation: row.moderation,
           billing: row.billing === null
@@ -302,7 +306,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
   ctx.tools.register(defineTool({
     name: 'video_export',
     description: [
-      'Copy a finished artifact out of the plugin\'s own output directory into the workspace, so it can be delivered with present.',
+      'Copy a finished artifact to another path. Only needed for a video that video_status reports as kept outside the workspace; one already in renders/ needs no export.',
       'Requires an absolute target path; refuses to overwrite an existing file unless overwrite is true.',
       'The artifact stays where it is: nothing is moved or deleted.',
     ].join(' '),

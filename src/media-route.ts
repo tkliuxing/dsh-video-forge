@@ -13,10 +13,17 @@
  *    implements this, so the parsing below is ours.
  * 3. **Nothing is cacheable or sniffable.** `private, no-store`, `nosniff`, and
  *    a sandbox CSP, because these bytes are a user's generated media.
+ *
+ * A workspace artifact (DESIGN §17.2) lives where the user can move, delete or
+ * replace it. It is served only while its real path is still exactly the path
+ * recorded when it was written and it is still a regular file — a symlink put in
+ * its place, or in place of a directory above it, is refused rather than
+ * followed. A file that is gone answers 410, so a card can say "moved or
+ * deleted" instead of showing a broken player.
  */
 
-import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { open, realpath, stat, type FileHandle } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Ledger } from './ledger.ts'
 import { MEDIA_ROUTE_PREFIX } from './settings.ts'
@@ -101,13 +108,24 @@ export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: Server
       return
     }
 
-    let size: number
-    try {
-      size = (await stat(hit.artifact.path)).size
-    } catch {
-      send(res, 404, 'artifact missing on disk')
+    const opened = hit.artifact.location?.kind === 'workspace'
+      ? await openWorkspaceFile(hit.artifact.path)
+      : await openFile(hit.artifact.path)
+    if (opened === 'gone') {
+      send(res, hit.artifact.location?.kind === 'workspace' ? 410 : 404, hit.artifact.location?.kind === 'workspace'
+        ? 'the video was moved or deleted from the workspace'
+        : 'artifact missing on disk')
       return
     }
+    if (opened === 'replaced') {
+      send(res, 403, 'the video in the workspace is no longer the file that was written; not following it')
+      return
+    }
+    if (opened === 'unreadable') {
+      send(res, 500, 'the video could not be opened')
+      return
+    }
+    const { handle, size } = opened
 
     const common: Record<string, string> = {
       'content-type': hit.artifact.mime,
@@ -120,6 +138,7 @@ export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: Server
 
     const range = parseRange(req.headers.range, size)
     if (range === 'unsatisfiable') {
+      await handle.close()
       res.writeHead(416, { ...common, 'content-range': `bytes */${size}` })
       res.end()
       return
@@ -128,10 +147,11 @@ export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: Server
     if (range === null) {
       res.writeHead(200, { ...common, 'content-length': String(size) })
       if (req.method === 'HEAD') {
+        await handle.close()
         res.end()
         return
       }
-      stream(req, res, hit.artifact.path, {})
+      stream(req, res, handle, {})
       return
     }
 
@@ -142,15 +162,70 @@ export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: Server
       'content-length': String(length),
     })
     if (req.method === 'HEAD') {
+      await handle.close()
       res.end()
       return
     }
-    stream(req, res, hit.artifact.path, { start: range.start, end: range.end })
+    stream(req, res, handle, { start: range.start, end: range.end })
   }
 }
 
-function stream(req: IncomingMessage, res: ServerResponse, path: string, range: { start?: number; end?: number }): void {
-  const source = createReadStream(path, range)
+type Opened = { handle: FileHandle; size: number } | 'gone' | 'replaced' | 'unreadable'
+
+/**
+ * Read-only, never following a final symlink, and non-blocking: opening a FIFO
+ * put in the video's place would otherwise wait forever and pin a threadpool
+ * thread of the whole host. The handle is checked to be a regular file anyway.
+ */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+
+/** A plugin-owned file under `$DSH_HOME`. */
+async function openFile(path: string): Promise<Opened> {
+  try {
+    const handle = await open(path, (constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)))
+    try {
+      const info = await handle.stat()
+      if (info.isFile()) return { handle, size: info.size }
+    } catch {
+      // Fall through: close it and refuse.
+    }
+    await handle.close()
+    return 'unreadable'
+  } catch {
+    return 'gone'
+  }
+}
+
+/**
+ * A workspace artifact, opened only if it is still the file that was written:
+ * open first (never following a final symlink), then require that the real path
+ * is still the recorded one and names the very file the handle holds. Checking
+ * after opening leaves no window in which a swapped path could be read.
+ */
+async function openWorkspaceFile(path: string): Promise<Opened> {
+  let handle: FileHandle
+  try {
+    handle = await open(path, OPEN_FLAGS)
+  } catch (error: unknown) {
+    const code = (error as { code?: string }).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'gone'
+    // ELOOP is O_NOFOLLOW meeting a symlink; anything else is a plain failure to open.
+    return code === 'ELOOP' || code === 'EMLINK' ? 'replaced' : 'unreadable'
+  }
+  try {
+    const held = await handle.stat()
+    const real = await realpath(path)
+    const named = await stat(real)
+    if (held.isFile() && real === path && named.ino === held.ino && named.dev === held.dev) return { handle, size: held.size }
+  } catch {
+    // Changed under us: treat like a replacement.
+  }
+  await handle.close()
+  return 'replaced'
+}
+
+function stream(req: IncomingMessage, res: ServerResponse, handle: FileHandle, range: { start?: number; end?: number }): void {
+  const source = handle.createReadStream({ ...range, autoClose: true })
   // A client that seeks away mid-body leaves the socket half-read; destroy the
   // stream rather than leaking a descriptor per scrub.
   req.on('close', () => source.destroy())

@@ -140,8 +140,46 @@ export interface TaskBilling extends ProviderUsage {
   settledAt: string
 }
 
-/** A produced artifact after it landed in `$DSH_HOME`. */
+/**
+ * Where a task's artifact is to go, decided when it is submitted (DESIGN §17.2).
+ * `workspace`: `<root>/<renders>/<shot>/vNNN.<ext>`, the version allocated when
+ * the file is written. `home`: the plugin's own directory under `$DSH_HOME`,
+ * with the reason it is not the workspace.
+ */
+export type ArtifactDestination =
+  | {
+      kind: 'workspace'
+      /** The session's workspace folder (execution-world path, as the session reports it). */
+      root: string
+      /** Renders directory, workspace-relative, POSIX separators. */
+      renders: string
+      shot: string
+      /** The workspace had no manifest at submit time: write one, with `renders/.gitignore`. */
+      writeManifest: boolean
+    }
+  | { kind: 'home'; reason: string }
+
+/** Where an artifact actually landed. */
+export type ArtifactLocation =
+  | {
+      kind: 'workspace'
+      root: string
+      /** Workspace-relative path of the video, POSIX separators. */
+      relativePath: string
+      shot: string
+      version: number
+      /** Workspace-relative path of the description file, or null when it could not be written. */
+      sidecar: string | null
+    }
+  | {
+      kind: 'home'
+      /** Why it is not in the workspace; null for a call no session made and for older rows. */
+      reason: string | null
+    }
+
+/** A produced artifact: in the workspace, or in `$DSH_HOME` (see `location`). */
 export interface VideoArtifact {
+  /** Absolute path on this machine; for a workspace artifact, the real path at write time. */
   path: string
   bytes: number
   mime: string
@@ -151,6 +189,8 @@ export interface VideoArtifact {
   /** 128-bit random hex, the only thing that authorizes media access besides the task id. */
   token: string
   createdAt: string
+  /** Absent on rows written before M3.2; those are in `$DSH_HOME`. */
+  location?: ArtifactLocation
 }
 
 /** Stored, redacted request facts. Never carries material bytes. */
@@ -204,6 +244,8 @@ export interface VideoTask {
    * written before this was recorded.
    */
   session?: TaskSession
+  /** Where the artifact is to be delivered; absent on rows written before M3.2 (`$DSH_HOME`). */
+  destination?: ArtifactDestination
   /**
    * Settled provider usage. Absent (or null) until the task has finished and the
    * provider has been asked; rows written before usage was recorded read the same.

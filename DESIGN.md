@@ -765,7 +765,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 | 阶段 | 内容 | 完成标准 |
 |---|---|---|
 | **M3.1 基础**（**已完成**，见 17.6） | 台账行增加会话上下文（`sessionId`、`cwd`、提交时档位）；素材读取改走 `ctx.fs` 并识别无扩展名文件；`watching` 表改为进程级共享（顺带修 §15 第 14 条的重复盯守） | 单测；拖入图片的打印路径能作素材 |
-| **M3.2 项目与产物** | 解析清单（目录映射、默认参数、风格、角色）；产物落点规划（工作区或 `$DSH_HOME`，附原因）；`renders/<shot>/vNNN` 版本号在台账锁内分配；视频写入与包含检查；说明文件经 `ctx.fs.writeText` 写；媒体路由能播工作区文件（真实路径检查、文件被移走时给明确状态） | fixture 端到端：工作区、只读回退、符号链接逃逸被拒、版本号并发 |
+| **M3.2 项目与产物**（**已完成**，见 17.7） | 解析清单（目录映射、默认参数、风格、角色）；产物落点规划（工作区或 `$DSH_HOME`，附原因）；`renders/<shot>/vNNN` 版本号不撞号地分配（实现为 `link(2)` 发布，见 17.7）；视频写入与包含检查；说明文件经 `ctx.fs.writeText` 写；媒体路由能播工作区文件（真实路径检查、文件被移走时给明确状态） | fixture 端到端：工作区、只读回退、符号链接逃逸被拒、版本号并发 |
 | **M3.3 工具收敛** | `video_generate` 加 `shot` / `from` / `characters`，素材用工作区相对路径；`video_status` 无参数时给出配置与可用模型状态；删除 `video_export`；`from` 走方舟 `return_last_frame` 取尾帧（MiniMax 不支持就明确拒绝） | 单测 + 在线测试 `paid` 档加一条带 `return_last_frame` 的方舟任务 |
 | **M3.4 卡片与界面** | 删除工作台页（`main` + `sidebar.panellist`）和面板的 `generate` / `export`；卡片显示实时进度、播放、取消；`overview` 支持按任务过滤 | jsdom 单测 + 隔离实例里用真浏览器看一遍卡片 |
 | **M3.5 重启通知** | `resolveAgent` + `followup`，台账 `notifiedAt`，声明消息来源类型 | 单测（假 agent）+ 隔离实例重启实测 |
@@ -818,3 +818,45 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
   - 可以读工作区以外的绝对路径。拖入的附件在 `$DSH_HOME` 里，所以必须允许；读取范围和内置 `read` 工具相同，区别在于字节会发给视频供应商。以后如果需要，可以只放行工作区和 `$DSH_HOME/attachments`，其他路径走审批。
   - 工作台的无会话提交在 SSH 空窗期仍会读本机（M3.4 删除工作台提交后随之消失）。
   - 进程内共享表不会回收不再使用的路径（换 profile 时会留下几个小对象）。
+
+### 17.7 M3.2 实施记录（2026-10-15）
+
+测试 259 → 289 例（新增 `test/workspace-project.test.ts`）；独立审查第二轮见文末。
+
+- **清单**（`src/project.ts`）：经 `ctx.fs` 读工作区根目录的 `video-project.yaml`，用 `yaml` 包解析，上限 256 KiB。
+  - 认这几项：`version: 1`、`defaults`（`provider`、`model`、`resolution`、`aspect_ratio`、`duration_seconds`）、`style`、`characters`（`refs`、`description`）、`paths`（`script`、`storyboard`、`materials`、`renders`、`cache`）。
+  - 目录映射只接受工作区内的相对路径：绝对路径、盘符、`~`、`..` 都拒绝。符号链接在写入时另查。
+  - 不认识的**顶层**键忽略（给以后的新版清单留余地）；`defaults`、`paths`、某个角色**里面**的未知键拒绝，因为那几乎都是拼错（`render:` 写成了 `renders:`），忽略它会把付费的视频放到用户没要的地方。解析不了的清单在**提交前**拒绝，报错带字段名和合法键。
+  - 本阶段只用 `paths` 和 `defaults`：请求没给的参数由清单补上。`provider`/`model` 成对使用，只有请求两者都没给时才用清单的。供应商、模型或几何参数不合法时，报错会注明是哪项来自清单。`style` 和 `characters` 只解析不使用，留给 M3.3（和 `characters` 参数一起）。
+- **提交前定产物落点**（`planDestination`，记进台账的 `destination`）：
+  | 情况 | 处理 |
+  |---|---|
+  | 没有会话（工作台） | 落 `$DSH_HOME`，记原因 |
+  | 档位 `read-only` 或 `unknown` | 拒绝，不提交、不花钱 |
+  | 有会话但拿不到 `ctx.fs` | 拒绝 |
+  | 工作区不在本机（`processPathFromHostPath` 映射不回来，或映射回来不是同一个文件夹；检查方法与宿主 `verifyDesktopPath` 相同） | 拒绝 |
+  | 宿主的文件系统服务没有这两个方法（更老的 DSH） | 落 `$DSH_HOME`，记原因 |
+  | 工作区文件夹已被删除或移走 | 拒绝（和“不在本机”分开报） |
+  | `renders/<shot>` 路径上已有同名文件挡着、是指向不存在目标的符号链接、或最深的已存在目录不可写 | 拒绝 |
+  | `workspace-write` 下 `renders/<shot>` 的真实路径（最深的已存在部分）在工作区外（符号链接逃逸） | 拒绝；`danger-full-access` 和没挂权限策略时放行 |
+- **镜头名**：`GenerateInput.shot`，只允许字母、数字、`-`、`_`、`.`，不允许 `..`，默认 `untitled`。工具参数在 M3.3 才加，所以本阶段模型的产物都进 `renders/untitled/`。
+- **交付**（`deliverArtifact`；watch 和开机对账两条下载路径都调用）：先照旧下载到 `$DSH_HOME`，再搬进工作区。
+  - 台账里的会话记录读不懂（被丢掉）时，档位就是未知的，**不写工作区**，留在 `$DSH_HOME`。
+  - 重新确定档位：会话还在内存里（`ctx.agents.get`）就按 `ctx.sandboxPolicy.resolve` 再查一次，和提交时记录的档位取更严的那个。变成 `read-only`/`unknown` 就留在 `$DSH_HOME`。
+  - 视频用 Node `fs` 写（`ctx.fs` 只能写文本），权限按用户的 umask（`0666 & ~umask`）。先在目标目录里复制一份暂存文件，再用 `link(2)` 发布成 `vNNN.<ext>`：`link` 不会覆盖已有文件，名字被占就换下一个号，所以两个对话、甚至两个进程同时交付同一个镜头也不会撞号。不支持硬链接的文件系统（FAT/exFAT 外接盘、部分网络盘）退回“先用独占创建（`O_EXCL`）占住名字，再把暂存文件 rename 到自己的占位文件上”，同样不会覆盖别人的版本。一个号只要被任何扩展名的文件占了（另一个 take、它的说明文件）就跳过。`workspace-write` 下每次发布前都重查一遍包含关系。
+  - 版本号要大于目录里所有 `vNNN.*`（包括用户手放的文件和孤立的 `.json`），也要大于台账里记过的同目录版本。所以用户删掉 v003 后，v003 不会被重新分配。
+  - 说明文件 `vNNN.json` 经 `ctx.fs.writeText(createIfAbsent)` 按会话策略写入，宿主自己会拦截，也不会覆盖别的 take 的说明文件。内容见 §16.2（`from` 暂为 null，用量取结算结果，**不含金额**）。素材路径在工作区内的写成相对路径，在工作区外的只留文件名和摘要，不把用户的家目录结构带进可能提交的文件。工作区第一次产出时，再用 `createIfAbsent` 写 `video-project.yaml`（带注释的模板）和 `renders/.gitignore`（`*`）；用户这期间已经建了的就不动。
+  - `$DSH_HOME` 里的下载副本要等台账记下交付结果**之后**才删（`discardStaging`），台账写失败时下载副本还在。**交付永不抛错**：任何一步失败都留在 `$DSH_HOME`，并在 `artifact.location.reason` 写明原因。钱已经花了，产物不能丢。
+  - 台账的 `retention` 字节数只统计 `$DSH_HOME` 里的产物：交付进工作区的视频是用户的文件，不占插件的存储额度。
+- **开机对账 / 孤儿重试的交付**：对账发现任务已经成功时，先在进程级共享的盯守表里占住这一行再下载，下载完放手。这样被 cordis 重新加载的新旧两个插件实例不会把同一个视频下载、交付两次。
+- **模型看到的位置**：`describe()`、`video_generate` 的完成消息、`video_status` 新增的 `location` 字段，都写成"`renders/untitled/v001.mp4 in the workspace`"或"`<路径> (kept outside the workspace: <原因>)`"。`video_generate` 的工具描述写明了落点规则；`video_export` 的描述改成"只在产物留在工作区外时才需要"（M3.3 删除这个工具）。
+- **媒体路由**：工作区产物先用 `O_NOFOLLOW` 打开文件，再要求三件事同时成立：真实路径仍等于写入时记录的路径；那个路径上的文件就是已打开的句柄（`dev`/`ino` 相同）；它是普通文件。打开时还带 `O_NONBLOCK`：有人把视频换成 FIFO 时，打开会立刻返回并按“不是普通文件”拒绝，而不是永远阻塞、占住宿主的线程池。不满足就返回 403，不跟随替换后的路径；权限之类的打开失败返回 500。文件不在了返回 410，正文是"moved or deleted"，供 M3.4 的卡片显示。`$DSH_HOME` 里的产物照旧（缺失返回 404）。
+- **台账读入**：`destination` 读不懂时改记为 `$DSH_HOME` 并写明原因，不去猜一个工作区路径；`artifacts[].location` 读不懂就丢掉这个字段；缺 `path`/`token`/`bytes`/`mime` 的产物条目也丢掉；一个 `succeeded` 的行如果因此一个产物都不剩，就改成 `orphaned` 并写明原因，交给孤儿重试在 7 天查询窗口内重新取回，而不是悄悄忘掉这个付费视频。
+- **审查记录、暂不处理**：
+  - 发布视频到台账写入之间进程崩溃，重试会重新下载并交付成下一个版本，前一个版本留在工作区但台账里没有记录（不丢，只是多一份）。要根治得先记一条“正在交付到某路径”，留到以后。
+  - 崩溃留下的隐藏暂存文件 `.…part` 不会自动清理。
+  - `mkdir` 与复制暂存文件发生在最后一次包含检查之前，若期间有人把目录换成指向外面的符号链接，可能在工作区外短暂建出目录或暂存文件（视频本身不会发布到外面）。Node 没有 `openat`，这个窗口无法完全消除；宿主的 `fs-sandbox` 也接受同类残余风险。
+  - 去重指纹不含 `shot`；`video_export` 不检查会话档位。两者都在 M3.3 处理（加 `shot` 参数、删除 `video_export`）。
+  - “不可写目录”测试依赖 `chmod 0555`（以 root 运行时无效），FIFO 测试依赖 `mkfifo`（Windows 没有）；以后接 CI 时要加条件跳过。
+- **独立审查**：第一轮 1 条 HIGH（无硬链接文件系统上的回退发布可能覆盖另一个付费视频）、5 条 MEDIUM 全部修复；第二轮通过，剩下的 LOW（回退 rename 失败留下空文件、对账未记账时也删下载副本、`$DSH_HOME` 打开时句柄泄漏、孤儿提示语不准）随后顺手修掉。
+

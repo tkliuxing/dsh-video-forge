@@ -16,6 +16,7 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-tools'
 import { Config, snapshot, type Config as VideoForgeConfig } from './config.ts'
+import { deliverArtifact } from './destination.ts'
 import { LedgerCorruptError, sharedLedger } from './ledger.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
@@ -24,7 +25,7 @@ import { artifactUrl, pluginHome, watchTableFor, type VideoForgeRuntime } from '
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
-import type { VideoTask } from './types.ts'
+import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
 
 export const name = 'dsh-video-forge'
@@ -87,6 +88,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
         task: input.task,
         pollIntervalMs: input.model.pollIntervalMs,
         outputDirectory: runtime.outputDirectory(input.task.localId),
+        deliver: (task: VideoTask, artifact: VideoArtifact, billing: TaskBilling | null) => deliverArtifact(runtime, task, artifact, billing),
         logger,
         onExit: () => { runtime.watching.delete(input.task.localId) },
         onUpdate: (task: VideoTask) => {

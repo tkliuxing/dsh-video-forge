@@ -15,7 +15,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { taskSessionOf } from './session-context.ts'
-import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
+import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type ArtifactDestination, type ArtifactLocation, type LedgerDocument, type TaskBilling, type VideoArtifact, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN_STATUSES: ReadonlySet<VideoTaskStatus> = new Set<VideoTaskStatus>(['queued', 'running'])
@@ -239,11 +239,15 @@ export class Ledger {
     return `v-${day}-${String(next).padStart(4, '0')}`
   }
 
-  /** Usage hint against the configured `retain` limits. Never triggers a deletion. */
+  /**
+   * Usage hint against the configured `retain` limits. Never triggers a
+   * deletion. Bytes count only what the plugin keeps itself: a video delivered
+   * into a workspace is the user's file, not the plugin's storage.
+   */
   retention(): RetentionHint {
     let bytes = 0
     for (const task of this.#document.tasks) {
-      for (const artifact of task.artifacts) bytes += artifact.bytes
+      for (const artifact of task.artifacts) if (artifact.location?.kind !== 'workspace') bytes += artifact.bytes
     }
     return {
       tasks: this.#document.tasks.length,
@@ -333,16 +337,67 @@ function normaliseStatus(task: VideoTask): VideoTask {
   const session = task.session === undefined ? null : taskSessionOf(task.session)
   const sessionOk = task.session === undefined || (session !== null && session.id === task.session.id
     && session.cwd === task.session.cwd && session.mode === task.session.mode)
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk) return task
+  // A destination this build cannot read becomes `$DSH_HOME`, said so: never a
+  // guess at a workspace path.
+  const destinationOk = task.destination === undefined || isDestination(task.destination)
+  const artifacts = task.artifacts.filter(isArtifact).map(artifactOf)
+  const artifactsOk = artifacts.length === task.artifacts.length && artifacts.every((entry, index) => entry === task.artifacts[index])
+  // A finished row whose every artifact entry was unreadable no longer says
+  // where its paid video is: hand it to the orphan retry, which asks the
+  // provider again (within its query window) and fetches it afresh.
+  if (status === 'succeeded' && task.artifacts.length > 0 && artifacts.length === 0) {
+    status = 'orphaned'
+  }
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk && destinationOk && artifactsOk) return task
   const { session: _stored, ...withoutSession } = task
   return {
     ...withoutSession,
     status,
     providerTaskId,
-    error,
+    error: status === 'orphaned' && task.status === 'succeeded' && artifacts.length === 0
+      ? { message: 'the recorded artifact could not be read; while the provider still answers for the task (7 days) the plugin fetches it again, and it never re-submits it', code: null }
+      : error,
+    artifacts,
     ...(billingOk ? {} : { billing: null }),
     ...(session === null ? {} : { session }),
+    ...(destinationOk ? {} : { destination: { kind: 'home', reason: 'the recorded destination could not be read' } }),
   }
+}
+
+function isDestination(value: unknown): value is ArtifactDestination {
+  if (typeof value !== 'object' || value === null) return false
+  const destination = value as Partial<Record<string, unknown>>
+  if (destination.kind === 'home') return typeof destination.reason === 'string'
+  return destination.kind === 'workspace'
+    && nonEmpty(destination.root) && nonEmpty(destination.renders) && nonEmpty(destination.shot)
+    && typeof destination.writeManifest === 'boolean'
+}
+
+function isArtifact(value: unknown): value is VideoArtifact {
+  if (typeof value !== 'object' || value === null) return false
+  const artifact = value as Partial<VideoArtifact>
+  return nonEmpty(artifact.path) && nonEmpty(artifact.token) && typeof artifact.bytes === 'number' && typeof artifact.mime === 'string'
+}
+
+/** The artifact with a location this build can trust; one it cannot read is dropped. */
+function artifactOf(artifact: VideoArtifact): VideoArtifact {
+  if (artifact.location === undefined || isLocation(artifact.location)) return artifact
+  const { location: _unreadable, ...rest } = artifact
+  return rest
+}
+
+function isLocation(value: unknown): value is ArtifactLocation {
+  if (typeof value !== 'object' || value === null) return false
+  const location = value as Partial<Record<string, unknown>>
+  if (location.kind === 'home') return location.reason === null || typeof location.reason === 'string'
+  return location.kind === 'workspace'
+    && nonEmpty(location.root) && nonEmpty(location.relativePath) && nonEmpty(location.shot)
+    && typeof location.version === 'number' && Number.isInteger(location.version) && location.version > 0
+    && (location.sidecar === null || nonEmpty(location.sidecar))
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === 'string' && value !== ''
 }
 
 /**

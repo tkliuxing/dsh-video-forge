@@ -13,8 +13,8 @@
  * (see {@link workspaceFsOf}).
  */
 
-import { open, stat } from 'node:fs/promises'
-import { isAbsolute, resolve as resolvePath } from 'node:path'
+import { mkdir, open, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 
 /** `@deepseek-ai/dsh-fs` `FsTarget`: an opaque identity plus a path for messages. */
@@ -29,6 +29,29 @@ export interface WorkspaceFs {
   stat(target: WorkspaceTarget, signal?: AbortSignal): Promise<{ type: 'file' | 'directory' | 'other'; size?: number } | undefined>
   readBytes(target: WorkspaceTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
   readByteRange(target: WorkspaceTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array>
+  /**
+   * The absolute path of a target in the filesystem's execution world.
+   * Optional only because the slice is also implemented by test doubles; every
+   * DSH backend has it.
+   */
+  processPath?(target: WorkspaceTarget): string
+  /**
+   * Map a path on this machine into the execution world, or undefined when that
+   * world cannot see this machine's files (an SSH workspace).
+   */
+  processPathFromHostPath?(hostPath: string): string | undefined
+  /**
+   * Atomic UTF-8 write. `sandboxPolicy` fences it the way the host fences its
+   * own tools; `createIfAbsent` refuses to replace an existing file
+   * (`FS_NOT_OBSERVED`).
+   */
+  writeText?(
+    target: WorkspaceTarget,
+    content: string,
+    expected?: { kind: 'createIfAbsent' },
+    signal?: AbortSignal,
+    sandboxPolicy?: { mode: string; workspaceRoot: string; sessionId?: string },
+  ): Promise<unknown>
 }
 
 /**
@@ -56,8 +79,10 @@ export function fsErrorCode(error: unknown): string | null {
 /** Host-local stand-in with `ctx.fs` semantics (also what tests mount as `fs`): missing → `stat` undefined, too large → `FS_TOO_LARGE`. */
 export const hostWorkspaceFs: WorkspaceFs = {
   async resolve(path, options = {}) {
-    const absolute = isAbsolute(path) ? path : resolvePath(options.cwd ?? process.cwd(), path)
-    return { targetKey: absolute, displayPath: absolute }
+    const absolute = isAbsolute(path) ? resolvePath(path) : resolvePath(options.cwd ?? process.cwd(), path)
+    // Like DSH's local backend: the identity is the real path of the deepest
+    // existing ancestor plus the rest, so one file has one key.
+    return { targetKey: await canonical(absolute), displayPath: absolute }
   },
   async stat(target) {
     try {
@@ -75,6 +100,40 @@ export const hostWorkspaceFs: WorkspaceFs = {
   async readByteRange(target, range, signal) {
     return readRange(String(target.targetKey), range.offset, range.length, signal)
   },
+  processPath: target => String(target.targetKey),
+  processPathFromHostPath: hostPath => (isAbsolute(hostPath) ? resolvePath(hostPath) : undefined),
+  async writeText(target, content, expected, signal, sandboxPolicy) {
+    signal?.throwIfAborted()
+    const path = String(target.targetKey)
+    if (sandboxPolicy?.mode === 'read-only') {
+      throw Object.assign(new Error(`cannot write "${path}": file access denied under read-only mode`), { code: 'FS_SANDBOX_DENIED' })
+    }
+    await mkdir(dirname(path), { recursive: true })
+    if (expected?.kind === 'createIfAbsent') {
+      try {
+        await writeFile(path, content, { flag: 'wx' })
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code === 'EEXIST') {
+          throw Object.assign(new Error(`cannot overwrite existing "${path}" without reading it first`), { code: 'FS_NOT_OBSERVED' })
+        }
+        throw error
+      }
+      return undefined
+    }
+    const temporary = `${path}.${process.pid}.tmp`
+    await writeFile(temporary, content)
+    await rename(temporary, path)
+    return undefined
+  },
+}
+
+async function canonical(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    const parent = dirname(path)
+    return parent === path ? path : join(await canonical(parent), basename(path))
+  }
 }
 
 async function readRange(path: string, offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array> {
