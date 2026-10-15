@@ -20,6 +20,7 @@ import {
   requestRaw,
   type AdapterContext,
   type ProtocolAdapter,
+  usageOf,
 } from './adapter.ts'
 import { fillTemplate, readNumber, readPath, readString } from './dot-path.ts'
 
@@ -187,6 +188,8 @@ export function readState(body: unknown, endpoints: EndpointSetting, providerTas
       ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: null }
       : null,
     terminal: normalized.terminal,
+    // Gateways differ; keep whatever numbers a `usage` object carries, with no billing basis assumed.
+    usage: usageOf(readPath(body, 'usage'), {}),
   }
 }
 

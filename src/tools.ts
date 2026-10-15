@@ -49,8 +49,34 @@ const TASK_SCHEMA = {
     submitted_at: { type: 'string', required: true },
     play_url: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
     error: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
+    billing: {
+      required: true,
+      oneOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            state: { type: 'string', required: true },
+            tokens: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+            output_seconds: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+            fields: { type: 'object', additionalProperties: true, required: true },
+          },
+        },
+      ],
+    },
   },
 } as const
+
+/** Usage as one short phrase for the text rendering; never a price. */
+function usageText(billing: { state: string; tokens: number | null; output_seconds: number | null } | null): string {
+  if (billing === null) return ''
+  if (billing.state === 'unknown') return 'usage unknown (provider query window closed)'
+  if (billing.state === 'none') return 'no usage reported'
+  if (billing.tokens !== null) return `usage ${billing.tokens} tokens`
+  if (billing.output_seconds !== null) return `usage ${billing.output_seconds} s`
+  return 'usage reported'
+}
 
 /** Register all four tools. */
 export function registerTools(runtime: VideoForgeRuntime): void {
@@ -155,6 +181,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     description: [
       'List recent video generations with their provider, status, progress, error and (once finished) the artifact path and play URL.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
+      'billing is what the provider reported a finished task consumed (tokens for ARK, output seconds for MiniMax, every raw field under fields) — usage, not money; null until settled, "unknown" when the provider\'s seven-day query window closed first.',
       'Tasks marked orphaned could not be reconciled with the provider (for example its credential or the network was not available); the plugin keeps asking the provider about them for up to seven days and settles them on its own, and never re-submits them — check back here rather than generating again.',
       'Tasks marked unconfirmed were sent but the provider\'s answer was lost (timeout, network failure, restart): the provider may already have created and billed them, so never submit the same request again — the error field says what is known.',
     ].join(' '),
@@ -189,6 +216,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
             `${row.task_id} ${row.status}${row.progress === null ? '' : ` ${Math.round(row.progress * 100)}%`}`,
             `${row.provider}/${row.model}`,
             row.play_url === null ? '' : row.play_url,
+            usageText(row.billing),
             row.error ?? '',
           ].filter(part => part !== '').join(' · ')).join('\n'),
       }],
@@ -210,6 +238,9 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           submitted_at: row.submittedAt,
           play_url: row.playUrl,
           error: row.error,
+          billing: row.billing === null
+            ? null
+            : { state: row.billing.state, tokens: row.billing.tokens, output_seconds: row.billing.outputSeconds, fields: row.billing.fields },
         })),
         usage: {
           tasks: list.usage.tasks,

@@ -24,6 +24,7 @@ import {
   requestJson,
   type AdapterContext,
   type ProtocolAdapter,
+  usageOf,
 } from './adapter.ts'
 
 /** The five words the query and callback bodies use, and nothing else. */
@@ -83,6 +84,8 @@ export function readMinimaxState(body: unknown): ProviderTaskState {
       ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: errorCode }
       : null,
     terminal: normalized.terminal,
+    // Billed by output seconds; the documented token fields were absent in real answers.
+    usage: usageOf(readPath(body, 'task.usage'), { outputSeconds: 'output_seconds' }),
   }
 }
 

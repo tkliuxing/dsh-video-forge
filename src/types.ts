@@ -111,6 +111,29 @@ export interface ProviderTaskState {
   error: { message: string; code: string | null } | null
   /** Whether the provider's own status vocabulary said the task is finished for good. */
   terminal: boolean
+  /** What the provider says the task consumed, when the body carries any; never a price. */
+  usage: ProviderUsage | null
+}
+
+/** What a provider reported a task consumed — the basis of its bill, never a price. */
+export interface ProviderUsage {
+  /** Billing tokens, where the provider bills by token (ARK `completion_tokens`). */
+  tokens: number | null
+  /** Billed output seconds, where the provider bills by time (MiniMax `output_seconds`). */
+  outputSeconds: number | null
+  /** Every numeric usage field under the provider's own name, to reconcile against the bill. */
+  fields: Record<string, number>
+}
+
+/**
+ * A task's settled usage. `reported`: the provider returned numbers. `none`: it
+ * settled the task and reported nothing (MiniMax answers `{}` for a failed
+ * task). `unknown`: the provider's seven-day query window closed before we could
+ * ask — never to be read as zero.
+ */
+export interface TaskBilling extends ProviderUsage {
+  state: 'reported' | 'none' | 'unknown'
+  settledAt: string
 }
 
 /** A produced artifact after it landed in `$DSH_HOME`. */
@@ -160,6 +183,11 @@ export interface VideoTask {
   params: VideoTaskParams
   artifacts: VideoArtifact[]
   error: VideoTaskError | null
+  /**
+   * Settled provider usage. Absent (or null) until the task has finished and the
+   * provider has been asked; rows written before usage was recorded read the same.
+   */
+  billing?: TaskBilling | null
 }
 
 /** On-disk ledger document. */

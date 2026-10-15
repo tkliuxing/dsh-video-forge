@@ -28,6 +28,7 @@
 
 import type { JobHandle, JobHooks, JobId, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-jobs'
+import { settledBilling } from './billing.ts'
 import { downloadArtifact } from './download.ts'
 import type { Ledger } from './ledger.ts'
 import type { AdapterContext, ProtocolAdapter } from './providers/index.ts'
@@ -231,6 +232,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           ...current,
           status: 'failed',
           error: { message: 'the provider reported success without an artifact URL', code: null },
+          billing: settledBilling(state.usage),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -252,6 +254,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           progress: 1,
           artifacts: [...current.artifacts.filter(entry => entry.path !== artifact.path), artifact],
           error: null,
+          billing: settledBilling(state.usage),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -265,6 +268,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           // The generation itself succeeded; only the download failed. Saying so
           // keeps the model from re-submitting a paid task.
           error: { message: `generation succeeded but the artifact download failed: ${message}`, code: null },
+          billing: settledBilling(state.usage),
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
@@ -278,6 +282,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
       ...current,
       status: finalStatus,
       error: state.error ?? { message: `the provider reported status "${state.status}"`, code: null },
+      billing: settledBilling(state.usage),
       updatedAt: new Date().toISOString(),
     }))
     core.onUpdate?.(updated)

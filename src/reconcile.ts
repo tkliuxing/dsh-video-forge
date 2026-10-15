@@ -20,6 +20,7 @@
  * on a finished, paid generation costs the whole generation.
  */
 
+import { awaitingBilling, settledBilling, unknownBilling } from './billing.ts'
 import { resolveApiKey } from './credentials.ts'
 import { downloadArtifact } from './download.ts'
 import { isOpen, type Ledger } from './ledger.ts'
@@ -27,7 +28,7 @@ import { isSending, unconfirmedMessage } from './operations.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
 import { resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
-import { UNCONFIRMED_CODE, type VideoTask } from './types.ts'
+import { UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
 import { startInProcessWatch } from './watch.ts'
 
 /** Clock skew tolerated between our submission time and the provider's `created_at`. */
@@ -83,6 +84,51 @@ export async function retryOrphans(runtime: VideoForgeRuntime): Promise<void> {
   } finally {
     inFlight.delete(runtime)
   }
+}
+
+/** Runtimes with a usage-settlement pass in flight. */
+const settling = new WeakSet<VideoForgeRuntime>()
+
+/**
+ * Record the usage of every finished task that does not have it yet.
+ *
+ * Usage only arrives once a task is over, and the providers answer queries for
+ * seven days. A task nobody watched to the end — killed watch, orphan, a row from
+ * before usage was recorded — would otherwise leave a hole in "how much did this
+ * cost". Past the window the usage is recorded as unknown, never as zero.
+ */
+export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
+  if (settling.has(runtime)) return
+  const owed = runtime.ledger.list().filter(awaitingBilling)
+  if (owed.length === 0) return
+  settling.add(runtime)
+  try {
+    const settings = runtime.settings()
+    for (const task of owed) {
+      const submittedAt = Date.parse(task.submittedAt)
+      if (!Number.isFinite(submittedAt) || Date.now() - submittedAt > PROVIDER_HORIZON_MS) {
+        await recordBilling(runtime.ledger, task, unknownBilling())
+        continue
+      }
+      // Anything that stops us asking today is retried on the next pass, until
+      // the window closes.
+      try {
+        const { provider, model } = resolveTarget(settings, task.provider, task.model)
+        const apiKey = (await resolveApiKey(runtime.ctx, provider)).value
+        const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey, fetch, signal: AbortSignal.timeout(20_000) }
+        const state = await adapterFor(provider, model).query(context, task.providerTaskId ?? '')
+        if (state.terminal) await recordBilling(runtime.ledger, task, settledBilling(state.usage))
+      } catch (error: unknown) {
+        runtime.logger.warn(`video-forge: usage of ${task.localId} not settled yet: ${messageOf(error)}`)
+      }
+    }
+  } finally {
+    settling.delete(runtime)
+  }
+}
+
+async function recordBilling(ledger: Ledger, task: VideoTask, billing: TaskBilling): Promise<void> {
+  await ledger.update(task.localId, current => (awaitingBilling(current) ? { ...current, billing } : current))
 }
 
 /**
@@ -312,6 +358,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
               progress: 1,
               artifacts: artifact === null ? current.artifacts : [artifact],
               error: artifact === null ? { message: 'generation succeeded but the artifact could not be retrieved after restart', code: null } : null,
+              billing: settledBilling(state.usage),
               updatedAt: new Date().toISOString(),
             }
           : current))
@@ -323,6 +370,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             ...current,
             status: state.status === 'cancelled' ? 'cancelled' : 'failed',
             error: state.error ?? { message: `the provider reported status "${state.status}" while reconciling`, code: null },
+            billing: settledBilling(state.usage),
             updatedAt: new Date().toISOString(),
           }
         : current))

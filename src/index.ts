@@ -21,7 +21,7 @@ import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, pluginHome, type VideoForgeRuntime } from './runtime.ts'
-import { reconcile, retryOrphans, scheduleReconciliation } from './reconcile.ts'
+import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
 import type { VideoTask } from './types.ts'
@@ -172,8 +172,12 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     async () => {
       await loaded
       await reconcile(runtime)
+      await settleBilling(runtime)
     },
-    () => retryOrphans(runtime),
+    async () => {
+      await retryOrphans(runtime)
+      await settleBilling(runtime)
+    },
     (error: unknown) => {
       logger.error(`video-forge: reconciliation failed: ${error instanceof Error ? error.message : String(error)}`)
     },

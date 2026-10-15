@@ -221,15 +221,18 @@ describe('video_status / video_cancel / video_export', () => {
         path: artifactPath, bytes: 11, mime: 'video/mp4', width: null, height: null, durationSec: null,
         token: 'f'.repeat(32), createdAt: new Date().toISOString(),
       }],
+      billing: { state: 'reported', tokens: 40594, outputSeconds: null, fields: { completion_tokens: 40594, total_tokens: 40594 }, settledAt: new Date().toISOString() },
     })
     definitions.clear()
     registerTools(runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger))
     const value = await definitions.get('video_status')?.execute({}, exec) as {
-      tasks: { task_id: string; status: string; play_url: string | null }[]
+      tasks: { task_id: string; status: string; play_url: string | null; billing: { state: string; tokens: number | null } | null }[]
       usage: { tasks: number }
     }
     expect(value.tasks).toHaveLength(1)
     expect(value.tasks[0]?.play_url).toBe(`video-forge/media/v-20261013-0001/${'f'.repeat(32)}/out.mp4`)
+    // Usage, never money: the provider's own numbers, passed through.
+    expect(value.tasks[0]?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
     expect(value.usage.tasks).toBe(1)
   })
 

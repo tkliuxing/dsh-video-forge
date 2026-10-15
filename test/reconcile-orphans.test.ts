@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
-import { reconcile, recoverableOrphans, retryOrphans, scheduleReconciliation, type ReconcileHost } from '../src/reconcile.ts'
+import { reconcile, recoverableOrphans, retryOrphans, scheduleReconciliation, settleBilling, type ReconcileHost } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { VideoTask } from '../src/types.ts'
@@ -240,5 +240,51 @@ describe('boot scheduling', () => {
     expect(boot).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(boot).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('usage settlement', () => {
+  it('asks the provider for a finished task\'s usage and records it once', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    // A row settled before usage was recorded.
+    await ledger.add(row({ providerTaskId: id, status: 'succeeded' }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await settleBilling(runtime)
+    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 1, fields: { completion_tokens: 1, total_tokens: 1 } })
+    const gets = fake.requests.filter(entry => entry.method === 'GET').length
+    await settleBilling(runtime)
+    expect(fake.requests.filter(entry => entry.method === 'GET').length).toBe(gets)
+  })
+
+  it('records unknown, never zero, once the provider no longer answers for the task', async () => {
+    const fake = await fixture()
+    const ledger = await ledgerAt()
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString()
+    await ledger.add(row({ localId: 'v-old', providerTaskId: 'cgt-gone', status: 'succeeded', submittedAt: old }))
+    // Never created at the provider: nothing to settle.
+    await ledger.add(row({ localId: 'v-refused', providerTaskId: null, status: 'failed', error: { message: 'refused', code: 'not_submitted' } }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await settleBilling(runtime)
+    expect(ledger.byId('v-old')?.billing).toMatchObject({ state: 'unknown', tokens: null, outputSeconds: null })
+    expect(ledger.byId('v-refused')?.billing ?? null).toBeNull()
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it('records it when a watch reattached after restart sees the task finish', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ providerTaskId: id }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await reconcile(runtime)
+    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 1 })
   })
 })

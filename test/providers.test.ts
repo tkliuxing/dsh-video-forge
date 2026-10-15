@@ -141,7 +141,7 @@ describe('minimax-video', () => {
 
   it('reads the state nested under task', () => {
     expect(readMinimaxState({ task: { id: '1', status: 'succeeded', content: { url: 'https://x/y.mp4' } } })).toEqual({
-      status: 'succeeded', progress: null, videoUrl: 'https://x/y.mp4', error: null, terminal: true,
+      status: 'succeeded', progress: null, videoUrl: 'https://x/y.mp4', error: null, terminal: true, usage: null,
     })
     expect(readMinimaxState({ task: { status: 'queued' } })).toMatchObject({ status: 'queued', terminal: false })
     expect(readMinimaxState({ task: { status: 'cancelled' } })).toMatchObject({ status: 'cancelled', terminal: true })
@@ -286,5 +286,21 @@ describe('provider error bodies', () => {
     expect(providerErrorOf('<html>502 Bad Gateway</html>')).toBeNull()
     expect(providerErrorOf(JSON.stringify({ id: 'cgt-1' }))).toBeNull()
     expect(providerErrorOf(JSON.stringify({ error: { code: 'X' } }))).toBeNull()
+  })
+})
+
+describe('provider usage', () => {
+  // Shapes recorded from the real endpoints on 2026-10-15.
+  it('reads ARK tokens as the billing basis', () => {
+    const state = readArkState({ id: 'cgt-1', status: 'succeeded', content: { video_url: 'https://x/y.mp4' }, usage: { completion_tokens: 40594, total_tokens: 40594 } })
+    expect(state.usage).toEqual({ tokens: 40594, outputSeconds: null, fields: { completion_tokens: 40594, total_tokens: 40594 } })
+    expect(readArkState({ id: 'cgt-1', status: 'running' }).usage).toBeNull()
+  })
+
+  it('reads MiniMax output seconds, and treats its empty usage object as none', () => {
+    const done = readMinimaxState({ task: { id: '1', status: 'succeeded', content: { url: 'https://x/y.mp4' }, usage: { total_seconds: 5, input_seconds: 0, output_seconds: 5, input_image_count: 2 } } })
+    expect(done.usage).toEqual({ tokens: null, outputSeconds: 5, fields: { total_seconds: 5, input_seconds: 0, output_seconds: 5, input_image_count: 2 } })
+    expect(readMinimaxState({ task: { id: '1', status: 'running', usage: {} } }).usage).toBeNull()
+    expect(readMinimaxState({ task: { id: '1', status: 'failed', error: { code: '2013', message: 'media not found' }, usage: {} } }).usage).toBeNull()
   })
 })

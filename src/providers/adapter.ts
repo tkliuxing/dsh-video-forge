@@ -7,7 +7,7 @@
  * protocol here returns a downloadable MP4 (DESIGN §1, P5).
  */
 
-import type { GenerationRequest, ProviderTaskState, ProviderTaskSummary } from '../types.ts'
+import type { GenerationRequest, ProviderTaskState, ProviderTaskSummary, ProviderUsage } from '../types.ts'
 
 /** Resolved transport facts for one call. */
 export interface AdapterContext {
@@ -94,6 +94,26 @@ export function providerErrorOf(text: string): { code: string | null; message: s
     return { code: codeOf(record.code), message: record.message.trim() }
   }
   return null
+}
+
+/**
+ * Read a provider's usage object. Every finite numeric field is kept under its
+ * own name; `tokens` and `outputSeconds` are lifted from the fields the protocol
+ * documents as its billing basis. An empty or absent object is `null`: MiniMax
+ * answers `usage: {}` while a task runs and when it fails.
+ */
+export function usageOf(value: unknown, basis: { tokens?: string; outputSeconds?: string }): ProviderUsage | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const fields: Record<string, number> = {}
+  for (const [name, field] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof field === 'number' && Number.isFinite(field)) fields[name] = field
+  }
+  if (Object.keys(fields).length === 0) return null
+  return {
+    tokens: basis.tokens === undefined ? null : fields[basis.tokens] ?? null,
+    outputSeconds: basis.outputSeconds === undefined ? null : fields[basis.outputSeconds] ?? null,
+    fields,
+  }
 }
 
 function codeOf(value: unknown): string | null {

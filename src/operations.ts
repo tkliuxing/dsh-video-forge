@@ -26,6 +26,7 @@ import {
   type GenerationRequest,
   type ResolvedMaterial,
   type VideoArtifact,
+  type TaskBilling,
   type VideoMode,
   type VideoTask,
 } from './types.ts'
@@ -426,6 +427,8 @@ export interface TaskRow {
   artifactPath: string | null
   artifactBytes: number | null
   error: string | null
+  /** Provider-reported usage once settled; null while the task runs or before anyone asked. */
+  billing: TaskBilling | null
 }
 
 export interface TaskList {
@@ -462,6 +465,7 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
         artifactPath: artifact?.path ?? null,
         artifactBytes: artifact?.bytes ?? null,
         error: task.error === null ? null : task.error.message,
+        billing: task.billing ?? null,
       }
     }),
     usage: {

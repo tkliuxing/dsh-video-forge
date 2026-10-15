@@ -19,6 +19,7 @@ import {
   requestRaw,
   type AdapterContext,
   type ProtocolAdapter,
+  usageOf,
 } from './adapter.ts'
 
 const STATUS_TABLE = {
@@ -104,6 +105,8 @@ export function readArkState(body: unknown): ProviderTaskState {
       ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: errorCode }
       : null,
     terminal: normalized.terminal,
+    // Billed by token; `completion_tokens` is the documented reconciliation basis.
+    usage: usageOf(readPath(body, 'usage'), { tokens: 'completion_tokens' }),
   }
 }
 
