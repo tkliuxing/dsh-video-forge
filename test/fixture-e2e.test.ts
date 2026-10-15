@@ -17,6 +17,7 @@ import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
 import { arkVideosAdapter } from '../src/providers/ark-seedance.ts'
 import { openAiVideosAdapter } from '../src/providers/generic-openai-videos.ts'
+import { minimaxVideoAdapter } from '../src/providers/minimax-video.ts'
 import type { AdapterContext, ProtocolAdapter } from '../src/providers/adapter.ts'
 import { DEFAULT_ENDPOINTS } from '../src/settings.ts'
 import type { GenerationRequest, VideoTask } from '../src/types.ts'
@@ -184,6 +185,80 @@ describe('ARK-shaped provider', () => {
     const context: AdapterContext = { baseUrl: `${fake.url}/api/v3`, apiKey: 'test-key', fetch, signal: undefined }
     await expect(adapter.cancel(context, 'cgt-fixture-9')).resolves.toBe(true)
     expect(fake.requests.some(entry => entry.method === 'DELETE')).toBe(true)
+  })
+
+  it('reports a refused cancel once the task is running, as the real endpoint does', async () => {
+    const fake = await fixture({ mode: 'ark', apiKey: 'test-key', pollsBeforeDone: 10 })
+    const adapter = arkVideosAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, generateAudio: false, watermark: false })
+    const context: AdapterContext = { baseUrl: `${fake.url}/api/v3`, apiKey: 'test-key', fetch, signal: undefined }
+    const submitted = await adapter.submit(context, REQUEST)
+    expect((await adapter.query(context, submitted.providerTaskId)).status).toBe('queued')
+    expect((await adapter.query(context, submitted.providerTaskId)).status).toBe('running')
+    await expect(adapter.cancel(context, submitted.providerTaskId)).resolves.toBe(false)
+  })
+
+  it('records the billed tokens when the watch settles the task', async () => {
+    const fake = await fixture({ mode: 'ark', pollsBeforeDone: 1, apiKey: 'test-key' })
+    const ledger = await makeLedger()
+    const adapter = arkVideosAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, generateAudio: false, watermark: false })
+    const context: AdapterContext = { baseUrl: `${fake.url}/api/v3`, apiKey: 'test-key', fetch, signal: undefined }
+    const submitted = await adapter.submit(context, REQUEST)
+    const task = await ledger.add(taskRow('v-20261015-0012', submitted.providerTaskId, 'ark-seedance', 'ark'))
+    const watch = startInProcessWatch({
+      ledger, adapter, context, task, pollIntervalMs: 10,
+      outputDirectory: join(ledger.home, 'outputs', task.localId),
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    })
+    await watch.done
+    expect(ledger.byId(task.localId)?.billing).toMatchObject({ state: 'reported', tokens: 40594, outputSeconds: null })
+  })
+})
+
+describe('MiniMax-shaped provider', () => {
+  const adapterFor = () => minimaxVideoAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, watermark: false })
+  const minimaxRequest: GenerationRequest = { ...REQUEST, model: 'MiniMax-H3', durationSeconds: 5, resolution: '480P', aspectRatio: '16:9' }
+
+  it('submits, polls a task that starts out running, downloads, and records the billed seconds', async () => {
+    const fake = await fixture({ mode: 'minimax', pollsBeforeDone: 1, artifactBytes: 2048, apiKey: 'test-key' })
+    const ledger = await makeLedger()
+    const adapter = adapterFor()
+    const context: AdapterContext = { baseUrl: fake.url, apiKey: 'test-key', fetch, signal: undefined }
+
+    const submitted = await adapter.submit(context, minimaxRequest)
+    expect(submitted.providerTaskId).toMatch(/^\d+$/)
+    const first = await adapter.query(context, submitted.providerTaskId)
+    expect(first).toMatchObject({ status: 'running', terminal: false, usage: null })
+
+    const task = await ledger.add({ ...taskRow('v-20261015-0007', submitted.providerTaskId, 'minimax-video', 'minimax'), model: 'MiniMax-H3' })
+    const watch = startInProcessWatch({
+      ledger, adapter, context, task, pollIntervalMs: 10,
+      outputDirectory: join(ledger.home, 'outputs', task.localId),
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    })
+    await watch.done
+    const settled = ledger.byId(task.localId)
+    expect(settled?.status).toBe('succeeded')
+    expect((await stat(settled?.artifacts[0]?.path ?? '')).size).toBe(2048)
+    expect(settled?.billing).toMatchObject({ state: 'reported', tokens: null, outputSeconds: 5, fields: { input_image_count: 0 } })
+  })
+
+  it('settles a failed task with its string code and no usage', async () => {
+    const fake = await fixture({ mode: 'minimax', failAfterPolls: 1, apiKey: 'test-key' })
+    const ledger = await makeLedger()
+    const adapter = adapterFor()
+    const context: AdapterContext = { baseUrl: fake.url, apiKey: 'test-key', fetch, signal: undefined }
+    const submitted = await adapter.submit(context, minimaxRequest)
+    const task = await ledger.add({ ...taskRow('v-20261015-0010', submitted.providerTaskId, 'minimax-video', 'minimax'), model: 'MiniMax-H3' })
+    const watch = startInProcessWatch({
+      ledger, adapter, context, task, pollIntervalMs: 10,
+      outputDirectory: join(ledger.home, 'outputs', task.localId),
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    })
+    await watch.done
+    const settled = ledger.byId(task.localId)
+    expect(settled?.status).toBe('failed')
+    expect(settled?.error).toEqual({ code: '2013', message: expect.stringMatching(/media not found/) })
+    expect(settled?.billing).toMatchObject({ state: 'none' })
   })
 })
 

@@ -2,24 +2,24 @@
  * A fake online provider, spoken over a real HTTP socket.
  *
  * This exists because the whole plugin is a client of models we cannot call in
- * CI: a fixture that answers on 127.0.0.1 in the *documented shapes* of the two
- * first-period protocols lets the full path — submit, poll, terminal state,
- * artifact download — run as a test, with no key and no network.
+ * CI: a fixture that answers on 127.0.0.1 in the vendors' shapes lets the full
+ * path — submit, poll, terminal state, artifact download — run as a test, with
+ * no key and no network. The ARK and MiniMax bodies are the ones recorded from
+ * the real endpoints on 2026-10-15 (DESIGN §7.1, §13), ids and URLs aside.
  *
  * It can also misbehave on purpose — lose a submit response after creating the
  * task, hold it, or refuse it — so the intent-first submission path (DESIGN §6)
  * is exercised against the failure it exists for.
  *
- * It is deliberately faithful to what the vendors publish (see DESIGN §7.1) and
- * deliberately dumb about everything else. It proves our shape assumptions are
- * self-consistent; it cannot prove a real vendor agrees, and no test here
- * pretends otherwise.
+ * It is deliberately faithful to what the vendors returned and deliberately dumb
+ * about everything else. Recorded once is not guaranteed forever: a vendor can
+ * change its answers, which is why the real-key run is repeated, not replaced.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-export type FixtureMode = 'ark' | 'openai-videos'
+export type FixtureMode = 'ark' | 'minimax' | 'openai-videos'
 
 export interface FixtureOptions {
   /** Which protocol shape to speak. */
@@ -104,12 +104,19 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
 
     if (req.method === 'POST' && options.rejectSubmitStatus !== undefined) {
       res.writeHead(options.rejectSubmitStatus, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: { code: 'InvalidParameter', message: 'fixture refused the submission' } }))
+      // Each vendor's own refusal shape, as recorded.
+      res.end(JSON.stringify(options.mode === 'minimax'
+        ? { type: 'error', error: { type: 'invalid_request_error', message: 'fixture refused the submission', http_code: options.rejectSubmitStatus }, request_id: 'fixture' }
+        : { error: { code: 'InvalidParameter', message: 'fixture refused the submission', param: '', type: 'BadRequest' } }))
       return
     }
 
     if (options.mode === 'ark') {
       await handleArk(req, res, path, body)
+      return
+    }
+    if (options.mode === 'minimax') {
+      await handleMinimax(req, res, path, body)
       return
     }
     await handleOpenAi(req, res, path, body)
@@ -142,6 +149,13 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
     if (match !== null) {
       const id = match[1] ?? ''
       if (req.method === 'DELETE') {
+        // ARK deletes only a task that has not started; once it was reported
+        // running the real endpoint answers 409 RunningTaskDeletion.
+        if ((polls.get(id) ?? 0) >= 2) {
+          res.writeHead(409, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { code: 'InvalidAction.RunningTaskDeletion', message: `Cannot delete task \`${id}\` because it is currently running.`, param: '', type: 'Conflict' } }))
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end('{}')
         return
@@ -149,30 +163,100 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       const count = (polls.get(id) ?? 0) + 1
       polls.set(id, count)
       const state = stateOf(id, count)
+      const createdAt = created.find(task => task.id === id)?.createdAt ?? Math.floor(Date.now() / 1000)
+      // The fields every recorded ARK query answer carried, whatever the state.
+      const common = {
+        id,
+        model: 'doubao-seedance-fixture',
+        created_at: createdAt,
+        updated_at: Math.floor(Date.now() / 1000),
+        service_tier: 'default',
+        execution_expires_after: 172800,
+        generate_audio: true,
+        draft: false,
+        priority: 0,
+        output_format: 'mp4',
+      }
       res.writeHead(200, { 'content-type': 'application/json' })
       if (state === 'succeeded') {
         res.end(JSON.stringify({
-          id,
-          model: 'doubao-seedance-fixture',
+          ...common,
           status: 'succeeded',
           content: { video_url: `${baseUrl()}/artifact/${id}.mp4` },
-          usage: { completion_tokens: 1, total_tokens: 1 },
-          duration: 5,
+          // 4 s of 480p 16:9: 864 × 496 × 97 frames / 1024, as billed for real.
+          usage: { completion_tokens: 40594, total_tokens: 40594 },
+          seed: 47035,
+          resolution: '480p',
           ratio: '16:9',
-          resolution: '720p',
+          duration: 4,
+          framespersecond: 24,
         }))
         return
       }
       if (state === 'failed') {
-        res.end(JSON.stringify({ id, status: 'failed', error: { code: 'InternalError', message: 'fixture failure' } }))
+        res.end(JSON.stringify({ ...common, status: 'failed', error: { code: 'InternalError', message: 'fixture failure' } }))
         return
       }
-      res.end(JSON.stringify({ id, status: state }))
+      res.end(JSON.stringify({ ...common, status: state }))
       return
     }
     res.writeHead(404, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ error: { message: `fixture: no ARK route for ${req.method} ${path}` } }))
     void body
+  }
+
+  async function handleMinimax(req: IncomingMessage, res: ServerResponse, path: string, body: string): Promise<void> {
+    if (req.method === 'POST' && path.endsWith('/v2/video_generation')) {
+      counter += 1
+      const id = `45252447287${String(counter).padStart(4, '0')}`
+      polls.set(id, 0)
+      created.push({ id, model: modelOf(body), createdAt: Math.floor(Date.now() / 1000) })
+      await answerSubmit(res, { task_id: id })
+      return
+    }
+    const match = /\/v2\/query\/video_generation\/([^/?]+)$/.exec(path)
+    if (req.method === 'GET' && match !== null) {
+      const id = match[1] ?? ''
+      const count = (polls.get(id) ?? 0) + 1
+      polls.set(id, count)
+      const state = stateOf(id, count)
+      const createdAt = created.find(task => task.id === id)?.createdAt ?? Math.floor(Date.now() / 1000)
+      const common = {
+        id,
+        model: 'MiniMax-H3',
+        created_at: createdAt,
+        updated_at: Math.floor(Date.now() / 1000),
+        resolution: '480P',
+        duration: 5,
+        ratio: '16:9',
+        task_type: 'generation',
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (state === 'succeeded') {
+        res.end(JSON.stringify({ task: {
+          ...common,
+          status: 'succeeded',
+          content: { url: `${baseUrl()}/artifact/${id}.mp4` },
+          usage: { total_seconds: 5, input_seconds: 0, output_seconds: 5, input_image_count: 0 },
+        } }))
+        return
+      }
+      if (state === 'failed') {
+        res.end(JSON.stringify({ task: {
+          ...common,
+          status: 'failed',
+          error: { code: '2013', message: 'content[1].image_url: media not found (HTTP 404). The URL does not exist.' },
+          usage: {},
+        } }))
+        return
+      }
+      // The real endpoint never reported `queued`: the first answer was already running.
+      res.end(JSON.stringify({ task: { ...common, status: 'running', usage: {} } }))
+      return
+    }
+    // MiniMax documents no cancel operation.
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ type: 'error', error: { type: 'not_found', message: `fixture: no MiniMax route for ${req.method} ${path}`, http_code: 404 } }))
   }
 
   async function handleOpenAi(req: IncomingMessage, res: ServerResponse, path: string, body: string): Promise<void> {

@@ -254,7 +254,7 @@ describe('usage settlement', () => {
     publishCredentials()
 
     await settleBilling(runtime)
-    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 1, fields: { completion_tokens: 1, total_tokens: 1 } })
+    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 40594, fields: { completion_tokens: 40594, total_tokens: 40594 } })
     const gets = fake.requests.filter(entry => entry.method === 'GET').length
     await settleBilling(runtime)
     expect(fake.requests.filter(entry => entry.method === 'GET').length).toBe(gets)
@@ -285,6 +285,6 @@ describe('usage settlement', () => {
     publishCredentials()
 
     await reconcile(runtime)
-    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 1 })
+    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
   })
 })

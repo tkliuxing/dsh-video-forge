@@ -257,6 +257,22 @@ describe('video_status / video_cancel / video_export', () => {
     expect(fixture.requests.some(entry => entry.method === 'DELETE')).toBe(true)
   })
 
+  it('reports where a task actually is when the provider refuses the cancel', async () => {
+    // The ledger's last poll said queued; the provider has moved on and answers 409.
+    const id = 'cgt-moved-on'
+    await fetch(`${fixture.url}/api/v3/contents/generations/tasks/${id}`)
+    await fetch(`${fixture.url}/api/v3/contents/generations/tasks/${id}`)
+    const ledger = await makeLedger()
+    await ledger.add({ ...openTask('v-20261015-0016'), providerTaskId: id, status: 'queued' })
+    definitions.clear()
+    registerTools(runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger))
+    const value = await definitions.get('video_cancel')?.execute({ task_id: 'v-20261015-0016' }, exec) as {
+      cancelled: boolean; status: string
+    }
+    expect(value.cancelled).toBe(false)
+    expect(value.status).toBe('running')
+  })
+
   it('refuses to export before an artifact exists, and requires an absolute target', async () => {
     const ledger = await makeLedger()
     await ledger.add(openTask('v-20261013-0003'))

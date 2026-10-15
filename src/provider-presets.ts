@@ -171,7 +171,10 @@ const MINIMAX_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive']
  * reference states them on 2026-10-15 ([创建视频生成任务]). Resolutions keep the
  * vendor's upper-case spelling because the adapter forwards them verbatim.
  *
- * Neither model documents an audio switch or a cancel operation. H3-Max's
+ * Neither model documents an audio switch or a cancel operation, so
+ * `generateAudio` stays false: it is a request switch, and there is none to
+ * send. The output carries an AAC track regardless — every real H3-Max task on
+ * 2026-10-15 came back with one. H3-Max's
  * `extra.prompt_expansion_mode` is not surfaced: the config schema has no field
  * for it yet.
  *

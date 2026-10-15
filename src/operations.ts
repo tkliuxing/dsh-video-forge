@@ -360,6 +360,18 @@ export async function cancelTask(
   const credential = await resolveApiKey(runtime.ctx, provider)
   const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey: credential.value, fetch, signal: options.signal }
   const accepted = await adapter.cancel(context, task.providerTaskId)
+  let status: VideoTask['status'] = task.status
+  if (!accepted) {
+    // A refusal usually means the task has moved past the cancellable stage
+    // since the last poll (ARK answered 409 RunningTaskDeletion a tenth of a
+    // second after reporting it queued). Say where it actually is; a query is free.
+    try {
+      const state = await adapter.query(context, task.providerTaskId)
+      if (state.status === 'queued' || state.status === 'running') status = state.status
+    } catch {
+      // Keep the ledger's view; the watch reports the next state anyway.
+    }
+  }
   if (accepted) {
     // Stop watching too: leaving a watcher on a cancelled task would keep polling
     // a provider that has already been told to stop.
@@ -374,7 +386,7 @@ export async function cancelTask(
     taskId: task.localId,
     cancelled: accepted,
     providerSupported: true,
-    status: accepted ? 'cancelled' : task.status,
+    status: accepted ? 'cancelled' : status,
     message: accepted
       ? `the provider accepted the cancellation of ${task.localId}`
       : `the provider refused to cancel ${task.localId} (it may be past the cancellable stage); it keeps running`,
