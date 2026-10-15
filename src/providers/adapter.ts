@@ -37,18 +37,69 @@ export interface ProtocolAdapter {
   listCreated?(context: AdapterContext, window: { from: number; to: number; model: string }): Promise<ProviderTaskSummary[]>
 }
 
-/** A provider or transport failure with the HTTP status and a bounded body excerpt. */
+/**
+ * A provider or transport failure with the HTTP status and a bounded body
+ * excerpt. When the body is the provider's own structured error, its code and
+ * message are lifted into `providerCode` and into the error message itself:
+ * "your account has not activated this model" is the one sentence an operator
+ * needs, and every surface — tool result, workbench, ledger — shows the message.
+ */
 export class ProviderRequestError extends Error {
   readonly status: number | null
   readonly bodyExcerpt: string | null
+  readonly providerCode: string | null
+  /** The provider's own explanation, when its error body had one. */
+  readonly providerMessage: string | null
 
-  constructor(message: string, options: { status?: number | null; bodyExcerpt?: string | null; cause?: unknown } = {}) {
+  constructor(message: string, options: { status?: number | null; bodyExcerpt?: string | null; providerCode?: string | null; providerMessage?: string | null; cause?: unknown } = {}) {
     super(message)
     this.name = 'ProviderRequestError'
     this.status = options.status ?? null
     this.bodyExcerpt = options.bodyExcerpt ?? null
+    this.providerCode = options.providerCode ?? null
+    this.providerMessage = options.providerMessage ?? null
     if (options.cause !== undefined) this.cause = options.cause
   }
+}
+
+/**
+ * The provider's own code and message from an error body, if it has the shape of
+ * one. Covers what the documented protocols return on a non-2xx answer:
+ * `{ error: { code, message } }` (ARK, and MiniMax V2's OpenAI-style
+ * `{ type: 'error', error: { type, message } }`) and MiniMax's older
+ * `{ base_resp: { status_code, status_msg } }`.
+ */
+export function providerErrorOf(text: string): { code: string | null; message: string } | null {
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (body === null || typeof body !== 'object') return null
+  const record = body as Record<string, unknown>
+  const nested = record.error
+  if (nested !== null && typeof nested === 'object') {
+    const error = nested as Record<string, unknown>
+    const message = typeof error.message === 'string' ? error.message.trim() : ''
+    if (message !== '') return { code: codeOf(error.code) ?? codeOf(error.type), message }
+  }
+  const base = record.base_resp
+  if (base !== null && typeof base === 'object') {
+    const resp = base as Record<string, unknown>
+    const message = typeof resp.status_msg === 'string' ? resp.status_msg.trim() : ''
+    if (message !== '') return { code: codeOf(resp.status_code), message }
+  }
+  if (typeof record.message === 'string' && record.message.trim() !== '') {
+    return { code: codeOf(record.code), message: record.message.trim() }
+  }
+  return null
+}
+
+function codeOf(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return null
 }
 
 /** Trim a response body so an error message cannot dump a whole page into the transcript. */
@@ -84,9 +135,13 @@ export async function requestJson(
 
   const text = await response.text()
   if (!response.ok) {
-    throw new ProviderRequestError(`${init.method} ${url} failed with HTTP ${response.status}`, {
+    const provider = providerErrorOf(text)
+    const said = provider === null ? '' : `: ${provider.code === null ? '' : `${provider.code} — `}${excerpt(provider.message)}`
+    throw new ProviderRequestError(`${init.method} ${url} failed with HTTP ${response.status}${said}`, {
       status: response.status,
       bodyExcerpt: excerpt(text),
+      providerCode: provider?.code ?? null,
+      providerMessage: provider?.message ?? null,
     })
   }
   if (text.trim() === '') return null

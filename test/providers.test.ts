@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { fillTemplate, readNumber, readPath, readString } from '../src/providers/dot-path.ts'
+import { providerErrorOf } from '../src/providers/adapter.ts'
 import { buildArkBody, readArkState } from '../src/providers/ark-seedance.ts'
 import { buildOpenAiVideosBody, endpointPath, readState } from '../src/providers/generic-openai-videos.ts'
 import { buildMinimaxBody, minimaxVideoAdapter, readMinimaxState } from '../src/providers/minimax-video.ts'
@@ -259,5 +260,31 @@ describe('settings rules', () => {
   it('derives the environment fallback name', () => {
     expect(environmentFallbackName('ark')).toBe('ARK_API_KEY')
     expect(environmentFallbackName('my-relay.cn')).toBe('MY_RELAY_CN_API_KEY')
+  })
+})
+
+describe('provider error bodies', () => {
+  // Shapes recorded from the real endpoints on 2026-10-15 (account id and request id redacted).
+  it('lifts ARK\'s code and sentence', () => {
+    const body = JSON.stringify({ error: { code: 'ModelNotOpen', message: 'Your account <redacted> has not activated the model doubao-seedance-2-0-fast-260128. Please activate the model service in the Ark Console.', param: '', type: 'Not Found' } })
+    expect(providerErrorOf(body)).toEqual({ code: 'ModelNotOpen', message: expect.stringMatching(/has not activated the model/) })
+  })
+
+  it('lifts ARK\'s parameter error', () => {
+    const body = JSON.stringify({ error: { code: 'InvalidParameter', message: 'The parameter `content[1].image_url` specified in the request is not valid: resource not found.', param: 'content[1].image_url', type: 'BadRequest' } })
+    expect(providerErrorOf(body)?.code).toBe('InvalidParameter')
+  })
+
+  it('falls back to the error type for MiniMax\'s OpenAI-style body, and reads base_resp', () => {
+    expect(providerErrorOf(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'resolution is required', http_code: 400 } })))
+      .toEqual({ code: 'invalid_request_error', message: 'resolution is required' })
+    expect(providerErrorOf(JSON.stringify({ base_resp: { status_code: 1004, status_msg: 'authentication failed' } })))
+      .toEqual({ code: '1004', message: 'authentication failed' })
+  })
+
+  it('returns null for anything that is not a structured error', () => {
+    expect(providerErrorOf('<html>502 Bad Gateway</html>')).toBeNull()
+    expect(providerErrorOf(JSON.stringify({ id: 'cgt-1' }))).toBeNull()
+    expect(providerErrorOf(JSON.stringify({ error: { code: 'X' } }))).toBeNull()
   })
 })

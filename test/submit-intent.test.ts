@@ -163,11 +163,12 @@ describe('an explicit refusal', () => {
     const ledger = await ledgerAt()
     const runtime = runtimeFor(settingsWith(arkProvider(fake)), ledger)
 
-    await expect(generate(runtime, { prompt: 'a fox in snow' })).rejects.toBeInstanceOf(ProviderRequestError)
+    // The provider's own code and sentence reach the caller, not just the status.
+    await expect(generate(runtime, { prompt: 'a fox in snow' })).rejects.toThrow(/HTTP 400: InvalidParameter — fixture refused the submission/)
     const [row] = ledger.list()
     expect(row?.status).toBe('failed')
     expect(row?.error?.code).toBe(NOT_SUBMITTED_CODE)
-    expect(row?.error?.message).toMatch(/refused the submission.*HTTP 400/)
+    expect(row?.error?.message).toMatch(/refused the submission.*HTTP 400: InvalidParameter — fixture refused the submission$/)
     expect(ledger.list().some(task => task.status === 'unconfirmed')).toBe(false)
 
     // Nothing was created, so the same request may go out again.

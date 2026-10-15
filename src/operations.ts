@@ -268,7 +268,11 @@ async function submitIntent(
     submitted = await adapter.submit(context, generation)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    const detail = error instanceof ProviderRequestError && error.bodyExcerpt !== null ? `${message}: ${error.bodyExcerpt}` : message
+    // A structured provider error is already in the message; only a body we
+    // could not read is worth appending raw.
+    const detail = error instanceof ProviderRequestError && error.providerMessage === null && error.bodyExcerpt !== null
+      ? `${message}: ${error.bodyExcerpt}`
+      : message
     const refused = !sent
       || (error instanceof ProviderRequestError && error.status !== null && error.status >= 400 && !ambiguousHttp(error.status))
     if (refused) {
