@@ -395,7 +395,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         })
         const fresh = ledger.byId(task.localId)
         if (claimed && fresh !== undefined) {
-          startInProcessWatch({
+          const handle = startInProcessWatch({
             ledger,
             adapter,
             context: { ...context, signal: undefined },
@@ -403,10 +403,24 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             pollIntervalMs: model.pollIntervalMs,
             outputDirectory: runtime.outputDirectory(fresh.localId),
             logger,
-            onExit: () => { runtime.watching.delete(fresh.localId) },
+            onExit: () => {
+              runtime.watching.delete(fresh.localId)
+              runtime.cancels.delete(fresh.localId)
+            },
+          })
+          // An accepted video_cancel stops this watch too, as it does a tool's.
+          runtime.cancels.set(fresh.localId, async () => {
+            handle.cancel()
+            return false
           })
         }
         logger.info(`video-forge: ${task.localId} is still running at the provider; watching it in the background`)
+        continue
+      }
+      if (state.status === 'succeeded' && state.videoUrl === null) {
+        // Paid, with no address yet: keep asking until the window closes.
+        await ledger.update(task.localId, current => (unchanged(current) ? { ...current, billing: settledBilling(state.usage, state.status) } : current))
+        await markOrphaned(ledger, task, unchanged, 'the provider reports success but gave no artifact URL yet')
         continue
       }
       if (state.status === 'succeeded' && state.videoUrl !== null) {
