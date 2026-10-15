@@ -517,6 +517,15 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 - `free`：方舟用不存在的图片 URL 提交，应在提交时 400 `InvalidParameter` 拒绝、不建任务；读一次方舟任务列表（找回 `unconfirmed` 提交依赖它）；MiniMax 查询一个不存在的任务，确认 key 与端点可用。
 - `paid`：方舟 480p 4 秒（默认模型下必须正好 40594 token）、MiniMax 480P 5 秒（必须报告 5 秒、没有 token），轮询到结束并下载。可用 `VIDEO_FORGE_LIVE_ARK_MODEL` / `VIDEO_FORGE_LIVE_MINIMAX_MODEL` 换成账号已开通的模型。
 
+**首次运行（2026-10-15，用户在自己的 shell 里导出 key 运行）**：
+
+| 档 | 结果 |
+|---|---|
+| `free` | 4 通过、2 跳过（付费项），约 1 秒。方舟无效图片 URL 在提交时 400 `InvalidParameter`；**方舟任务列表第一次用真实 key 读取成功**（找回 `unconfirmed` 提交依赖它）；MiniMax 查询不存在的任务未报鉴权错误 |
+| `paid` | 6 全部通过，约 102 秒。方舟 `cgt-20261015161207-x9jhw`（`2.0-fast`）88 秒完成，用量再次正好 40594 token；MiniMax `452603890753840`（`H3-Max`）12 秒完成，用量 5 秒。两者都**不带 key** 从各自 CDN 下载成功 |
+
+计费以账单为准：本次方舟 1 条（40594 token）、MiniMax 1 条（5 秒）。
+
 **下载不再把 key 发给别的域名（commit `8117d90`）**：此前下载产物时总带着 `Authorization: Bearer <key>`，对中转站给出的第三方预签名地址（如 S3）等于把 key 交给了别人，S3 还会因此拒绝请求。现在只有产物地址与 API 同源时才带 key（OpenAI 形状的 `/content` 回落属于这种）。方舟 TOS 与 MiniMax OSS 都是签名 URL、不同源，今后下载不带 key——**已用真实下载验证**：把 A6（方舟）与 M5（MiniMax）的行改成"孤儿、无产物"并挪走文件，用新构建重启，开机对账不带 key 从两家 CDN 重新下载，sha256 与原文件逐字节一致。
 
 **收尾**：实例用 `kill` 停止，`lsof` 与 `pgrep` 复核端口释放、无遗留进程；用户的 3080 实例全程未被触碰。
@@ -539,7 +548,8 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
   - fixture 改成按录制的真实响应回放（**已完成**，`c1180dd`）；另加一个"有 key 才跑、没 key 自动跳过"的在线测试（**未做**）。
   - **已完成**：真实通道两家跑通；用量入台账与 7 天补查（`098be28`）；报错保留供应商原话（`fee00e2`）；重启对账等凭据服务、孤儿自动重试（`4e82796`）；token 公式确认；审查后续修复（`09bbd00`、`8a5690a`、`046b4e9`、`4f6e0c5`、`19189a8`），测试 197 → 229 例。
   - **收尾（2026-10-15）**：审核拦截单独归类并拒绝重发（`6fa2794`）；"有 key 才跑"的在线测试（`d574c94`）；核实 `1.0-pro-250528` 为官方"即将下线"，预设标注 retiring（`f888d26`）。
-  - **剩余**：审核拦截的真实样本；用 `VIDEO_FORGE_LIVE=free` 跑一次在线测试（需要用户在自己的 shell 里导出 key）。
+  - 在线测试 `free` 与 `paid` 两档都已由用户实跑通过（见 §13 末）。
+  - **剩余**：审核拦截的真实样本（没有刻意触发）。
 - **M3 工作区即项目**（§16.2 / §16.4）：清单与目录映射；`renders/` 版本目录与宿主统一分配版本号；说明文件；角色登记；工具改成 3 个（`shot` / `from` / `characters`、工作区相对路径）；删除工作台页与面板 `generate`；聊天卡片显示实时进度并能取消；修掉"重启后进程内盯守不唤醒模型"；工作区写入的连带问题（`ctx.fs`、权限档位、文件被移动、符号链接）。会改工具 schema，所以放在发布之前。
 - **M4 skill、指导与成本可见性**（§16.3 / §16.5 / §16.6）：5 个 skill 经 `ctx.skills` 提供方注册（可选依赖）；`video-guide` 及其一致性测试；`video_status` 的花费汇总与事前估算；预设价格表；用方舟 `return_last_frame` 做模型自检。
 - **M5 发布**：仓库与目录改名为 `dsh-video-forge`、加 git remote、GitHub Actions 跑 `pnpm check`、npm trusted publishing / OIDC、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
