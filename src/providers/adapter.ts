@@ -7,7 +7,7 @@
  * protocol here returns a downloadable MP4 (DESIGN §1, P5).
  */
 
-import type { GenerationRequest, ProviderTaskState } from '../types.ts'
+import type { GenerationRequest, ProviderTaskState, ProviderTaskSummary } from '../types.ts'
 
 /** Resolved transport facts for one call. */
 export interface AdapterContext {
@@ -29,6 +29,12 @@ export interface ProtocolAdapter {
   query(context: AdapterContext, providerTaskId: string): Promise<ProviderTaskState>
   /** Ask the provider to stop. Returns false when it refused or does not support it. */
   cancel(context: AdapterContext, providerTaskId: string): Promise<boolean>
+  /**
+   * List the tasks the provider created inside `[from, to]` (epoch ms), when it
+   * documents a task-list endpoint. Absent on protocols that have none: an
+   * unconfirmed submission there can only be reported, never recovered.
+   */
+  listCreated?(context: AdapterContext, window: { from: number; to: number; model: string }): Promise<ProviderTaskSummary[]>
 }
 
 /** A provider or transport failure with the HTTP status and a bounded body excerpt. */

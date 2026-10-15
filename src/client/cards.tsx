@@ -221,6 +221,7 @@ function StatusLine({ row, base, t }: { row: StatusRow; base: string; t: Transla
               <a href={url} target="_blank" rel="noreferrer">{t('status.play')}</a>
             </span>
           )}
+      {row.status === 'unconfirmed' ? <div style={STYLE_ERROR}>{t('status.unconfirmedHint')}</div> : null}
     </div>
   )
 }

@@ -16,14 +16,13 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-tools'
 import { Config, snapshot, type Config as VideoForgeConfig } from './config.ts'
-import { resolveApiKey } from './credentials.ts'
-import { downloadArtifact } from './download.ts'
 import { Ledger, LedgerCorruptError } from './ledger.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, pluginHome, type VideoForgeRuntime } from './runtime.ts'
-import { resolveTarget, HOME_DIRECTORY, MEDIA_ROUTE_PREFIX, type ModelSetting, type ProviderSetting } from './settings.ts'
+import { reconcile } from './reconcile.ts'
+import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
 import type { VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
@@ -126,7 +125,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       return null
     },
     cancels: new Map(),
-    activeCount: () => ledger.list().filter(task => task.status === 'queued' || task.status === 'running').length,
+    activeCount: () => ledger.list().filter(task => task.status === 'submitting' || task.status === 'queued' || task.status === 'running').length,
   }
 
   // The media route is registered through an effect because (unlike
@@ -168,130 +167,6 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     .catch((error: unknown) => {
       logger.error(`video-forge: startup reconciliation failed: ${error instanceof Error ? error.message : String(error)}`)
     })
-}
-
-/**
- * Reattach to whatever the previous process left open.
- *
- * For each task the ledger still calls open, ask the provider what actually
- * happened. A finished task is settled (and its artifact fetched, if the URL is
- * still alive); a still-running task gets a fresh watch; a provider we cannot
- * reach at all leaves the task `orphaned` — never "probably still running", and
- * never a re-submission, because that would be a second charge for one intent.
- */
-async function reconcile(runtime: VideoForgeRuntime): Promise<void> {
-  const { ledger, logger } = runtime
-  const open = ledger.open()
-  if (open.length === 0) return
-
-  const settings = runtime.settings()
-  logger.info(`video-forge: reconciling ${open.length} task(s) left by a previous process`)
-
-  for (const task of open) {
-    let provider: ProviderSetting
-    let model: ModelSetting
-    try {
-      const target = resolveTarget(settings, task.provider, task.model)
-      provider = target.provider
-      model = target.model
-    } catch (error: unknown) {
-      await markOrphaned(ledger, task, `no longer configured: ${error instanceof Error ? error.message : String(error)}`)
-      continue
-    }
-
-    const adapter = adapterFor(provider, model)
-    let apiKey: string | null
-    try {
-      apiKey = (await resolveApiKey(runtime.ctx, provider)).value
-    } catch {
-      await markOrphaned(ledger, task, 'the credential for its provider is not available')
-      continue
-    }
-
-    const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey, fetch, signal: AbortSignal.timeout(20_000) }
-    try {
-      const state = await adapter.query(context, task.providerTaskId ?? '')
-      if (!state.terminal) {
-        // Still alive: reattach a watch instead of pretending, and never
-        // re-submit. There is no agent at boot, so this runs unowned — a job here
-        // would be rejected by the registry, and that is a limitation of the watch
-        // surface, not a reason to call a healthy task orphaned.
-        await ledger.update(task.localId, current => ({
-          ...current,
-          status: state.status === 'queued' ? 'queued' : 'running',
-          error: null,
-          updatedAt: new Date().toISOString(),
-        }))
-        const fresh = ledger.byId(task.localId)
-        if (fresh !== undefined) {
-          startInProcessWatch({
-            ledger,
-            adapter,
-            context: { ...context, signal: undefined },
-            task: fresh,
-            pollIntervalMs: model.pollIntervalMs,
-            outputDirectory: runtime.outputDirectory(fresh.localId),
-            logger,
-          })
-        }
-        logger.info(`video-forge: ${task.localId} is still running at the provider; watching it in the background`)
-        continue
-      }
-      if (state.status === 'succeeded' && state.videoUrl !== null) {
-        const artifact = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
-        await ledger.update(task.localId, current => ({
-          ...current,
-          status: 'succeeded',
-          progress: 1,
-          artifacts: artifact === null ? current.artifacts : [artifact],
-          error: artifact === null ? { message: 'generation succeeded but the artifact could not be retrieved after restart', code: null } : null,
-          updatedAt: new Date().toISOString(),
-        }))
-        logger.info(`video-forge: ${task.localId} had already finished; recorded its artifact`)
-        continue
-      }
-      await ledger.update(task.localId, current => ({
-        ...current,
-        status: state.status === 'cancelled' ? 'cancelled' : 'failed',
-        error: state.error ?? { message: `the provider reported status "${state.status}" while reconciling`, code: null },
-        updatedAt: new Date().toISOString(),
-      }))
-    } catch (error: unknown) {
-      await markOrphaned(ledger, task, `the provider could not be reached (${error instanceof Error ? error.message : String(error)})`)
-    }
-  }
-}
-
-async function fetchArtifact(
-  runtime: VideoForgeRuntime,
-  task: VideoTask,
-  url: string,
-  apiKey: string | null,
-  context: AdapterContext,
-): Promise<VideoTask['artifacts'][number] | null> {
-  try {
-    return await downloadArtifact({
-      url,
-      apiKey,
-      directory: runtime.outputDirectory(task.localId),
-      localId: task.localId,
-      fetch: context.fetch,
-      signal: undefined,
-      mimeHint: 'video/mp4',
-    })
-  } catch (error: unknown) {
-    runtime.logger.warn(`video-forge: could not download ${task.localId}: ${error instanceof Error ? error.message : String(error)}`)
-    return null
-  }
-}
-
-async function markOrphaned(ledger: Ledger, task: VideoTask, reason: string): Promise<void> {
-  await ledger.update(task.localId, current => ({
-    ...current,
-    status: 'orphaned',
-    error: { message: reason, code: null },
-    updatedAt: new Date().toISOString(),
-  }))
 }
 
 /** `$DSH_HOME`, from the profile context, the environment, or the account home. */

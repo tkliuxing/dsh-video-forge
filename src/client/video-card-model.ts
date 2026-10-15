@@ -212,8 +212,10 @@ export function blockFacts(block: unknown): BlockFacts {
 }
 
 /** Status word to a locale key for its headline. */
-export function statusKey(status: string): 'generate.queued' | 'generate.running' | 'generate.failed' | 'generate.cancelled' | 'generate.orphaned' | 'generate.running' {
+export function statusKey(status: string): 'generate.queued' | 'generate.running' | 'generate.failed' | 'generate.cancelled' | 'generate.orphaned' | 'generate.submitting' | 'generate.unconfirmed' {
   switch (status) {
+    case 'submitting': return 'generate.submitting'
+    case 'unconfirmed': return 'generate.unconfirmed'
     case 'queued': return 'generate.queued'
     case 'failed': return 'generate.failed'
     case 'cancelled': return 'generate.cancelled'

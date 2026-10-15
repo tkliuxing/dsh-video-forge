@@ -16,14 +16,30 @@ import { isAbsolute, join } from 'node:path'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
+import { ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, cancelSupported, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting } from './settings.ts'
-import type { GenerationRequest, ResolvedMaterial, VideoArtifact, VideoMode, VideoTask } from './types.ts'
+import {
+  NOT_SUBMITTED_CODE,
+  UNCONFIRMED_CODE,
+  type GenerationRequest,
+  type ResolvedMaterial,
+  type VideoArtifact,
+  type VideoMode,
+  type VideoTask,
+} from './types.ts'
 import { describe } from './watch.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN = new Set<VideoTask['status']>(['queued', 'running'])
+
+/**
+ * Statuses that hold a concurrency slot: the open ones plus a create request
+ * still in flight. `unconfirmed` does not — on a protocol with no task list it
+ * can never be resolved, and must not wedge the limit forever.
+ */
+const IN_FLIGHT = new Set<VideoTask['status']>(['submitting', 'queued', 'running'])
 
 /** What one generation is asked for, before validation. */
 export interface GenerateInput {
@@ -67,6 +83,8 @@ export async function generate(
   if (!settings.enabled) {
     throw new ConfigError('video-forge is disabled in its settings; enable it before generating')
   }
+  // Duplicate checks read the ledger, so it must have been read from disk first.
+  await runtime.ledger.ready()
 
   const { provider, model } = resolveTarget(settings, input.provider ?? null, input.model ?? null)
   const request = normaliseRequest(input)
@@ -99,17 +117,22 @@ export async function generate(
 
   const credential = await resolveApiKey(runtime.ctx, provider)
   const adapter = adapterFor(provider, model)
-  const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey: credential.value, fetch, signal: options.signal }
 
-  const submitted = await adapter.submit(context, generation)
+  // The last point at which this call may still be cancelled: nothing has left
+  // the process yet. Past here the create request is the provider's to answer.
+  options.signal?.throwIfAborted()
+
+  // Intent first (DESIGN §6): the ledger row exists before the POST does, so a
+  // lost response, a timeout or a crash mid-request still leaves a record that
+  // blocks a duplicate submission and is reported by video_status.
   const now = new Date()
-  const task: VideoTask = {
+  const intent: VideoTask = {
     localId: runtime.ledger.nextLocalId(now),
     provider: provider.id,
     protocol: provider.protocol,
     model: model.id,
-    providerTaskId: submitted.providerTaskId,
-    status: 'queued',
+    providerTaskId: null,
+    status: 'submitting',
     progress: null,
     submittedAt: now.toISOString(),
     updatedAt: now.toISOString(),
@@ -127,8 +150,24 @@ export async function generate(
     artifacts: [],
     error: null,
   }
-  await runtime.ledger.add(task)
-  runtime.logger.info(`video-forge: submitted ${task.localId} to ${provider.id}/${model.id} as ${submitted.providerTaskId}`)
+  // Marked as this process's own before the row exists, so boot reconciliation
+  // can never take it for one a dead process left behind.
+  SENDING.add(intent.localId)
+  let task: VideoTask
+  try {
+    await runtime.ledger.add(intent, () => {
+      refuseDuplicate(runtime, fingerprint)
+      refuseOverConcurrency(runtime, settings.maxConcurrent)
+    })
+    task = await submitIntent(runtime, intent, generation, adapter, {
+      baseUrl: provider.baseUrl,
+      apiKey: credential.value,
+      timeoutMs: settings.requestTimeoutMs,
+    })
+  } finally {
+    SENDING.delete(intent.localId)
+  }
+  runtime.logger.info(`video-forge: submitted ${task.localId} to ${provider.id}/${model.id} as ${task.providerTaskId ?? '(no id)'}`)
 
   const jobId = runtime.watchTask({
     task,
@@ -158,6 +197,111 @@ export async function generate(
   }
 }
 
+/**
+ * Raised when the create request went out but its outcome is unknown. The
+ * ledger already holds the row as `unconfirmed`; the message says so, because
+ * the one wrong reaction to it — submitting again — is a second charge.
+ */
+export class SubmissionUnconfirmedError extends Error {
+  readonly taskId: string
+
+  constructor(taskId: string, message: string) {
+    super(message)
+    this.name = 'SubmissionUnconfirmedError'
+    this.taskId = taskId
+  }
+}
+
+/** What video_status shows for an unconfirmed row, ahead of the transport detail. */
+export function unconfirmedMessage(detail: string): string {
+  return `the submission's outcome is unknown (${detail}): the provider may already have created and billed this task — do not re-submit it`
+}
+
+/** Rows whose create request this process is sending right now. */
+const SENDING = new Set<string>()
+
+/**
+ * Whether this process is still sending the create request for a row. Boot
+ * reconciliation must not mistake such a row for one a dead process left behind:
+ * the tools are live before the ledger has finished loading.
+ */
+export function isSending(localId: string): boolean {
+  return SENDING.has(localId)
+}
+
+/**
+ * Whether an HTTP status says only that *something between us and the provider*
+ * gave up — a timeout or a gateway failure. The upstream may still have accepted
+ * the request, so such an answer is no proof that nothing was created. A 4xx or
+ * a plain 500 is the provider's own refusal.
+ */
+function ambiguousHttp(status: number): boolean {
+  return status === 408 || status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 599)
+}
+
+/**
+ * Send the create request for an intent row and settle the row with whatever
+ * is known afterwards. The request deliberately ignores the calling tool's
+ * abort signal — once it has left, aborting it only discards the answer, not
+ * the task — and is bounded by `requestTimeoutMs` instead.
+ */
+async function submitIntent(
+  runtime: VideoForgeRuntime,
+  intent: VideoTask,
+  generation: GenerationRequest,
+  adapter: ReturnType<typeof adapterFor>,
+  transport: { baseUrl: string; apiKey: string | null; timeoutMs: number },
+): Promise<VideoTask> {
+  let sent = false
+  const context: AdapterContext = {
+    baseUrl: transport.baseUrl,
+    apiKey: transport.apiKey,
+    fetch: (input, init) => {
+      sent = true
+      return fetch(input, init)
+    },
+    signal: AbortSignal.timeout(transport.timeoutMs),
+  }
+
+  let submitted: { providerTaskId: string }
+  try {
+    submitted = await adapter.submit(context, generation)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    const detail = error instanceof ProviderRequestError && error.bodyExcerpt !== null ? `${message}: ${error.bodyExcerpt}` : message
+    const refused = !sent
+      || (error instanceof ProviderRequestError && error.status !== null && error.status >= 400 && !ambiguousHttp(error.status))
+    if (refused) {
+      await runtime.ledger.update(intent.localId, current => ({
+        ...current,
+        status: 'failed',
+        error: { message: sent ? `the provider refused the submission: ${detail}` : `nothing was sent: ${detail}`, code: NOT_SUBMITTED_CODE },
+        updatedAt: new Date().toISOString(),
+      }))
+      throw error
+    }
+    await runtime.ledger.update(intent.localId, current => ({
+      ...current,
+      status: 'unconfirmed',
+      error: { message: unconfirmedMessage(detail), code: UNCONFIRMED_CODE },
+      updatedAt: new Date().toISOString(),
+    }))
+    runtime.logger.warn(`video-forge: ${intent.localId} submission outcome unknown: ${detail}`)
+    throw new SubmissionUnconfirmedError(
+      intent.localId,
+      `${intent.localId}: ${unconfirmedMessage(detail)}. Check video_status with task_id ${intent.localId}.`,
+    )
+  }
+
+  return runtime.ledger.update(intent.localId, current => ({
+    ...current,
+    providerTaskId: submitted.providerTaskId,
+    status: 'queued',
+    error: null,
+    updatedAt: new Date().toISOString(),
+  }))
+}
+
 export interface CancelOutcome {
   taskId: string
   cancelled: boolean
@@ -180,6 +324,15 @@ export async function cancelTask(
   const adapter = adapterFor(provider, model)
   const supported = cancelSupported(provider, model, adapter)
 
+  if (task.status === 'submitting' || task.status === 'unconfirmed') {
+    return {
+      taskId: task.localId,
+      cancelled: false,
+      providerSupported: supported,
+      status: task.status,
+      message: `${task.localId} has no confirmed provider task id (${task.status}), so there is nothing to address a cancellation to; if the provider did create it, it keeps running and may be billed`,
+    }
+  }
   if (task.status !== 'queued' && task.status !== 'running') {
     return {
       taskId: task.localId,
@@ -313,7 +466,7 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
       overTaskLimit: retention.overTaskLimit,
       overByteLimit: retention.overByteLimit,
     },
-    active: all.filter(task => OPEN.has(task.status)).length,
+    active: all.filter(task => IN_FLIGHT.has(task.status)).length,
   }
 }
 
@@ -484,13 +637,18 @@ function refuseDuplicate(runtime: VideoForgeRuntime, fingerprint: string): void 
   if (window <= 0) return
   const existing = runtime.ledger.byFingerprint(fingerprint, Date.now() - window * 1000)
   if (existing === undefined) return
+  if (existing.status === 'submitting' || existing.status === 'unconfirmed') {
+    throw new ConfigError(
+      `an identical request is already tracked as ${existing.localId} (${existing.status}): its submission's outcome is unknown and the provider may already have created and billed it; check video_status with that id — re-submitting risks paying twice`,
+    )
+  }
   throw new ConfigError(
     `an identical request is already tracked as ${existing.localId} (${existing.status}); check video_status with that id instead of re-submitting — a repeated submission is a repeated charge`,
   )
 }
 
 function refuseOverConcurrency(runtime: VideoForgeRuntime, maxConcurrent: number): void {
-  const open = runtime.ledger.list().filter(task => OPEN.has(task.status))
+  const open = runtime.ledger.list().filter(task => IN_FLIGHT.has(task.status))
   if (open.length < maxConcurrent) return
   throw new ConfigError(
     `video-forge already has ${open.length} task(s) in flight (limit maxConcurrent=${maxConcurrent}): ${open.map(task => task.localId).join(', ')}; wait for one to finish, or cancel it with video_cancel`,

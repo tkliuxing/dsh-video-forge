@@ -14,7 +14,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { LedgerDocument, VideoTask, VideoTaskStatus } from './types.ts'
+import { NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN_STATUSES: ReadonlySet<VideoTaskStatus> = new Set<VideoTaskStatus>(['queued', 'running'])
@@ -45,6 +45,8 @@ export class Ledger {
   #writes: Promise<void> = Promise.resolve()
   /** Per-day sequence for local ids, so ids stay unique inside one process even before a flush. */
   #sequence = new Map<string, number>()
+  /** Settles once the latest {@link load} has, whatever its outcome. */
+  #loading: Promise<void> | null = null
 
   constructor(options: LedgerOptions) {
     this.#options = options
@@ -65,7 +67,22 @@ export class Ledger {
    * corrupt file is moved aside rather than overwritten, so a bad write stays
    * recoverable, then we start empty.
    */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    const loading = this.#read()
+    this.#loading = loading.then(() => undefined, () => undefined)
+    return loading
+  }
+
+  /**
+   * Resolves once a pending {@link load} has settled. The tools are registered
+   * before the ledger is read, and a submission against an unread ledger would
+   * miss every duplicate it holds — then flush a document without them.
+   */
+  ready(): Promise<void> {
+    return this.#loading ?? Promise.resolve()
+  }
+
+  async #read(): Promise<void> {
     let text: string
     try {
       text = await readFile(this.#options.path, { encoding: 'utf8' })
@@ -97,14 +114,25 @@ export class Ledger {
     return this.list().filter(isOpen).reverse()
   }
 
+  /** Rows whose create request has no confirmed provider id yet, oldest first (recovery order). */
+  unresolved(): VideoTask[] {
+    return this.list().filter(task => task.status === 'submitting' || task.status === 'unconfirmed').reverse()
+  }
+
   byId(localId: string): VideoTask | undefined {
     return this.#document.tasks.find(task => task.localId === localId)
   }
 
-  /** The most recent task carrying this fingerprint, used to refuse a duplicate submission. */
+  /**
+   * The most recent task carrying this fingerprint, used to refuse a duplicate
+   * submission. A row whose create request never produced a provider task is
+   * skipped: retrying it cannot charge twice. An `unconfirmed` row is *not*
+   * skipped — it may well have been charged once already.
+   */
   byFingerprint(fingerprint: string, since: number): VideoTask | undefined {
     return this.#document.tasks.find(task => task.paramsFingerprint === fingerprint
-      && Date.parse(task.submittedAt) >= since)
+      && Date.parse(task.submittedAt) >= since
+      && !neverSubmitted(task))
   }
 
   /** Artifact lookup for the media route: task id plus artifact token must both match. */
@@ -134,11 +162,23 @@ export class Ledger {
     return result
   }
 
-  /** Append a new task and flush. */
-  async add(task: VideoTask): Promise<VideoTask> {
+  /**
+   * Append a new task and flush. `guard` runs inside the writer lock, right
+   * before the append, so a check such as "no identical request is in flight"
+   * cannot race a concurrent submission between the check and the write.
+   */
+  async add(task: VideoTask, guard?: () => void): Promise<VideoTask> {
     await this.#exclusive(async () => {
+      guard?.()
       this.#document.tasks.push(task)
-      await this.#flush()
+      try {
+        await this.#flush()
+      } catch (error) {
+        // An append that never reached disk must not linger in memory: it would
+        // hold a slot and a fingerprint for a request that was never sent.
+        this.#document.tasks = this.#document.tasks.filter(entry => entry !== task)
+        throw error
+      }
     })
     return task
   }
@@ -174,7 +214,11 @@ export class Ledger {
   }
 
   async #exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.#writes.then(work, work)
+    const gated = async (): Promise<T> => {
+      await this.ready()
+      return work()
+    }
+    const run = this.#writes.then(gated, gated)
     this.#writes = run.then(() => undefined, () => undefined)
     return run
   }
@@ -213,7 +257,25 @@ export function parseDocument(text: string): LedgerDocument {
   if (typeof parsed !== 'object' || parsed === null) throw new Error('ledger root is not an object')
   const tasks = (parsed as { tasks?: unknown }).tasks
   if (!Array.isArray(tasks)) throw new Error('ledger has no tasks array')
-  return { version: 1, tasks: tasks.filter(isTask) }
+  return { version: 1, tasks: tasks.filter(isTask).map(normaliseStatus) }
+}
+
+/** Whether a row's create request is known never to have produced a provider task. */
+export function neverSubmitted(task: VideoTask): boolean {
+  return task.status === 'failed' && task.providerTaskId === null && task.error?.code === NOT_SUBMITTED_CODE
+}
+
+/**
+ * Keep every row, but never claim more than the row proves. A status word this
+ * build does not know (a newer writer) is read as `orphaned`; an open row with no
+ * provider id cannot be polled, so it is read as `unconfirmed`. Dropping either
+ * would lose the only record of a task that may be billing.
+ */
+function normaliseStatus(task: VideoTask): VideoTask {
+  const providerTaskId = typeof task.providerTaskId === 'string' && task.providerTaskId !== '' ? task.providerTaskId : null
+  let status: VideoTaskStatus = VIDEO_TASK_STATUSES.includes(task.status) ? task.status : 'orphaned'
+  if ((status === 'queued' || status === 'running') && providerTaskId === null) status = 'unconfirmed'
+  return status === task.status && providerTaskId === task.providerTaskId ? task : { ...task, status, providerTaskId }
 }
 
 function isTask(value: unknown): value is VideoTask {

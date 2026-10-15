@@ -6,6 +6,14 @@
 
 /** Lifecycle of one generation task, as the ledger stores it. */
 export type VideoTaskStatus =
+  /** Intent recorded; the create request is about to go out or is in flight. */
+  | 'submitting'
+  /**
+   * The create request went out but its outcome is unknown (the response was
+   * lost, timed out, or the process died mid-request). The provider may have
+   * created — and be billing — a task we hold no id for.
+   */
+  | 'unconfirmed'
   | 'queued'
   | 'running'
   | 'succeeded'
@@ -13,6 +21,28 @@ export type VideoTaskStatus =
   | 'cancelled'
   /** Submitted before this process started and not yet reconciled with the provider. */
   | 'orphaned'
+
+/** Every status, so a ledger read can tell a known word from a foreign one. */
+export const VIDEO_TASK_STATUSES: readonly VideoTaskStatus[] = [
+  'submitting',
+  'unconfirmed',
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'orphaned',
+]
+
+/**
+ * `error.code` of a row whose create request never produced a provider task:
+ * the provider answered with an explicit refusal, or nothing was sent at all.
+ * Such a row does not block a retry — there is nothing to be charged twice for.
+ */
+export const NOT_SUBMITTED_CODE = 'not_submitted'
+
+/** `error.code` of an {@link VideoTaskStatus} `unconfirmed` row. */
+export const UNCONFIRMED_CODE = 'submit_unconfirmed'
 
 /** Input shape of a generation, exactly one mutually exclusive scenario. */
 export type VideoMode = 't2v' | 'i2v' | 'flf2v' | 's2v'
@@ -58,6 +88,14 @@ export interface GenerationRequest {
   aspectRatio: string | null
   /** Whether the provider should produce a synchronized audio track, when it can. */
   generateAudio: boolean | null
+}
+
+/** One task as a provider's task-list endpoint reports it; used to recover an unconfirmed submission. */
+export interface ProviderTaskSummary {
+  providerTaskId: string
+  model: string | null
+  /** Provider-side creation time, epoch milliseconds, or null when not reported. */
+  createdAt: number | null
 }
 
 /** Provider-reported state of one task. `unknown` means the body did not carry a recognizable status. */

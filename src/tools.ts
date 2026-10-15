@@ -156,6 +156,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'List recent video generations with their provider, status, progress, error and (once finished) the artifact path and play URL.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
       'Tasks marked orphaned belonged to a previous process and could not be reconciled with the provider; they are never re-submitted automatically.',
+      'Tasks marked unconfirmed were sent but the provider\'s answer was lost (timeout, network failure, restart): the provider may already have created and billed them, so never submit the same request again — the error field says what is known.',
     ].join(' '),
     parameters: {
       task_id: { type: 'string', description: 'One task id, e.g. v-20261013-0001. Omit to list recent tasks.' },

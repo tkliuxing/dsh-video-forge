@@ -6,6 +6,10 @@
  * first-period protocols lets the full path — submit, poll, terminal state,
  * artifact download — run as a test, with no key and no network.
  *
+ * It can also misbehave on purpose — lose a submit response after creating the
+ * task, hold it, or refuse it — so the intent-first submission path (DESIGN §6)
+ * is exercised against the failure it exists for.
+ *
  * It is deliberately faithful to what the vendors publish (see DESIGN §7.1) and
  * deliberately dumb about everything else. It proves our shape assumptions are
  * self-consistent; it cannot prove a real vendor agrees, and no test here
@@ -30,6 +34,23 @@ export interface FixtureOptions {
   artifactBytes?: number
   /** Require exactly this bearer token. */
   apiKey?: string
+  /**
+   * Accept (and create) this many submissions, then destroy the socket instead
+   * of answering: the provider has a billable task, the client has no id.
+   */
+  loseSubmitResponses?: number
+  /** Hold every submit response this long, so a caller can abort mid-request. */
+  submitDelayMs?: number
+  /** Refuse every submission with this HTTP status and an error body; nothing is created. */
+  rejectSubmitStatus?: number
+}
+
+/** One task the fixture created, as its ARK task list reports it. */
+export interface FixtureTask {
+  id: string
+  model: string | null
+  /** Epoch seconds, ARK's unit. */
+  createdAt: number
 }
 
 export interface FixtureRequest {
@@ -42,6 +63,8 @@ export interface FixtureRequest {
 export interface Fixture {
   url: string
   requests: FixtureRequest[]
+  /** Every task the fixture created, including those whose response it lost. */
+  created: FixtureTask[]
   close(): Promise<void>
 }
 
@@ -51,7 +74,9 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
   const artifact = Buffer.alloc(options.artifactBytes ?? 2048, 7)
   const polls = new Map<string, number>()
   const requests: FixtureRequest[] = []
+  const created: FixtureTask[] = []
   let counter = 0
+  let lost = 0
 
   const server: Server = createServer((req, res) => {
     void handle(req, res)
@@ -77,6 +102,12 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       return
     }
 
+    if (req.method === 'POST' && options.rejectSubmitStatus !== undefined) {
+      res.writeHead(options.rejectSubmitStatus, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { code: 'InvalidParameter', message: 'fixture refused the submission' } }))
+      return
+    }
+
     if (options.mode === 'ark') {
       await handleArk(req, res, path, body)
       return
@@ -89,8 +120,22 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       counter += 1
       const id = `cgt-fixture-${counter}`
       polls.set(id, 0)
+      created.push({ id, model: modelOf(body), createdAt: Math.floor(Date.now() / 1000) })
+      await answerSubmit(res, { id })
+      return
+    }
+    if (req.method === 'GET' && /\/contents\/generations\/tasks(\?.*)?$/.test(path)) {
+      // The task list, newest first, in ARK's documented paging shape.
+      const query = new URL(path, 'http://fixture').searchParams
+      const pageNum = Number(query.get('page_num') ?? '1')
+      const pageSize = Number(query.get('page_size') ?? '20')
+      const newest = [...created].reverse()
+      const page = newest.slice((pageNum - 1) * pageSize, pageNum * pageSize)
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ id }))
+      res.end(JSON.stringify({
+        total: newest.length,
+        items: page.map(task => ({ id: task.id, model: task.model, status: 'queued', created_at: task.createdAt, updated_at: task.createdAt })),
+      }))
       return
     }
     const match = /\/contents\/generations\/tasks\/([^/?]+)$/.exec(path)
@@ -135,8 +180,8 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       counter += 1
       const id = `video-fixture-${counter}`
       polls.set(id, 0)
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ id, status: 'queued' }))
+      created.push({ id, model: modelOf(body), createdAt: Math.floor(Date.now() / 1000) })
+      await answerSubmit(res, { id, status: 'queued' })
       return
     }
     const match = /\/videos\/([^/?]+)(\/content)?$/.exec(path)
@@ -175,6 +220,18 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
     void body
   }
 
+  /** Answer a submission, after the configured delay — or lose the answer entirely. */
+  async function answerSubmit(res: ServerResponse, body: unknown): Promise<void> {
+    if (options.submitDelayMs !== undefined) await new Promise(resolve => setTimeout(resolve, options.submitDelayMs))
+    if (lost < (options.loseSubmitResponses ?? 0)) {
+      lost += 1
+      res.socket?.destroy()
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  }
+
   function stateOf(id: string, count: number): string {
     if (options.failAfterPolls !== undefined && count > options.failAfterPolls) return 'failed'
     if (count > pollsBeforeDone) return options.expire === true ? 'expired' : 'succeeded'
@@ -190,9 +247,19 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
   return {
     url: baseUrl(),
     requests,
+    created,
     close: () => new Promise<void>((resolve, reject) => {
       server.close(error => (error === undefined || error === null ? resolve() : reject(error)))
     }),
+  }
+}
+
+function modelOf(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { model?: unknown }
+    return typeof parsed.model === 'string' ? parsed.model : null
+  } catch {
+    return null
   }
 }
 

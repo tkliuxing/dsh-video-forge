@@ -408,6 +408,7 @@ function TaskCard({ task, t, exportTarget, onExportTarget, onCancel, onExport }:
         <span style={MUTED}>{`${task.status}${percent} · ${task.provider}/${task.model} · ${task.mode}`}</span>
       </div>
       <div style={MUTED}>{task.prompt}</div>
+      {task.status === 'unconfirmed' ? <div style={ERROR}>{t('status.unconfirmedHint')}</div> : null}
       {task.error === null ? null : <div style={ERROR}>{task.error}</div>}
       {playable === null
         ? null
