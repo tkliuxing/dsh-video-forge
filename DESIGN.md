@@ -725,3 +725,63 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 - **预设模型目录过期提示**：未决（§15 第 9 条）。
 - **客户端拆分**：`settings-card.tsx`（约 700 行）与 `providers-editor.tsx`（约 630 行）在膨胀，下一轮改配置卡之前先拆。
 - **`conversation.view` 任务 tab**：聊天卡片已承担大部分职责，待重新评估。
+
+## 17. M3 实施计划（2026-10-15 草案）
+
+本节是 M3"工作区即项目"的实施计划，依据是 2026-10-15 对 DSH 0.2.0-rc.2 源码（`deepseek-harness`，提交 `639ed01539`）的四项调研。每条结论都附了源码出处，关键几条已人工复核。
+
+### 17.1 调研结论
+
+| 问题 | 结论 | 出处 |
+|---|---|---|
+| `ctx.fs` 能不能写视频 | **不能**。写操作只有 `writeText` / `editText`（UTF-8 文本，原子写、自动建父目录）；没有二进制写、mkdir、rename、删除；README 写明"二进制安全的写入仍在推迟"。读可以：`readBytes`（必须给上限）、`readByteRange`。服务全局唯一，每次调用自己传 `cwd`；默认组合挂的是 `fs-sandbox`（按会话权限档位围住写入） | `packages/fs/fs/src/index.ts:266,287`；`packages/fs/fs/README.md:114`；`packages/bundle/base/cordis.patch.yml:516-519` |
+| 会话权限档位 | 三档 `read-only` / `workspace-write` / `danger-full-access`，按会话记在会话日志里，**会话中途可以变**。插件**不会被自动约束**：没有"我会写文件"的声明字段，`package.json` 的 `capabilities` 宿主根本不读；内置工具都是自己调 `ctx.sandboxPolicy.resolve({ session })` 再交给 `ctx.fs` 执行。插件代码在进程内运行，不受沙箱约束，所以要自己判断 | `packages/sandbox/sandbox/src/index.ts:30`；`packages/sandbox/sandbox-policy/src/index.ts:164-171`；`packages/fs/tool-fs/src/write.ts:111-118` |
+| 拖进对话的文件 | **不会落到工作区**，存在 `$DSH_HOME/attachments/v1`。图片存为**没有扩展名**的规范化副本（最多约 4.2 百万像素、会重新编码、GIF 只留第一帧），模型看到 `Normalized copy … "<路径>"`；其他文件（视频、音频…）保留原名，模型看到 `verbatim read-only copy saved at "<路径>"`。桌面版拖入非图片文件时插入的是 `@原始路径`。插件可以注入 `ctx.attachments`：拿会话历史里的完整引用调 `readImage` / `readFileStream` 读字节，但光凭 id 不行 | `packages/llm/llm/src/content.ts:66,157`；`packages/attachment/attachment-local/src/store.ts:51-54`；`packages/attachment/attachment/src/index.ts:53-263` |
+| 聊天卡片实时刷新 | 卡片收到的数据在结果出来后就**冻结**，不会自己更新。合规做法：客户端用 `@deepseek-ai/dsh-client-store` 的 `createSnapshotStore` 自己维护数据，通过注册时的 `inject.keyedHooks` 按任务 id 交给卡片，卡片 `useEffect` 里调用注入的 `watch` / `cancel` 回调（`ui-jobs`、`ui-deliverables` 都是这个模式）。历史卡片每次加载页面都会重新挂载，**只对未结束的任务轮询** | `packages/client/ui-tool/src/client/contract/slots.ts:26-31`；`packages/client/ui-slots/src/index.ts:506-591`；`packages/client/web/src/platform.ts:8-14` |
+| 重启后通知模型 | job 盯守结束时，`tool-jobs` 会自动通知所属会话并唤醒它。进程内盯守没有这个机制，要用 `ctx.sessionController.resolveAgent(sessionId)` 拿到（或恢复）会话的 agent，在 `ctx.agents.withoutInitiator` 里调 `agent.followup(消息)` 唤醒，再 `ctx.sessions.flush`。`dsh-schedule` 就是这么做的。`inject()` 不会唤醒，不能用。job id 重启后会被复用，不能当持久标识 | `packages/schedule/schedule/src/runtime.ts:51,101-125`；`packages/api/session-controller/src/index.ts:219`；`packages/jobs/tool-jobs/src/index.ts:262-308` |
+
+### 17.2 据此定下的做法
+
+- **读工作区一律走 `ctx.fs`**：清单、素材都是。这样本地、沙箱、SSH 远程工作区都能用。素材改用 `readBytes`，上限 20 MB。
+- **小文件写入走 `ctx.fs.writeText`**（说明文件 JSON、清单、`renders/.gitignore`），并传入会话的权限策略，由宿主按档位拦截。
+- **视频文件只能用 Node `fs` 写**，所以插件自己做和宿主一样的检查：
+  - 档位不是 `read-only`；
+  - `workspace-write` 时，目标的真实路径必须在工作区根目录之内；
+  - `ctx.fs.processPathFromHostPath(...)` 能映射回本机路径。SSH 远程工作区映射不回来，这时不写本机。
+
+  先写同目录下的临时文件，再改名替换。
+- **只读会话提交前就拒绝**（用户决定，见 17.5）：`video_generate` 提交前先查会话档位。`read-only`，或者是写不回本机的远程工作区（SSH），都直接拒绝，并说明原因，不花钱。组合里没挂 `sandboxPolicy` 时按不受限处理，这和宿主那种组合下自身的行为一致。
+- **写入时再查一次**：提交时把会话 id、档位、工作区根目录记进台账；下载产物时会话还活着就重新查，取两者中更严的那个。如果提交之后用户把会话改成了只读，钱已经花了，产物不能丢，这时落 `$DSH_HOME`，并在结果和通知里写明原因。
+- **拖入的素材**：
+  - 必做：素材路径没有扩展名时，看文件头字节识别格式（PNG/JPEG/GIF/WebP，视频识别 MP4/MOV/WebM），这样模型直接传它看到的那个路径就能用。
+  - 选做：支持附件 id。在 `exec.agent.session.deriveMessages()` 里找到完整引用，再交给 `ctx.attachments` 读取。
+- **聊天卡片**：客户端维护一个按任务 id 的快照，引用计数式轮询 `/video-forge/api/overview?taskId=…`，取消走 `/video-forge/api/cancel`。以台账为准，不依赖 job id。
+- **重启后的通知**：只有被开机对账或孤儿重试接管、并且最终结束的任务才通知（被模型 `job_kill` 的不通知，和 `tool-jobs` 的规则一致）。台账记 `notifiedAt` 防止重复。消息来源声明为插件自己的 `video-forge`（`form: 'notice'`），正文直接写结果和产物路径，因为这条路径上没有 `job_output` 可读。
+
+### 17.3 分阶段
+
+每个阶段单独提交，并经独立审查。
+
+| 阶段 | 内容 | 完成标准 |
+|---|---|---|
+| **M3.1 基础** | 台账行增加会话上下文（`sessionId`、`cwd`、提交时档位）；素材读取改走 `ctx.fs` 并识别无扩展名文件；`watching` 表改为进程级共享（顺带修 §15 第 14 条的重复盯守） | 单测；拖入图片的打印路径能作素材 |
+| **M3.2 项目与产物** | 解析清单（目录映射、默认参数、风格、角色）；产物落点规划（工作区或 `$DSH_HOME`，附原因）；`renders/<shot>/vNNN` 版本号在台账锁内分配；视频写入与包含检查；说明文件经 `ctx.fs.writeText` 写；媒体路由能播工作区文件（真实路径检查、文件被移走时给明确状态） | fixture 端到端：工作区、只读回退、符号链接逃逸被拒、版本号并发 |
+| **M3.3 工具收敛** | `video_generate` 加 `shot` / `from` / `characters`，素材用工作区相对路径；`video_status` 无参数时给出配置与可用模型状态；删除 `video_export`；`from` 走方舟 `return_last_frame` 取尾帧（MiniMax 不支持就明确拒绝） | 单测 + 在线测试 `paid` 档加一条带 `return_last_frame` 的方舟任务 |
+| **M3.4 卡片与界面** | 删除工作台页（`main` + `sidebar.panellist`）和面板的 `generate` / `export`；卡片显示实时进度、播放、取消；`overview` 支持按任务过滤 | jsdom 单测 + 隔离实例里用真浏览器看一遍卡片 |
+| **M3.5 重启通知** | `resolveAgent` + `followup`，台账 `notifiedAt`，声明消息来源类型 | 单测（假 agent）+ 隔离实例重启实测 |
+| **M3.6 收尾** | 独立审查、回写 §4/§5/§9、更新 README | — |
+
+### 17.4 默认做法（未单独询问）
+
+- `renders/` 里放一个只含 `*` 的 `.gitignore`，和清单一起在首次产出时写入；想把产物提交进 git 的人删掉它即可。
+- `from`（续拍）只在能拿到尾帧的协议上可用：方舟用 `return_last_frame`；MiniMax 明确拒绝，等本地 ffmpeg 决定后再说（§16.8）。
+- 附件 id、`sandbox_permissions` 式的一次性提权：都不在 M3 里做。
+
+### 17.5 用户决定（2026-10-15）
+
+| 问题 | 决定 |
+|---|---|
+| 清单格式 | **YAML**（`video-project.yaml`），为此引入运行时依赖 `yaml`（无二次依赖） |
+| 工作区没有清单时 | **首次产出时写一份**清单（连同 `renders/.gitignore`），之后用户可改 |
+| 会话只读或是远程工作区 | **提交前就拒绝**，不花钱；只有提交后档位才被收紧的情况才落 `$DSH_HOME` |
+| 拖入素材的附件 id | **只做路径**：模型传它看到的路径，插件看文件头识别格式；附件 id 不在 M3 里做 |
