@@ -139,6 +139,8 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   const [draft, setDraft] = useState<Partial<ClientConfigShape>>({})
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
+  // The row a refused save points at, so the editor can open it.
+  const [problem, setProblem] = useState<DraftProblem | null>(null)
   const [credentials, setCredentials] = useState<Record<string, CredentialState>>({})
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({})
   const [keyBusy, setKeyBusy] = useState<string | null>(null)
@@ -226,6 +228,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   const editProviders = useCallback((next: ProviderDraft[]) => {
     setState('idle')
     setError(null)
+    setProblem(null)
     setEdit({ kind: 'form', drafts: next })
   }, [])
 
@@ -233,6 +236,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
     setDraft({})
     setEdit(null)
     setError(null)
+    setProblem(null)
     setState('idle')
   }, [])
 
@@ -245,6 +249,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         if (problem !== null) {
           setState('failed')
           setError(problemMessage(t, problem))
+          setProblem(problem)
           return
         }
         ops.push({ op: 'set', path: ['providers'], value: edit.drafts.map(serializeProvider) })
@@ -283,6 +288,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
           setState('failed')
           setJsonOpen(true)
           setError(problemMessage(t, problem))
+          setProblem(problem)
           return
         }
         // What the operator typed is what gets written: the textarea is the
@@ -295,6 +301,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
 
     setState('saving')
     setError(null)
+    setProblem(null)
     const accepted = await save(ops)
     if (!accepted) {
       // A refusal carries no detail — the form's `mutate` answers true or false —
@@ -357,6 +364,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
                 status={statusById}
                 credential={ref => credentials[ref]}
                 readOnly={readOnly}
+                problem={problem}
                 onChange={editProviders}
               />
             )}

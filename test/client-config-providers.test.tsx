@@ -368,6 +368,84 @@ describe('configuration card: the JSON view and the rows are one list', () => {
   })
 })
 
+describe('configuration card: folding providers and models', () => {
+  /** The `<details>` whose summary leads with this id (a provider card or a model row). */
+  const fold = (id: string): HTMLDetailsElement => {
+    const heading = screen.getAllByText(id, { selector: 'summary strong' })[0]
+    const details = heading?.closest('details')
+    expect(details, `a fold for ${id}`).toBeTruthy()
+    return details as HTMLDetailsElement
+  }
+  const TWO_PROVIDERS: ClientConfigShape = {
+    ...CONFIG,
+    providers: [ARK_ROW, { id: 'relay', protocol: 'generic-openai-videos', baseUrl: 'https://relay.example/v1', authRef: '', models: [] }],
+  }
+
+  it('shows stored rows folded, each summarised on one line', () => {
+    render(<SettingsCard {...props(bench(TWO_PROVIDERS))} />)
+
+    expect(fold('ark').open).toBe(false)
+    expect(fold('relay').open).toBe(false)
+    expect(fold('doubao-seedance-1-0-pro-250528').open).toBe(false)
+
+    const ark = fold('ark').querySelector('summary')!.textContent ?? ''
+    expect(ark).toContain(en['config.protocol.ark-seedance'])
+    expect(ark).toContain(`${en['config.models']} · 1`)
+    expect(fold('relay').querySelector('summary')!.textContent).toContain(en['config.credentialKeyless'])
+    const model = fold('doubao-seedance-1-0-pro-250528').querySelector('summary')!.textContent ?? ''
+    expect(model).toContain('Seedance Pro')
+    expect(model).toContain(`${en['panel.mode.t2v']} / ${en['panel.mode.i2v']}`)
+  })
+
+  it('opens a provider added from the picker, and leaves the stored ones folded', () => {
+    render(<SettingsCard {...props(bench())} />)
+
+    fireEvent.change(screen.getByLabelText(en['config.addProvider']), { target: { value: 'minimax' } })
+    fireEvent.click(screen.getByText(en['config.add']))
+
+    expect(fold('minimax').open).toBe(true)
+    expect(fold('ark').open).toBe(false)
+  })
+
+  it('opens the provider and the new row when a model is added', () => {
+    render(<SettingsCard {...props(bench())} />)
+
+    fireEvent.click(screen.getByText(new RegExp(en['config.addModel'])))
+
+    expect(fold('ark').open).toBe(true)
+    expect(fold(en['config.unnamed']).open).toBe(true)
+    expect(fold('doubao-seedance-1-0-pro-250528').open).toBe(false)
+  })
+
+  it('expands and collapses every row at once', () => {
+    render(<SettingsCard {...props(bench(TWO_PROVIDERS))} />)
+
+    fireEvent.click(screen.getByText(en['config.expandAll']))
+    expect([fold('ark').open, fold('relay').open, fold('doubao-seedance-1-0-pro-250528').open]).toEqual([true, true, true])
+
+    fireEvent.click(screen.getByText(en['config.collapseAll']))
+    expect([fold('ark').open, fold('relay').open, fold('doubao-seedance-1-0-pro-250528').open]).toEqual([false, false, false])
+  })
+
+  it('opens the row a refused save names, even after it was folded', async () => {
+    const b = bench(TWO_PROVIDERS)
+    render(<SettingsCard {...props(b)} />)
+
+    // Blank the ark model's id, fold everything, then try to save.
+    fireEvent.change(screen.getByDisplayValue('doubao-seedance-1-0-pro-250528'), { target: { value: '' } })
+    fireEvent.click(screen.getByText(en['config.collapseAll']))
+    fireEvent.click(screen.getByText(en['config.save']))
+
+    await waitFor(() => {
+      expect(screen.getByText(t('config.problem.modelIdEmpty', { index: 1, model: 1 }))).toBeTruthy()
+    })
+    expect(b.save).not.toHaveBeenCalled()
+    expect(fold('ark').open).toBe(true)
+    expect(fold(en['config.unnamed']).open).toBe(true)
+    expect(fold('relay').open).toBe(false)
+  })
+})
+
 describe('configuration card: credential verdicts', () => {
   const provider = (over: Partial<{ credential: { configured: boolean; source: string | null; masked: string | null; error: string | null }; authRef: string }> = {}) => ({
     id: 'ark',
@@ -402,5 +480,7 @@ describe('configuration card: credential verdicts', () => {
     const summary = credentialSummary(t, 'ARK_API_KEY', provider({ credential: { configured: false, source: null, masked: null, error: 'missing ARK_API_KEY' } }), undefined)
     expect(summary.tone).toBe('error')
     expect(summary.text).toContain('missing ARK_API_KEY')
+    // The one-line summary of a folded card keeps the verdict and drops the detail.
+    expect(summary.headline).toBe(t('config.credentialMissing'))
   })
 })
