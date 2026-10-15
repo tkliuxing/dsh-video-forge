@@ -90,6 +90,16 @@ export function readMinimaxState(body: unknown): ProviderTaskState {
   }
 }
 
+/**
+ * `base_resp` codes that refuse a request before any work starts, per the MiniMax
+ * error-code reference (2026-10-15): rate and connection limits (1002, 1041,
+ * 2045, 2056), authentication (1004, 2049), balance (1008), content review
+ * (1026, 1027), token limit (1039), invalid characters (1042), parameters
+ * (2013). Anything else — 1000 unknown, 1001 timeout, 1024 internal, 1033
+ * downstream — says nothing about whether a task exists.
+ */
+const FINAL_REFUSALS: ReadonlySet<number> = new Set([1002, 1004, 1008, 1026, 1027, 1039, 1041, 1042, 2013, 2045, 2049, 2056])
+
 export function minimaxVideoAdapter(options: MinimaxVideoOptions): ProtocolAdapter {
   return {
     id: 'minimax-video',
@@ -100,15 +110,19 @@ export function minimaxVideoAdapter(options: MinimaxVideoOptions): ProtocolAdapt
       const response = await requestJson(context, `${trimSlash(context.baseUrl)}/v2/video_generation`, { method: 'POST', body })
       const id = readString(response, 'task_id')
       if (id === null || id === '') {
-        // MiniMax's older endpoints answer a refusal as HTTP 200 with a non-zero
-        // base_resp and no id. That is the provider's own verdict, not a lost
-        // answer: report it as a refusal (status 400) so the row is `failed`,
-        // tagged when it is a content review, rather than "may have been billed".
-        const statusCode = readPath(response, 'base_resp.status_code')
+        // MiniMax's older endpoints answer an error as HTTP 200 with a non-zero
+        // base_resp and no id. A code that refuses the request outright (auth,
+        // balance, limits, parameters, content review) is a verdict: report it
+        // as a refusal (status 400), so the row is `failed` and tagged when it is
+        // a review. A timeout or internal error may have come after the task was
+        // created, so it keeps no status and the row stays `unconfirmed`, as a
+        // 502/504 does — never "not submitted", which would invite a second charge.
+        const raw = readPath(response, 'base_resp.status_code')
+        const statusCode = typeof raw === 'number' ? raw : (typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : null)
         const statusMessage = readString(response, 'base_resp.status_msg')
-        if (typeof statusCode === 'number' && statusCode !== 0) {
-          throw new ProviderRequestError(`minimax-video: the provider refused the request: ${statusCode} — ${statusMessage ?? 'no message'}`, {
-            status: 400,
+        if (statusCode !== null && statusCode !== 0) {
+          throw new ProviderRequestError(`minimax-video: the provider answered ${statusCode} — ${statusMessage ?? 'no message'} without a task_id`, {
+            status: FINAL_REFUSALS.has(statusCode) ? 400 : null,
             bodyExcerpt: excerpt(JSON.stringify(response)),
             providerCode: String(statusCode),
             providerMessage: statusMessage,

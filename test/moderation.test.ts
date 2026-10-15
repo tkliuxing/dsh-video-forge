@@ -216,4 +216,28 @@ describe('MiniMax answering a refusal with HTTP 200', () => {
       await new Promise<void>(resolve => server.close(() => resolve()))
     }
   })
+
+  it('keeps a vendor-side timeout ambiguous: the task may exist, so it is never "not submitted"', async () => {
+    const { minimaxVideoAdapter } = await import('../src/providers/minimax-video.ts')
+    const { createServer } = await import('node:http')
+    for (const code of [1001, '1033']) {
+      const server = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ base_resp: { status_code: code, status_msg: 'timeout' } }))
+      })
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      const port = (server.address() as { port: number }).port
+      try {
+        const adapter = minimaxVideoAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, watermark: false })
+        const error = await adapter.submit({ baseUrl: `http://127.0.0.1:${port}`, apiKey: null, fetch, signal: undefined }, {
+          model: 'MiniMax-H3', prompt: 'x', mode: 't2v', firstFrame: null, lastFrame: null, referenceImages: [],
+          durationSeconds: 5, resolution: '768P', aspectRatio: '16:9', generateAudio: null,
+        }).then(() => null, (caught: unknown) => caught as { status: number | null; providerCode: string | null })
+        expect(error?.status).toBeNull()
+        expect(error?.providerCode).toBe(String(code))
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()))
+      }
+    }
+  })
 })
