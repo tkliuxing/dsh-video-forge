@@ -211,6 +211,18 @@ DELETE {base}/contents/generations/tasks/{id}   # 只能取消**排队中**的�
 
 - 默认 base：`https://ark.cn-beijing.volces.com/api/v3`；产物 URL **有效期 24 小时**（Seedance 2.5 另有 100 次下载上限）→ 必须尽快落盘（§9）。
 - 首期这一家**不需要 dot-path 配置**，字段名直接写在适配器里；只有 `generic-openai-videos` 需要（中转站形状不保证）。
+- **模型目录（2026-10-14 按官方[创建视频生成任务](https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh)与[模型列表](https://docs.volcengine.com/docs/ark/model-list?lang=zh)核对，固化在 `provider-presets.ts`）**：API 可调用的是 2.5 / 2.0 / 2.0 fast / 2.0 mini / 1.0 pro / 1.0 pro fast 六个；1.0 lite 与 Seaweed 只在控制台体验，不进预设。模型列表**拿不到在线目录**：管控面 `ListFoundationModels` 只认 AK/SK 签名，插件只持有推理用的 API Key，返回里也没有时长/分辨率等能力字段。
+
+  | Model ID | 模式 | resolution | duration（秒） | generate_audio |
+  |---|---|---|---|---|
+  | `doubao-seedance-2-5-260628` | t2v / i2v / flf2v / s2v | 480p, 720p, 1080p（默认 720p） | 4–30，或 -1 | ✅ 默认 true |
+  | `doubao-seedance-2-0-260128` | t2v / i2v / flf2v / s2v | 480p, 720p, 1080p, 4k（默认 720p） | 4–15，或 -1 | ✅ |
+  | `doubao-seedance-2-0-fast-260128` | t2v / i2v / flf2v / s2v | 480p, 720p | 4–15，或 -1 | ✅ |
+  | `doubao-seedance-2-0-mini-260615` | t2v / i2v / flf2v / s2v | 480p, 720p | 4–15，或 -1 | ✅ |
+  | `doubao-seedance-1-0-pro-250528` | t2v / i2v / flf2v | 480p, 720p, 1080p（默认 1080p） | 2–12（另有 `frames`） | ❌ |
+  | `doubao-seedance-1-0-pro-fast-251015` | t2v / i2v | 480p, 720p, 1080p（默认 1080p） | 2–12（另有 `frames`） | ❌ |
+
+  `ratio` 全部取自 `16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive`，但有两条**按任务类型**的限制无法写成按模型的列表，留给供应商报错：2.5 的首帧/首尾帧任务只收 `adaptive`；1.0 的文生视频不收 `adaptive`。`duration: -1`（2.x 智能选时长）不进列表——不传 duration 就交给供应商的默认值（2.5 的默认正是 -1；2.0 系列文档没写默认值），不必让工作台解释一个哨兵值。2.x 的参考视频/参考音频、视频编辑/延长、样片模式，适配器尚未接（`content[]` 只发文本与图片）。
 
 **`generic-openai-videos`**（OpenAI Videos 兼容面）
 

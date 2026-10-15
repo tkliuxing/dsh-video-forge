@@ -13,7 +13,9 @@ import {
   PROVIDER_PRESETS,
   SUPPORTED_PROTOCOLS,
   authRefs,
+  knownModel,
   knownModelIds,
+  modelFromPreset,
   newModel,
   parseNumberList,
   parseStringList,
@@ -85,17 +87,58 @@ describe('provider catalogue', () => {
     expect(providerPreset('nope')).toBeUndefined()
   })
 
-  it('pre-fills a row: protocol, base URL, credential reference and starter model', () => {
+  it('pre-fills a row: protocol, base URL, credential reference and the documented models', () => {
     const draft = providerFromPreset(providerPreset('ark')!, ['relay'])
     expect(draft.id).toBe('ark')
     expect(draft.protocol).toBe('ark-seedance')
     expect(draft.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/v3')
     expect(draft.authRef).toBe('ARK_API_KEY')
-    expect(draft.models.map(model => model.id)).toEqual(['doubao-seedance-1-0-pro-250528'])
-    // Capability lists stay empty: empty means "the provider decides", and a
-    // made-up duration would be a constraint the vendor never agreed to.
-    expect(draft.models[0]?.durations).toEqual([])
-    expect(draft.models[0]?.resolutions).toEqual([])
+    expect(draft.models.map(model => model.id)).toEqual([
+      'doubao-seedance-2-5-260628',
+      'doubao-seedance-2-0-260128',
+      'doubao-seedance-2-0-fast-260128',
+      'doubao-seedance-2-0-mini-260615',
+      'doubao-seedance-1-0-pro-250528',
+      'doubao-seedance-1-0-pro-fast-251015',
+    ])
+  })
+
+  it('carries each Seedance model\'s documented capabilities into its row', () => {
+    const rows = Object.fromEntries(providerFromPreset(providerPreset('ark')!, []).models.map(model => [model.id, model]))
+    const ratios = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive']
+
+    expect(rows['doubao-seedance-2-5-260628']).toMatchObject({
+      label: 'Seedance 2.5',
+      modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+      resolutions: ['480p', '720p', '1080p'],
+      aspectRatios: ratios,
+      generateAudio: true,
+    })
+    expect(rows['doubao-seedance-2-5-260628']?.durations).toEqual(Array.from({ length: 27 }, (_, i) => 4 + i))
+    // 4k is the full 2.0 model's alone; Fast and Mini stop at 720p.
+    expect(rows['doubao-seedance-2-0-260128']?.resolutions).toEqual(['480p', '720p', '1080p', '4k'])
+    expect(rows['doubao-seedance-2-0-fast-260128']?.resolutions).toEqual(['480p', '720p'])
+    expect(rows['doubao-seedance-2-0-mini-260615']?.resolutions).toEqual(['480p', '720p'])
+    expect(rows['doubao-seedance-2-0-mini-260615']?.durations).toEqual(Array.from({ length: 12 }, (_, i) => 4 + i))
+    // 1.0 produces no audio, and Pro Fast has no last-frame input.
+    expect(rows['doubao-seedance-1-0-pro-250528']).toMatchObject({ modes: ['t2v', 'i2v', 'flf2v'], generateAudio: false })
+    expect(rows['doubao-seedance-1-0-pro-fast-251015']).toMatchObject({ modes: ['t2v', 'i2v'], generateAudio: false })
+    expect(rows['doubao-seedance-1-0-pro-fast-251015']?.durations).toEqual(Array.from({ length: 11 }, (_, i) => 2 + i))
+  })
+
+  it('writes resolutions exactly as the API spells them', () => {
+    // The adapter forwards `resolution` verbatim, so `1080P` would be a refused request.
+    for (const preset of PROVIDER_PRESETS) {
+      for (const model of preset.models) {
+        for (const resolution of model.resolutions) expect(resolution).toMatch(/^(480p|720p|1080p|4k)$/)
+      }
+    }
+  })
+
+  it('leaves the capability lists of an unchecked vendor empty', () => {
+    // Empty means "the provider decides"; Sora's limits are not verified yet.
+    const [sora] = providerFromPreset(providerPreset('openai')!, []).models
+    expect(sora).toMatchObject({ id: 'sora-2', durations: [], resolutions: [], aspectRatios: [] })
   })
 
   it('lets the same vendor be added twice under distinct ids', () => {
@@ -107,8 +150,22 @@ describe('provider catalogue', () => {
   })
 
   it('suggests the model ids it knows for a protocol', () => {
-    expect(knownModelIds('ark-seedance')).toEqual(['doubao-seedance-1-0-pro-250528'])
+    expect(knownModelIds('ark-seedance')).toContain('doubao-seedance-1-0-pro-250528')
+    expect(knownModelIds('ark-seedance')).toHaveLength(6)
     expect(knownModelIds('generic-openai-videos')).toEqual(['sora-2'])
+  })
+
+  it('looks a model up within its protocol only', () => {
+    expect(knownModel('ark-seedance', 'doubao-seedance-2-0-260128')?.label).toBe('Seedance 2.0')
+    expect(knownModel('generic-openai-videos', 'doubao-seedance-2-0-260128')).toBeUndefined()
+    expect(knownModel('ark-seedance', 'doubao-seedance-1-0-lite-t2v-250428')).toBeUndefined()
+  })
+
+  it('builds a row from a preset model without sharing its arrays', () => {
+    const preset = knownModel('ark-seedance', 'doubao-seedance-2-0-260128')!
+    const row = modelFromPreset(preset)
+    row.durations.push(99)
+    expect(preset.durations).not.toContain(99)
   })
 })
 

@@ -256,6 +256,39 @@ describe('configuration card: editing a provider and its models', () => {
     })
   })
 
+  it('fills a new model row from the catalogue when a known id is entered', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b)} />)
+
+    fireEvent.click(screen.getByText(new RegExp(en['config.addModel'])))
+    fireEvent.change(screen.getAllByLabelText(en['config.modelId'])[1]!, { target: { value: 'doubao-seedance-2-0-fast-260128' } })
+    expect((screen.getAllByLabelText(en['config.resolutions'])[1] as HTMLInputElement).value).toBe('480p, 720p')
+    fireEvent.click(screen.getByText(en['config.save']))
+
+    await waitFor(() => { expect(b.save).toHaveBeenCalledTimes(1) })
+    const written = providersOp(b) as { models: Record<string, unknown>[] }[]
+    expect(written[0]?.models[1]).toMatchObject({
+      id: 'doubao-seedance-2-0-fast-260128',
+      label: 'Seedance 2.0 Fast',
+      modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+      resolutions: ['480p', '720p'],
+      generateAudio: true,
+    })
+  })
+
+  it('never overwrites a row that already declares capabilities', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b)} />)
+
+    // The stored row has its own lists; renaming it to a catalogue id keeps them.
+    fireEvent.change(screen.getByLabelText(en['config.modelId']), { target: { value: 'doubao-seedance-2-0-260128' } })
+    fireEvent.click(screen.getByText(en['config.save']))
+
+    await waitFor(() => { expect(b.save).toHaveBeenCalledTimes(1) })
+    const written = providersOp(b) as { models: Record<string, unknown>[] }[]
+    expect(written[0]?.models[0]).toMatchObject({ id: 'doubao-seedance-2-0-260128', label: ARK_ROW.models[0]!.label, durations: ARK_ROW.models[0]!.durations })
+  })
+
   it('adds an empty model and can remove it again', async () => {
     const b = bench()
     render(<SettingsCard {...props(b)} />)

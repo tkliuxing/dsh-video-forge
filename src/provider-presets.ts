@@ -39,6 +39,25 @@ type UnlistedProtocol = Exclude<ProviderSetting['protocol'], SupportedProtocol>
 const _everyProtocolIsListed: [UnlistedProtocol] extends [never] ? true : never = true
 void _everyProtocolIsListed
 
+/**
+ * One model a preset knows, with the capabilities its vendor documents.
+ *
+ * A capability list left empty means "the provider decides" in
+ * `assertGeometry`. Lists are filled only from the vendor's own reference, never
+ * guessed: a made-up duration is a constraint the vendor never agreed to, and it
+ * would refuse requests the vendor accepts.
+ */
+export interface PresetModel {
+  id: string
+  label: string
+  modes: readonly VideoMode[]
+  durations: readonly number[]
+  resolutions: readonly string[]
+  aspectRatios: readonly string[]
+  /** Ask for a synchronized audio track; true only where the model can produce one. */
+  generateAudio: boolean
+}
+
 /** One vendor this build can talk to today, as a starting point for a provider row. */
 export interface ProviderPreset {
   /** Suggested provider id; de-duplicated against the ids already in use. */
@@ -47,20 +66,101 @@ export interface ProviderPreset {
   baseUrl: string
   /** Credential reference name; empty when the endpoint may run without a key. */
   authRef: string
-  /**
-   * Model ids worth starting with. Capability lists are left empty on purpose:
-   * empty means "the provider decides" in `assertGeometry`, and inventing
-   * durations or resolutions a vendor may not accept would be worse than
-   * shipping none.
-   */
-  models: readonly { id: string; modes: readonly VideoMode[] }[]
+  models: readonly PresetModel[]
 }
+
+/** Whole seconds `from`…`to`, for a vendor that documents a duration range. */
+function seconds(from: number, to: number): number[] {
+  return Array.from({ length: to - from + 1 }, (_, offset) => from + offset)
+}
+
+/** Every `ratio` Seedance accepts; `adaptive` lets the model follow the input. */
+const SEEDANCE_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'] as const
+
+/**
+ * The Seedance models callable through `POST /contents/generations/tasks`, as
+ * the 火山方舟 reference states them on 2026-10-14 ([创建视频生成任务] for the
+ * per-model `resolution` / `ratio` / `duration` / `generate_audio` support and
+ * [模型列表] for the ids). Console-only models (the 1.0 lite pair, Seaweed) are
+ * left out because the API does not serve them.
+ *
+ * Two per-task rules cannot be expressed as a per-model list, so the vendor
+ * enforces them and its error reaches the operator:
+ * - Seedance 2.5 accepts only `adaptive` for first-frame / first-and-last-frame
+ *   tasks (the output follows the first frame);
+ * - Seedance 1.0 refuses `adaptive` for text-to-video.
+ *
+ * `duration: -1` ("let the model choose", 2.x only) is not listed: leaving the
+ * duration unset hands the choice to the vendor's default (which is `-1` for
+ * 2.5; the 2.0 reference names none) without a sentinel the workbench would
+ * have to explain.
+ *
+ * [创建视频生成任务]: https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh
+ * [模型列表]: https://docs.volcengine.com/docs/ark/model-list?lang=zh
+ */
+const SEEDANCE_MODELS: readonly PresetModel[] = [
+  {
+    id: 'doubao-seedance-2-5-260628',
+    label: 'Seedance 2.5',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(4, 30),
+    resolutions: ['480p', '720p', '1080p'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: true,
+  },
+  {
+    id: 'doubao-seedance-2-0-260128',
+    label: 'Seedance 2.0',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(4, 15),
+    resolutions: ['480p', '720p', '1080p', '4k'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: true,
+  },
+  {
+    id: 'doubao-seedance-2-0-fast-260128',
+    label: 'Seedance 2.0 Fast',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(4, 15),
+    resolutions: ['480p', '720p'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: true,
+  },
+  {
+    id: 'doubao-seedance-2-0-mini-260615',
+    label: 'Seedance 2.0 Mini',
+    modes: ['t2v', 'i2v', 'flf2v', 's2v'],
+    durations: seconds(4, 15),
+    resolutions: ['480p', '720p'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: true,
+  },
+  {
+    id: 'doubao-seedance-1-0-pro-250528',
+    label: 'Seedance 1.0 Pro',
+    modes: ['t2v', 'i2v', 'flf2v'],
+    durations: seconds(2, 12),
+    resolutions: ['480p', '720p', '1080p'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: false,
+  },
+  {
+    id: 'doubao-seedance-1-0-pro-fast-251015',
+    label: 'Seedance 1.0 Pro Fast',
+    modes: ['t2v', 'i2v'],
+    durations: seconds(2, 12),
+    resolutions: ['480p', '720p', '1080p'],
+    aspectRatios: SEEDANCE_RATIOS,
+    generateAudio: false,
+  },
+]
 
 /**
  * The catalogue. Every entry is a vendor whose wire shape is implemented *and*
  * documented (DESIGN §7.1); `relay` is the honest generic entry — an
  * OpenAI-Videos-shaped gateway that may be keyless because it runs on the
- * operator's own machine.
+ * operator's own machine. Sora's capabilities have not been checked against
+ * OpenAI's reference yet, so its lists stay empty.
  */
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
@@ -68,14 +168,14 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     protocol: 'ark-seedance',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     authRef: 'ARK_API_KEY',
-    models: [{ id: 'doubao-seedance-1-0-pro-250528', modes: ['t2v', 'i2v', 'flf2v'] }],
+    models: SEEDANCE_MODELS,
   },
   {
     id: 'openai',
     protocol: 'generic-openai-videos',
     baseUrl: 'https://api.openai.com/v1',
     authRef: 'OPENAI_API_KEY',
-    models: [{ id: 'sora-2', modes: ['t2v'] }],
+    models: [{ id: 'sora-2', label: '', modes: ['t2v'], durations: [], resolutions: [], aspectRatios: [], generateAudio: false }],
   },
   {
     id: 'relay',
@@ -99,6 +199,16 @@ export function knownModelIds(protocol: SupportedProtocol): string[] {
     for (const model of preset.models) ids.add(model.id)
   }
   return [...ids]
+}
+
+/** The documented capabilities of one model id under a protocol, if a preset knows it. */
+export function knownModel(protocol: SupportedProtocol, id: string): PresetModel | undefined {
+  for (const preset of PROVIDER_PRESETS) {
+    if (preset.protocol !== protocol) continue
+    const model = preset.models.find(entry => entry.id === id)
+    if (model !== undefined) return model
+  }
+  return undefined
 }
 
 /**
@@ -283,6 +393,19 @@ export function newModel(id = ''): ModelDraft {
   }
 }
 
+/** A model row carrying a preset model's documented capabilities. */
+export function modelFromPreset(model: PresetModel): ModelDraft {
+  return {
+    ...newModel(model.id),
+    label: model.label,
+    modes: [...model.modes],
+    durations: [...model.durations],
+    resolutions: [...model.resolutions],
+    aspectRatios: [...model.aspectRatios],
+    generateAudio: model.generateAudio,
+  }
+}
+
 /** Append `-2`, `-3`, … until an id is free: two relays are a normal configuration. */
 export function uniqueId(existing: readonly string[], wanted: string): string {
   const taken = new Set(existing)
@@ -301,7 +424,7 @@ export function providerFromPreset(preset: ProviderPreset, existingIds: readonly
     protocol: preset.protocol,
     baseUrl: preset.baseUrl,
     authRef: preset.authRef,
-    models: preset.models.map(model => ({ ...newModel(model.id), modes: [...model.modes] })),
+    models: preset.models.map(modelFromPreset),
     rest: {},
   }
 }

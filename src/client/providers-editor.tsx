@@ -28,12 +28,14 @@ import { useState, type CSSProperties, type ReactNode } from 'react'
 import {
   PROVIDER_PRESETS,
   SUPPORTED_PROTOCOLS,
+  knownModel,
   knownModelIds,
   newModel,
   parseNumberList,
   parseStringList,
   providerFromPreset,
   type ModelDraft,
+  type SupportedProtocol,
   type ProviderDraft,
 } from '../provider-presets.ts'
 import { VIDEO_MODES, type VideoMode } from '../types.ts'
@@ -268,6 +270,7 @@ function ProviderCard(props: ProviderCardProps): ReactNode {
                 key={modelIndex}
                 t={t}
                 model={model}
+                protocol={provider.protocol}
                 listId={listId}
                 suggestions={suggestions}
                 readOnly={readOnly}
@@ -286,6 +289,7 @@ function ProviderCard(props: ProviderCardProps): ReactNode {
 interface ModelRowProps {
   t: Translate
   model: ModelDraft
+  protocol: SupportedProtocol
   listId: string
   suggestions: readonly string[]
   readOnly: boolean
@@ -294,7 +298,27 @@ interface ModelRowProps {
 }
 
 function ModelRow(props: ModelRowProps): ReactNode {
-  const { t, model, listId, suggestions, readOnly, onPatch, onRemove } = props
+  const { t, model, protocol, listId, suggestions, readOnly, onPatch, onRemove } = props
+  // Naming a model this build knows fills in what its vendor documents — but
+  // only into a row that declares nothing yet, so a typed list is never replaced.
+  const changeId = (id: string): void => {
+    const known = knownModel(protocol, id)
+    const blank = model.label === '' && model.durations.length === 0
+      && model.resolutions.length === 0 && model.aspectRatios.length === 0
+    if (known === undefined || !blank) {
+      onPatch({ id })
+      return
+    }
+    onPatch({
+      id,
+      label: known.label,
+      modes: [...known.modes],
+      durations: [...known.durations],
+      resolutions: [...known.resolutions],
+      aspectRatios: [...known.aspectRatios],
+      generateAudio: known.generateAudio,
+    })
+  }
   const toggleMode = (mode: VideoMode, on: boolean): void => {
     onPatch({ modes: on ? [...model.modes, mode] : model.modes.filter(entry => entry !== mode) })
   }
@@ -310,7 +334,7 @@ function ModelRow(props: ModelRowProps): ReactNode {
             placeholder={suggestions[0] ?? 'model-id'}
             value={model.id}
             disabled={readOnly}
-            onChange={event => { onPatch({ id: event.target.value }) }}
+            onChange={event => { changeId(event.target.value) }}
           />
         </label>
         <label style={FIELD}>
