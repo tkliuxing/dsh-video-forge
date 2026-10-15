@@ -199,14 +199,17 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
       const message = error instanceof Error ? error.message : String(error)
       reporter.line(`poll failed (${failures}/${MAX_CONSECUTIVE_FAILURES}): ${message}\n`, 'stderr')
       if (failures >= MAX_CONSECUTIVE_FAILURES) {
+        // We lost contact, not the task: the provider may still finish it, and it
+        // is paid either way. `orphaned` hands it to the retry loop, which keeps
+        // asking while the provider answers for it; `failed` would be a dead end.
         const updated = await ledger.update(task.localId, current => ({
           ...current,
-          status: 'failed',
-          error: { message: `polling failed ${failures} times: ${message}`, code: null },
+          status: 'orphaned',
+          error: { message: `lost contact with the provider after ${failures} failed polls (${message}); the plugin keeps asking about it and never re-submits it`, code: null },
           updatedAt: new Date().toISOString(),
         }))
         core.onUpdate?.(updated)
-        reporter.line(`giving up on ${task.localId}\n`, 'stderr')
+        reporter.line(`stopped watching ${task.localId} after ${failures} failed polls; it will be asked about again\n`, 'stderr')
         return { status: 'failed', detail: message, result: describe(updated) }
       }
       await sleep(backoff(core.pollIntervalMs, failures), signal)
@@ -271,10 +274,11 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
         const message = error instanceof Error ? error.message : String(error)
         const updated = await ledger.update(task.localId, current => ({
           ...current,
-          status: 'failed',
-          // The generation itself succeeded; only the download failed. Saying so
-          // keeps the model from re-submitting a paid task.
-          error: { message: `generation succeeded but the artifact download failed: ${message}`, code: null },
+          // The generation succeeded and is paid; only the download failed. It
+          // stays recoverable (the retry loop asks again and gets a fresh URL),
+          // and saying so keeps the model from re-submitting it.
+          status: 'orphaned',
+          error: { message: `generation succeeded but the artifact download failed (${message}); the plugin keeps trying to fetch it and never re-submits it`, code: null },
           billing: settledBilling(state.usage),
           updatedAt: new Date().toISOString(),
         }))

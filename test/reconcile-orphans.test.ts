@@ -324,3 +324,42 @@ describe('a row submitted while boot waits for the credential store', () => {
     expect(fake.requests.filter(entry => entry.method === 'GET')).toHaveLength(0)
   })
 })
+
+describe('a paid generation whose bytes did not arrive', () => {
+  it('is orphaned with its usage when the download fails, then fetched by the retry', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0, failArtifactDownloads: 1 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ providerTaskId: id }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await reconcile(runtime)
+    const orphaned = ledger.byId('v-20261015-0011')
+    expect(orphaned?.status).toBe('orphaned')
+    expect(orphaned?.artifacts).toHaveLength(0)
+    expect(orphaned?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
+
+    await retryOrphans(runtime)
+    const recovered = ledger.byId('v-20261015-0011')
+    expect(recovered?.status).toBe('succeeded')
+    expect(recovered?.artifacts[0]?.bytes).toBe(2048)
+    expect(posts(fake)).toBe(1)
+  })
+
+  it('is recovered when an older build filed it as failed but the provider finished it', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ providerTaskId: id, status: 'failed', error: { message: 'polling failed 5 times: fetch failed', code: null } }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await settleBilling(runtime)
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('orphaned')
+    await retryOrphans(runtime)
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('succeeded')
+    expect(ledger.byId('v-20261015-0011')?.artifacts).toHaveLength(1)
+    expect(posts(fake)).toBe(1)
+  })
+})

@@ -43,6 +43,8 @@ export interface FixtureOptions {
   submitDelayMs?: number
   /** Refuse every submission with this HTTP status and an error body; nothing is created. */
   rejectSubmitStatus?: number
+  /** Answer the first this-many artifact downloads with a 503, as a flaky CDN would. */
+  failArtifactDownloads?: number
 }
 
 /** One task the fixture created, as its ARK task list reports it. */
@@ -77,6 +79,7 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
   const created: FixtureTask[] = []
   let counter = 0
   let lost = 0
+  let failedDownloads = 0
 
   const server: Server = createServer((req, res) => {
     void handle(req, res)
@@ -97,6 +100,12 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
     // Both protocols eventually hand back bytes from somewhere; ARK does it
     // through an absolute artifact URL, so the fixture must serve that too.
     if (req.method === 'GET' && path.startsWith('/artifact/')) {
+      if (failedDownloads < (options.failArtifactDownloads ?? 0)) {
+        failedDownloads += 1
+        res.writeHead(503, { 'content-type': 'text/plain' })
+        res.end('fixture: artifact host unavailable')
+        return
+      }
       res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(artifact.byteLength) })
       res.end(artifact)
       return

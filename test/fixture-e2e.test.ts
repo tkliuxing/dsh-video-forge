@@ -214,6 +214,27 @@ describe('ARK-shaped provider', () => {
   })
 })
 
+describe('a watch whose download fails', () => {
+  it('leaves the paid task orphaned with its usage, not failed', async () => {
+    const fake = await fixture({ mode: 'ark', pollsBeforeDone: 0, apiKey: 'test-key', failArtifactDownloads: 1 })
+    const ledger = await makeLedger()
+    const adapter = arkVideosAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, generateAudio: false, watermark: false })
+    const context: AdapterContext = { baseUrl: `${fake.url}/api/v3`, apiKey: 'test-key', fetch, signal: undefined }
+    const submitted = await adapter.submit(context, REQUEST)
+    const task = await ledger.add(taskRow('v-20261015-0020', submitted.providerTaskId, 'ark-seedance', 'ark'))
+    const watch = startInProcessWatch({
+      ledger, adapter, context, task, pollIntervalMs: 10,
+      outputDirectory: join(ledger.home, 'outputs', task.localId),
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    })
+    await watch.done
+    const settled = ledger.byId(task.localId)
+    expect(settled?.status).toBe('orphaned')
+    expect(settled?.error?.message).toMatch(/generation succeeded but the artifact download failed.*never re-submits/)
+    expect(settled?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
+  })
+})
+
 describe('MiniMax-shaped provider', () => {
   const adapterFor = () => minimaxVideoAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, watermark: false })
   const minimaxRequest: GenerationRequest = { ...REQUEST, model: 'MiniMax-H3', durationSeconds: 5, resolution: '480P', aspectRatio: '16:9' }
@@ -351,7 +372,7 @@ describe('watch discipline', () => {
     expect(ledger.byId(task.localId)?.status).not.toBe('succeeded')
   })
 
-  it('fails the task after repeated transport failures instead of looping forever', async () => {
+  it('stops after repeated transport failures and hands the task to the orphan retry, not to failed', async () => {
     const ledger = await makeLedger()
     const adapter = arkVideosAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, generateAudio: false, watermark: false })
     // A port nothing listens on: every poll is a transport error.
@@ -372,7 +393,8 @@ describe('watch discipline', () => {
 
     const outcome = await jobs.hooks[0]?.done
     expect(outcome?.status).toBe('failed')
-    expect(ledger.byId(task.localId)?.error?.message).toMatch(/polling failed 5 times/)
+    expect(ledger.byId(task.localId)?.status).toBe('orphaned')
+    expect(ledger.byId(task.localId)?.error?.message).toMatch(/lost contact with the provider after 5 failed polls/)
   })
 })
 

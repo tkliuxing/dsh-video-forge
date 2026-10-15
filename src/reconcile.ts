@@ -121,7 +121,17 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
         const apiKey = (await resolveApiKey(runtime.ctx, provider)).value
         const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey, fetch, signal: AbortSignal.timeout(20_000) }
         const state = await adapterFor(provider, model).query(context, task.providerTaskId ?? '')
-        if (state.terminal) await recordBilling(runtime.ledger, task, settledBilling(state.usage))
+        if (!state.terminal) continue
+        await recordBilling(runtime.ledger, task, settledBilling(state.usage))
+        if (state.status === 'succeeded' && state.videoUrl !== null && task.artifacts.length === 0) {
+          // A row an older build filed as failed (it gave up polling, or the
+          // download broke) or as succeeded without its bytes, which the provider
+          // reports finished: paid and still fetchable, so hand it to the orphan
+          // retry instead of leaving it lost.
+          await runtime.ledger.update(task.localId, current => (current.status === task.status && current.artifacts.length === 0
+            ? { ...current, status: 'orphaned', error: { message: 'the provider reports this generation finished; fetching its artifact (never re-submitted)', code: null }, updatedAt: new Date().toISOString() }
+            : current))
+        }
       } catch (error: unknown) {
         runtime.logger.warn(`video-forge: usage of ${task.localId} not settled yet: ${messageOf(error)}`)
       }
@@ -362,13 +372,20 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
       }
       if (state.status === 'succeeded' && state.videoUrl !== null) {
         const artifact = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
+        if (artifact === null) {
+          // Finished and paid, but the bytes did not arrive: stay an orphan so the
+          // next pass fetches it again, with whatever fresh URL the provider gives.
+          await ledger.update(task.localId, current => (unchanged(current) ? { ...current, billing: settledBilling(state.usage) } : current))
+          await markOrphaned(ledger, task, unchanged, 'generation succeeded but the artifact could not be downloaded yet')
+          continue
+        }
         await ledger.update(task.localId, current => (unchanged(current)
           ? {
               ...current,
               status: 'succeeded',
               progress: 1,
-              artifacts: artifact === null ? current.artifacts : [artifact],
-              error: artifact === null ? { message: 'generation succeeded but the artifact could not be retrieved after restart', code: null } : null,
+              artifacts: [artifact],
+              error: null,
               billing: settledBilling(state.usage),
               updatedAt: new Date().toISOString(),
             }
