@@ -154,8 +154,10 @@ export class Ledger {
       const current = index >= 0 ? this.#document.tasks[index] : undefined
       if (current === undefined) throw new Error(`no such task: ${localId}`)
       const next = mutate(current)
-      this.#document.tasks[index] = next
       result = next
+      // A mutator that returns the row untouched means "nothing to record".
+      if (next === current) return
+      this.#document.tasks[index] = next
       await this.#flush()
     })
     if (result === undefined) throw new Error(`no such task: ${localId}`)

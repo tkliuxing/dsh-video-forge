@@ -21,7 +21,7 @@ import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, pluginHome, type VideoForgeRuntime } from './runtime.ts'
-import { reconcile } from './reconcile.ts'
+import { reconcile, retryOrphans, scheduleReconciliation } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
 import type { VideoTask } from './types.ts'
@@ -155,7 +155,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     logger.info(`video-forge: configuration updated (${paths.map(path => path.join('.')).join(', ')})`)
   })
 
-  void ledger.load()
+  const loaded = ledger.load()
     .catch((error: unknown) => {
       if (error instanceof LedgerCorruptError) {
         logger.warn(`video-forge: ${error.message}; starting from an empty ledger`)
@@ -163,10 +163,21 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       }
       throw error
     })
-    .then(() => reconcile(runtime))
-    .catch((error: unknown) => {
-      logger.error(`video-forge: startup reconciliation failed: ${error instanceof Error ? error.message : String(error)}`)
-    })
+
+  // Reconciliation needs every provider's key, and the credential store
+  // publishes its service only once it has read its file; see
+  // `scheduleReconciliation` for why this waits rather than starting here.
+  scheduleReconciliation(
+    ctx,
+    async () => {
+      await loaded
+      await reconcile(runtime)
+    },
+    () => retryOrphans(runtime),
+    (error: unknown) => {
+      logger.error(`video-forge: reconciliation failed: ${error instanceof Error ? error.message : String(error)}`)
+    },
+  )
 }
 
 /** `$DSH_HOME`, from the profile context, the environment, or the account home. */
