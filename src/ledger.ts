@@ -83,6 +83,10 @@ export class Ledger {
    * recoverable, then we start empty.
    */
   load(): Promise<void> {
+    // Idempotent: never re-read a live document (it would drop writes made since)
+    // and never start a second read beside one in flight.
+    if (this.#readState === 'read') return Promise.resolve()
+    if (this.#readState === 'reading' && this.#reading !== null) return this.#reading
     this.#readState = 'reading'
     const loading = this.#read().then(
       () => { this.#readState = 'read' },
@@ -104,8 +108,6 @@ export class Ledger {
    * created it, decides whether it still has to be read.
    */
   ensureLoaded(): Promise<void> {
-    if (this.#readState === 'read') return Promise.resolve()
-    if (this.#readState === 'reading' && this.#reading !== null) return this.#reading
     return this.load()
   }
 
@@ -254,11 +256,14 @@ export class Ledger {
   async #exclusive<T>(work: () => Promise<T>): Promise<T> {
     const gated = async (): Promise<T> => {
       await this.ready()
+      // A read that failed (EIO, EMFILE…) is tried again before giving up, so a
+      // passing fault at boot does not leave the plugin unable to record anything.
+      if (this.#readState === 'failed') await this.load().catch(() => undefined)
       if (this.#readState !== 'read') {
         const why = this.#readState === 'unread'
           ? 'it was never read'
           : `reading it failed: ${this.#readFailure instanceof Error ? this.#readFailure.message : String(this.#readFailure)}`
-        throw new Error(`the task ledger at ${this.#options.path} is not loaded (${why}); not writing over it`)
+        throw new Error(`the task ledger at ${this.#options.path} is not loaded (${why}); not writing over it, and nothing was submitted to a provider`)
       }
       return work()
     }

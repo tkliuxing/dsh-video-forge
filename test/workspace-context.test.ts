@@ -241,3 +241,25 @@ describe('the ledger for one file', () => {
     await expect(ledger.update('v-1', task => task)).rejects.toThrow(/reading it failed/)
   })
 })
+
+describe('a ledger read that failed once', () => {
+  it('is tried again on the next write, so a passing fault does not disable recording', async () => {
+    const { Ledger } = await import('../src/ledger.ts')
+    const { mkdir, rmdir } = await import('node:fs/promises')
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-retry-'))
+    const path = join(dir, 'tasks.json')
+    await mkdir(path)
+    const ledger = new Ledger({ path, maxTasks: 10, maxGiB: 1 })
+    await expect(ledger.ensureLoaded()).rejects.toThrow()
+    // The fault clears: the next write reads first, then records.
+    await rmdir(path)
+    const now = new Date().toISOString()
+    await ledger.add({
+      localId: 'v-1', provider: 'ark', protocol: 'ark-seedance', model: 'm', providerTaskId: null, status: 'submitting', progress: null,
+      submittedAt: now, updatedAt: now, paramsFingerprint: 'fp',
+      params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+      artifacts: [], error: null,
+    })
+    expect(ledger.byId('v-1')?.status).toBe('submitting')
+  })
+})
