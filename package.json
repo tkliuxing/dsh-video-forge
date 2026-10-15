@@ -76,6 +76,7 @@
     "bundle": "pnpm run clean && tsdown",
     "prepare": "pnpm run bundle",
     "test": "vitest run",
+    "test:live": "vitest run test/live.test.ts",
     "check": "pnpm run build && pnpm run test"
   },
   "peerDependencies": {
