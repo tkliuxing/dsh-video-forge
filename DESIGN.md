@@ -267,7 +267,8 @@ DELETE {base}/contents/generations/tasks/{id}   # 只能取消**排队中**的�
 - **产物**：H.264 + AAC 音轨（`generate_audio` 默认 true）。图生与首尾帧任务即使没传 `ratio`，返回的也是 `16:9`。
 - **取消实际上做不到**：查询报 `queued` 后 0.1 秒发出的 `DELETE` 就被拒：`409 InvalidAction.RunningTaskDeletion`（"currently running"）。排队窗口太短，"只能取消排队中任务"在实践中几乎用不上。
 - **提交时就校验素材**：首帧给不存在的 URL，直接 `400 InvalidParameter`，`param: "content[1].image_url"`；不建任务、不扣费。
-- **错误体**：`{ error: { code, message, param, type } }`。账号未开通的模型返回 `404 ModelNotOpen`。`doubao-seedance-1-0-pro-250528` 返回的是 `404 InvalidEndpointOrModel.NotFound`（"模型或接入点不存在"），**可能已下线，也可能只是本账号无权访问，尚未核实**，预设暂不删。
+- **错误体**：`{ error: { code, message, param, type } }`。账号未开通的模型返回 `404 ModelNotOpen`。`doubao-seedance-1-0-pro-250528` 返回的是 `404 InvalidEndpointOrModel.NotFound`（"模型或接入点不存在"）。**已核实（2026-10-15）**：官方[模型列表](https://docs.volcengine.com/docs/ark/model-list?lang=zh)（最近更新 2026-10-09）把 `1-0-pro-250528` 和 `1-0-pro-fast-251015` 都标为"即将下线"，没给日期；没找到单独的下线公告。两者仍留在预设里（已开通的账号可能还能调），标签加上 "(retiring)"，免得被选成默认模型（commit `f888d26`）。
+- **内容审核错误码**（[错误码](https://docs.volcengine.com/docs/ark/error-codes?lang=zh)，2026-10-15）：`{Input|Output}{Text|Image|Video|Audio}SensitiveContentDetected`，带 `.PolicyViolation`（版权）、`.PrivacyInformation`、`.DeepFake` 等后缀；另有 `SensitiveContentDetected.*`（输入文本）与 `…RiskDetection`（风险识别产品）。输入侧在提交时就以 400 拒绝；输出侧在任务里失败。官方没写被拦的请求是否计费（只有第三方文章说不收），所以插件不做假设，只记录供应商报告的用量。
 - **网络**：本机 Node 直连方舟偶发 `ETIMEDOUT`（curl 走系统代理所以正常），一次生成中有 4 次查询失败；盯守把它当作传输失败继续轮询，没有把任务判失败。
 
 **`generic-openai-videos`**（OpenAI Videos 兼容面）
@@ -315,6 +316,8 @@ status ∈ { queued, running, succeeded, failed, cancelled }
 - **用量**：运行中与失败时 `usage: {}`；成功后只有 `total_seconds`、`input_seconds`、`output_seconds`、`input_image_count`（0、1、2 正好是输入图片张数）。**文档里的 `prompt_tokens` / `completion_tokens` / `total_tokens` 都没出现**，所以计费依据取 `output_seconds`。
 - **产物**：832×480、24fps、124 帧、5.18 秒，H.264 + **AAC 音轨**（虽然没有音轨开关）；URL 的 `Expires` 正好是 24 小时。
 - **提交时不校验素材**：首帧给不存在的 URL，提交照样返回 200 和 `task_id`，约 1 秒后任务失败，`error: { code: "2013", message: "content[1].image_url: media not found (HTTP 404)…" }`（错误码是字符串），`usage: {}`。这意味着"提交成功"不代表素材没问题。
+- **内容审核错误码**（[错误码](https://platform.minimax.cn/docs/api-reference/errorcode)）：`1026` 输入内容涉敏，`1027` 输出内容涉敏。文档没写被拦的请求是否计费。
+- **HTTP 200 + 非零 `base_resp` 且无 `task_id`**（旧式错误返回，commit `8117d90`、本轮后续修复）：只有确定在开工前就拒绝的码才按"明确拒绝、未提交"处理——限流 1002/1041/2045/2056、鉴权 1004/2049、余额 1008、审核 1026/1027、token 限制 1039、非法字符 1042、参数 2013；1000 未知、1001 超时、1024 内部、1033 下游等其他码说明不了任务是否已建，保持 `unconfirmed`，以免放行重试、付两次钱。
 
   `ratio` 取自 `21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / adaptive`。尚未接：H3-Max 的 `extra.prompt_expansion_mode`（config schema 没有对应字段）、参考视频/参考音频、仅尾帧任务（`VideoMode` 里没有这种形态）、`callback_url`。
 
@@ -502,7 +505,19 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 
 **独立审查（三轮，代码审查代理，未改文件）**：第一轮指出两个回归和一个旧缺陷——等凭据期间提交的行会被重复盯守、台账读取失败会成为未处理的 Promise 拒绝而让宿主退出、放弃轮询与下载失败把付过费的任务写成 `failed` 后再无人过问——由 `09bbd00`、`8a5690a`、`046b4e9` 修复；第二轮指出用量补查把"凭据暂时拿不到"当成永久失败，由 `4f6e0c5` 修复；第三轮通过，两个小问题由 `19189a8` 修复。未修的条目记入 §15 第 14 条。
 
-**仍未覆盖**：内容审核拦截（没有刻意触发）；方舟"任务列表找回 `unconfirmed` 提交"的真实路径；`generic-openai-videos` / Sora（没有 key）；"有 key 才跑"的在线测试尚未写。
+**仍未覆盖**：内容审核拦截的真实样本（没有刻意触发，分类依据是两家的错误码文档）；方舟"任务列表找回 `unconfirmed` 提交"的完整真实路径（在线测试的免费档会读一次真实任务列表）；`generic-openai-videos` / Sora（没有 key）。
+
+**在线测试（commit `d574c94`、`8117d90`）**：`test/live.test.ts`。`pnpm test` / `pnpm check` **根本不收集它**（`vitest.config.ts` 排除），只能用 `pnpm test:live`（`vitest.live.config.ts`）跑；只有 `VIDEO_FORGE_LIVE` 等于 `free` 或 `paid` 才开启，开启了却一个 key 都没有会直接失败。key 只从环境变量读，不读 DSH 的凭据文件。免费档的方舟提交若意外被接受，测试会立即删除该任务并在报错里写出任务 id；付费档会打印任务 id。
+
+```
+VIDEO_FORGE_LIVE=free ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 不产生计费任务
+VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另加每家一条最便宜的生成
+```
+
+- `free`：方舟用不存在的图片 URL 提交，应在提交时 400 `InvalidParameter` 拒绝、不建任务；读一次方舟任务列表（找回 `unconfirmed` 提交依赖它）；MiniMax 查询一个不存在的任务，确认 key 与端点可用。
+- `paid`：方舟 480p 4 秒（默认模型下必须正好 40594 token）、MiniMax 480P 5 秒（必须报告 5 秒、没有 token），轮询到结束并下载。可用 `VIDEO_FORGE_LIVE_ARK_MODEL` / `VIDEO_FORGE_LIVE_MINIMAX_MODEL` 换成账号已开通的模型。
+
+**下载不再把 key 发给别的域名（commit `8117d90`）**：此前下载产物时总带着 `Authorization: Bearer <key>`，对中转站给出的第三方预签名地址（如 S3）等于把 key 交给了别人，S3 还会因此拒绝请求。现在只有产物地址与 API 同源时才带 key（OpenAI 形状的 `/content` 回落属于这种）。方舟 TOS 与 MiniMax OSS 都是签名 URL、不同源，今后下载不带 key——**已用真实下载验证**：把 A6（方舟）与 M5（MiniMax）的行改成"孤儿、无产物"并挪走文件，用新构建重启，开机对账不带 key 从两家 CDN 重新下载，sha256 与原文件逐字节一致。
 
 **收尾**：实例用 `kill` 停止，`lsof` 与 `pgrep` 复核端口释放、无遗留进程；用户的 3080 实例全程未被触碰。
 
@@ -523,7 +538,8 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
   - ~~**先写意图再提交**~~（§16.7）：**已完成**（2026-10-15，commit `1f9321c`，细节见 §6；测试 161 → 197 例）。M2.5 里用真实方舟 key 补一次"列表接口找回"的实测。
   - fixture 改成按录制的真实响应回放（**已完成**，`c1180dd`）；另加一个"有 key 才跑、没 key 自动跳过"的在线测试（**未做**）。
   - **已完成**：真实通道两家跑通；用量入台账与 7 天补查（`098be28`）；报错保留供应商原话（`fee00e2`）；重启对账等凭据服务、孤儿自动重试（`4e82796`）；token 公式确认；审查后续修复（`09bbd00`、`8a5690a`、`046b4e9`、`4f6e0c5`、`19189a8`），测试 197 → 229 例。
-  - **剩余**：审核拦截单独归类（没有真实样本）、方舟列表找回的真实验证、在线测试、`1.0-pro-250528` 是否下线。
+  - **收尾（2026-10-15）**：审核拦截单独归类并拒绝重发（`6fa2794`）；"有 key 才跑"的在线测试（`d574c94`）；核实 `1.0-pro-250528` 为官方"即将下线"，预设标注 retiring（`f888d26`）。
+  - **剩余**：审核拦截的真实样本；用 `VIDEO_FORGE_LIVE=free` 跑一次在线测试（需要用户在自己的 shell 里导出 key）。
 - **M3 工作区即项目**（§16.2 / §16.4）：清单与目录映射；`renders/` 版本目录与宿主统一分配版本号；说明文件；角色登记；工具改成 3 个（`shot` / `from` / `characters`、工作区相对路径）；删除工作台页与面板 `generate`；聊天卡片显示实时进度并能取消；修掉"重启后进程内盯守不唤醒模型"；工作区写入的连带问题（`ctx.fs`、权限档位、文件被移动、符号链接）。会改工具 schema，所以放在发布之前。
 - **M4 skill、指导与成本可见性**（§16.3 / §16.5 / §16.6）：5 个 skill 经 `ctx.skills` 提供方注册（可选依赖）；`video-guide` 及其一致性测试；`video_status` 的花费汇总与事前估算；预设价格表；用方舟 `return_last_frame` 做模型自检。
 - **M5 发布**：仓库与目录改名为 `dsh-video-forge`、加 git remote、GitHub Actions 跑 `pnpm check`、npm trusted publishing / OIDC、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
@@ -554,6 +570,8 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
     - 极少见的时序：任务运行器调用了 `run` 之后才抛错，会出现 job 盯守加进程内兜底两个盯守。
     - `video_cancel` 与定时重试之间有几个微任务的竞态，最多多查几次，不扣费。
     - 过期的用量写成 `unknown` 时逐行写盘、孤儿原因按全文比较，首次升级时会多写几次盘。
+    - 中转站若把产物放在**另一个需要鉴权的域名**上（如 `files.gw.example` 与 `api.gw.example`），下载不再带 key 后会一直 401，任务停在 `orphaned`。需要时再加每个供应商的 `artifactAuth: 'same-origin' | 'always' | 'never'` 配置（默认 same-origin）。
+    - 在线测试只检查"至少有一个 key"，只给了一家的 key 时另一家会被静默跳过。
 
 ## 16. 目标设计（2026-10-15 规划讨论）
 
@@ -684,7 +702,7 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 - `unconfirmed` 的任务要去对账：方舟用任务列表接口（7 天窗口）按模型与时间找回，有歧义就不接管；MiniMax 与 `generic-openai-videos` 没有列表接口，只能如实告诉用户"可能已扣费"。不自动重新提交。
 - **已完成**（2026-10-15，commit `1f9321c`），完整规则见 §6。
 
-**审核拦截单独归类**：国内供应商会因内容审核拒绝提示词或图片。台账把"审核拦截"与其他失败分开记录；`video-prompting` / `video-iterate` 教模型怎么改写；要防止模型反复重试同一个会被拦的请求。被拦的请求是否计费，M2.5 确认。
+**审核拦截单独归类（已实现，commit `6fa2794`）**：国内供应商会因内容审核拒绝提示词或图片。`moderationOf(protocol, code)` 按两家错误码文档识别（方舟见 §7.1；MiniMax `1026`/`1027`；OpenAI 兼容网关的错误码里带 `moderation` / `content_policy` 时记为未知侧），在任务错误上记 `moderation: 'input' | 'output' | 'unknown'`，提交时被拒（方舟输入审核走 400；MiniMax 以 HTTP 200 + 非零 `base_resp` 拒绝时也按明确拒绝处理，不再误记成"可能已扣费"）与任务中失败（输出审核）都会打上。错误码按文档里的完整形式锚定匹配，只是"包含这些字样"的其他错误码不算。**输入侧被拒的同一请求（同一指纹）不再发送**——不受去重时间窗限制，报错让模型改提示词或素材；改过的请求是新请求，照常放行。**输出侧只受普通去重窗口约束**：输出审核判的是一次随机采样，重新生成可能就过了（代价是可能再计费一次）。已知缺口：指纹不对提示词做空白归一化，模型加个空格就算新请求；URL 素材只按 URL 算指纹，同一 URL 换了内容仍会被拦。`video_status` 输出 `moderation` 字段。教模型怎么改写留给 M4 的 `video-prompting` / `video-iterate`。被拦的请求是否计费：两家文档都没写，插件只记录供应商报告的用量；目前没有真实样本，因为验证时没有刻意去触发审核。
 
 **模型自检**：模型看不了视频，但能看图。方舟的 `return_last_frame` 能免费拿到一帧（有了 ffmpeg 还能抽更多关键帧），模型交付前对照提示词检查一遍，比如角色对不对、画面是不是崩了。这一帧也是 `from` 续拍的输入。
 
