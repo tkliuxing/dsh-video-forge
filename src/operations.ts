@@ -668,12 +668,15 @@ function fingerprintOf(
 
 function refuseDuplicate(runtime: VideoForgeRuntime, fingerprint: string): void {
   // Outside any dedupe window: the provider's content review already refused
-  // this exact request, and asking again only buys the same verdict — possibly
-  // at a price. A changed prompt or material is a different request.
-  const refused = runtime.ledger.list().find(task => task.paramsFingerprint === fingerprint && task.error?.moderation !== undefined)
+  // these exact inputs, and asking again only buys the same verdict — possibly
+  // at a price. Only the input side is a verdict on the request itself; an
+  // output refusal judged one random sample, and a re-roll may pass, so those
+  // are held back by the ordinary dedupe window only. A changed prompt or
+  // material is a different request.
+  const refused = runtime.ledger.list().find(task => task.paramsFingerprint === fingerprint && task.error?.moderation === 'input')
   if (refused !== undefined) {
     throw new ConfigError(
-      `this exact request was refused by the provider's content review (${refused.error?.moderation ?? 'unknown'} side) as ${refused.localId} on ${refused.submittedAt}: ${refused.error?.message ?? ''} — sending it again gets the same verdict; change the prompt or the materials instead`,
+      `the provider's content review refused the inputs of this exact request as ${refused.localId} on ${refused.submittedAt}: ${refused.error?.message ?? ''} — sending it again gets the same verdict; change the prompt or the materials instead`,
     )
   }
   const window = runtime.settings().dedupeWindowSeconds

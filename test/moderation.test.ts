@@ -70,6 +70,9 @@ describe('recognising a content-review refusal', () => {
     expect(moderationOf('ark-seedance', 'OutputAudioSensitiveContentDetected.PolicyViolation')).toBe('output')
     expect(moderationOf('ark-seedance', 'InvalidParameter')).toBeNull()
     expect(moderationOf('ark-seedance', 'ModelNotOpen')).toBeNull()
+    // Anchored: a code that merely contains the words is not a content verdict.
+    expect(moderationOf('ark-seedance', 'AccountRiskDetection')).toBeNull()
+    expect(moderationOf('ark-seedance', 'InputTextSensitiveContentDetectedSoon')).toBeNull()
   })
 
   it('reads MiniMax\'s two codes, and nothing else', () => {
@@ -81,6 +84,8 @@ describe('recognising a content-review refusal', () => {
 
   it('takes a gateway\'s moderation-ish code as a refusal on an unknown side', () => {
     expect(moderationOf('generic-openai-videos', 'moderation_blocked')).toBe('unknown')
+    expect(moderationOf('generic-openai-videos', 'content_policy_violation')).toBe('unknown')
+    expect(moderationOf('generic-openai-videos', 'moderation_service_unavailable')).toBeNull()
     expect(moderationOf('generic-openai-videos', 'rate_limit_exceeded')).toBeNull()
   })
 })
@@ -100,7 +105,7 @@ describe('an input refusal at submit', () => {
 
     // Long after the dedupe window, the same request is still not sent again.
     await new Promise(resolve => setTimeout(resolve, 1_100))
-    await expect(generate(runtime, { prompt: 'a prompt the review refuses' })).rejects.toThrow(/refused by the provider's content review \(input side\).*change the prompt or the materials/)
+    await expect(generate(runtime, { prompt: 'a prompt the review refuses' })).rejects.toThrow(/content review refused the inputs of this exact request.*change the prompt or the materials/)
     expect(posts(fake)).toBe(1)
 
     // A rewritten prompt is a different request.
@@ -146,5 +151,69 @@ describe('reading the ledger', () => {
       artifacts: [], error: { message: 'refused', code: 'X', moderation: 'sideways' },
     }] }))
     expect(doc.tasks[0]?.error).toEqual({ message: 'refused', code: 'X' })
+  })
+})
+
+describe('a row with no error field', () => {
+  it('loads with error null instead of quarantining the whole ledger', () => {
+    const now = new Date().toISOString()
+    const doc = parseDocument(JSON.stringify({ version: 1, tasks: [
+      {
+        localId: 'v-1', provider: 'ark', protocol: 'ark-seedance', model: 'm', providerTaskId: 'cgt-1', status: 'running', progress: null,
+        submittedAt: now, updatedAt: now, paramsFingerprint: 'fp',
+        params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+        artifacts: [],
+      },
+      {
+        localId: 'v-2', provider: 'ark', protocol: 'ark-seedance', model: 'm', providerTaskId: 'cgt-2', status: 'failed', progress: null,
+        submittedAt: now, updatedAt: now, paramsFingerprint: 'fp2',
+        params: { prompt: 'y', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+        artifacts: [], error: 'a bare string',
+      },
+    ] }))
+    expect(doc.tasks.map(task => task.error)).toEqual([null, null])
+  })
+})
+
+describe('an output refusal', () => {
+  it('holds the identical request back only for the dedupe window: a re-roll may pass', async () => {
+    const fake = await startFixture({ mode: 'ark', pollsBeforeDone: 1000 })
+    fixtures.push(fake)
+    const ledger = await ledgerAt()
+    const runtime = runtimeFor(fake, ledger)
+    await generate(runtime, { prompt: 'a lantern festival' })
+    const [row] = ledger.list()
+    await ledger.update(row?.localId ?? '', current => ({
+      ...current, status: 'failed', error: { message: 'output refused', code: 'OutputVideoSensitiveContentDetected', moderation: 'output' },
+    }))
+    await expect(generate(runtime, { prompt: 'a lantern festival' })).rejects.toThrow(/already tracked/)
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    await generate(runtime, { prompt: 'a lantern festival' })
+    expect(posts(fake)).toBe(2)
+  })
+})
+
+describe('MiniMax answering a refusal with HTTP 200', () => {
+  it('is a definitive refusal, tagged when it is a content review — never "may have been billed"', async () => {
+    const { minimaxVideoAdapter } = await import('../src/providers/minimax-video.ts')
+    const { createServer } = await import('node:http')
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ task_id: '', base_resp: { status_code: 1026, status_msg: 'input new_sensitive' } }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as { port: number }).port
+    try {
+      const adapter = minimaxVideoAdapter({ roles: { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }, watermark: false })
+      const error = await adapter.submit({ baseUrl: `http://127.0.0.1:${port}`, apiKey: null, fetch, signal: undefined }, {
+        model: 'MiniMax-H3', prompt: 'x', mode: 't2v', firstFrame: null, lastFrame: null, referenceImages: [],
+        durationSeconds: 5, resolution: '768P', aspectRatio: '16:9', generateAudio: null,
+      }).then(() => null, (caught: unknown) => caught as { status: number | null; providerCode: string | null })
+      expect(error?.status).toBe(400)
+      expect(error?.providerCode).toBe('1026')
+      expect(moderationOf('minimax-video', error?.providerCode ?? null)).toBe('input')
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
   })
 })

@@ -18,6 +18,11 @@
  * a failure here means a vendor changed its answers, not that the fixture lied.
  *
  *   VIDEO_FORGE_LIVE=free ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live
+ *
+ * `pnpm test` never collects this file (vitest.config.ts excludes it), so keys
+ * left in a shell cannot make an ordinary check spend money. Only the exact
+ * values `free` and `paid` switch it on, and a switched-on run with no key at
+ * all fails instead of skipping everything and looking like a pass.
  */
 
 import { mkdtemp, stat } from 'node:fs/promises'
@@ -30,13 +35,16 @@ import { arkVideosAdapter } from '../src/providers/ark-seedance.ts'
 import { minimaxVideoAdapter } from '../src/providers/minimax-video.ts'
 import type { GenerationRequest, ProviderTaskState } from '../src/types.ts'
 
-const LIVE = process.env.VIDEO_FORGE_LIVE
+const LIVE = process.env.VIDEO_FORGE_LIVE === 'free' || process.env.VIDEO_FORGE_LIVE === 'paid'
+  ? process.env.VIDEO_FORGE_LIVE
+  : undefined
 const PAID = LIVE === 'paid'
 const ARK_KEY = process.env.ARK_API_KEY ?? ''
 const MINIMAX_KEY = process.env.MINIMAX_API_KEY ?? ''
 const ARK_BASE = process.env.ARK_BASE_URL ?? 'https://ark.cn-beijing.volces.com/api/v3'
 const MINIMAX_BASE = process.env.MINIMAX_BASE_URL ?? 'https://api.minimax.cn'
-const ARK_MODEL = process.env.VIDEO_FORGE_LIVE_ARK_MODEL ?? 'doubao-seedance-2-0-fast-260128'
+const DEFAULT_ARK_MODEL = 'doubao-seedance-2-0-fast-260128'
+const ARK_MODEL = process.env.VIDEO_FORGE_LIVE_ARK_MODEL ?? DEFAULT_ARK_MODEL
 const MINIMAX_MODEL = process.env.VIDEO_FORGE_LIVE_MINIMAX_MODEL ?? 'MiniMax-H3-Max'
 
 const ROLES = { first: 'first_frame', last: 'last_frame', reference: 'reference_image' }
@@ -70,21 +78,35 @@ async function settle(query: () => Promise<ProviderTaskState>, timeoutMs = 10 * 
   }
 }
 
+describe('live: switched on', () => {
+  it.skipIf(LIVE === undefined)('has at least one provider key to run with', () => {
+    expect(ARK_KEY !== '' || MINIMAX_KEY !== '', 'VIDEO_FORGE_LIVE is set but neither ARK_API_KEY nor MINIMAX_API_KEY is').toBe(true)
+  })
+})
+
 describe.skipIf(LIVE === undefined || ARK_KEY === '')('live: ARK Seedance', () => {
   const adapter = arkVideosAdapter({ roles: ROLES, generateAudio: false, watermark: false })
   const context = (): AdapterContext => ({ baseUrl: ARK_BASE, apiKey: ARK_KEY, fetch, signal: AbortSignal.timeout(60_000) })
 
   it('refuses a missing reference image at submit, with its own code and parameter (free)', async () => {
-    const error = await adapter.submit(context(), request({
+    const outcome = await adapter.submit(context(), request({
       model: ARK_MODEL,
       mode: 'i2v',
       durationSeconds: 4,
       resolution: '480p',
       firstFrame: { url: MISSING_IMAGE, digest: 'url:live', bytes: null, mime: null },
-    })).then(() => null, (caught: unknown) => caught)
-    expect(error).toBeInstanceOf(ProviderRequestError)
-    const refused = error as ProviderRequestError
-    expect(refused.status).toBe(400)
+    })).then(created => ({ created, error: null }), (error: unknown) => ({ created: null, error }))
+    if (outcome.created !== null) {
+      // The "free" premise broke: ARK accepted it. Delete the task while it can
+      // still be deleted, and name it, so it can be checked on the bill.
+      const cancelled = await adapter.cancel(context(), outcome.created.providerTaskId).catch(() => false)
+      throw new Error(`ARK accepted a submit expected to be refused: task ${outcome.created.providerTaskId} (${cancelled ? 'deleted' : 'NOT deleted — check the console'})`)
+    }
+    expect(outcome.error).toBeInstanceOf(ProviderRequestError)
+    const refused = outcome.error as ProviderRequestError
+    expect(refused.status).toBeGreaterThanOrEqual(400)
+    expect(refused.status).toBeLessThan(500)
+    // As recorded on 2026-10-15: 400 InvalidParameter naming content[1].image_url.
     expect(refused.providerCode).toBe('InvalidParameter')
     expect(refused.message).toMatch(/content\[1\]\.image_url/)
   })
@@ -103,14 +125,18 @@ describe.skipIf(LIVE === undefined || ARK_KEY === '')('live: ARK Seedance', () =
   it.skipIf(!PAID)('generates the cheapest clip, bills the documented tokens, and serves the bytes (paid)', async () => {
     const submitted = await adapter.submit(context(), request({ model: ARK_MODEL, durationSeconds: 4, resolution: '480p', aspectRatio: '16:9' }))
     expect(submitted.providerTaskId).toMatch(/^cgt-/)
+    console.info(`live: ARK task ${submitted.providerTaskId} (${ARK_MODEL})`)
     const state = await settle(() => adapter.query(context(), submitted.providerTaskId))
     expect(state.status).toBe('succeeded')
     expect(state.progress).toBeNull()
     expect(state.videoUrl).toMatch(/^https:\/\//)
-    // 480p 16:9 is 864×496; 4 s at 24 fps is 97 frames: ⌊864 × 496 × 97 / 1024⌋.
-    expect(state.usage).toMatchObject({ tokens: 40594, fields: { completion_tokens: 40594, total_tokens: 40594 } })
+    expect(state.usage?.tokens).toBe(state.usage?.fields.completion_tokens)
+    if (ARK_MODEL === DEFAULT_ARK_MODEL) {
+      // 480p 16:9 is 864×496; 4 s at 24 fps is 97 frames: ⌊864 × 496 × 97 / 1024⌋.
+      expect(state.usage).toMatchObject({ tokens: 40594, fields: { completion_tokens: 40594, total_tokens: 40594 } })
+    }
     const artifact = await downloadArtifact({
-      url: state.videoUrl ?? '', apiKey: ARK_KEY, directory: await mkdtemp(join(tmpdir(), 'video-forge-live-')),
+      url: state.videoUrl ?? '', apiKey: ARK_KEY, apiOrigin: ARK_BASE, directory: await mkdtemp(join(tmpdir(), 'video-forge-live-')),
       localId: 'live-ark', fetch, signal: undefined, mimeHint: 'video/mp4',
     })
     expect((await stat(artifact.path)).size).toBeGreaterThan(10_000)
@@ -128,21 +154,26 @@ describe.skipIf(LIVE === undefined || MINIMAX_KEY === '')('live: MiniMax', () =>
     if (outcome.error !== null) {
       expect(outcome.error).toBeInstanceOf(ProviderRequestError)
       expect((outcome.error as ProviderRequestError).status).not.toBe(401)
+    } else {
+      // MiniMax also reports a bad key as HTTP 200 with base_resp 1004 / 2049.
+      const statusCode = (outcome.body as { base_resp?: { status_code?: unknown } } | null)?.base_resp?.status_code
+      expect([1004, 2049]).not.toContain(statusCode)
     }
   })
 
   it.skipIf(!PAID)('generates the cheapest clip, reports billed seconds, and serves the bytes (paid)', async () => {
     const submitted = await adapter.submit(context(), request({ model: MINIMAX_MODEL, durationSeconds: 5, resolution: '480P', aspectRatio: '16:9' }))
     expect(submitted.providerTaskId).toMatch(/^\d+$/)
-    // The first answer is already `running`: the real endpoint never said `queued`.
+    console.info(`live: MiniMax task ${submitted.providerTaskId} (${MINIMAX_MODEL})`)
+    // Recorded as already `running` on the first answer; `queued` is tolerated.
     const first = await adapter.query(context(), submitted.providerTaskId)
-    expect(first.status === 'running' || first.terminal).toBe(true)
+    expect(['queued', 'running', 'succeeded']).toContain(first.status)
     const state = await settle(() => adapter.query(context(), submitted.providerTaskId))
     expect(state.status).toBe('succeeded')
     expect(state.usage).toMatchObject({ tokens: null, outputSeconds: 5 })
     expect(state.usage?.fields).toHaveProperty('input_image_count', 0)
     const artifact = await downloadArtifact({
-      url: state.videoUrl ?? '', apiKey: MINIMAX_KEY, directory: await mkdtemp(join(tmpdir(), 'video-forge-live-')),
+      url: state.videoUrl ?? '', apiKey: MINIMAX_KEY, apiOrigin: MINIMAX_BASE, directory: await mkdtemp(join(tmpdir(), 'video-forge-live-')),
       localId: 'live-minimax', fetch, signal: undefined, mimeHint: 'video/mp4',
     })
     expect((await stat(artifact.path)).size).toBeGreaterThan(10_000)

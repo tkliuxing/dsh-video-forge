@@ -476,6 +476,7 @@ async function fetchArtifact(
     return await downloadArtifact({
       url,
       apiKey,
+      apiOrigin: context.baseUrl,
       directory: runtime.outputDirectory(task.localId),
       localId: task.localId,
       fetch: context.fetch,

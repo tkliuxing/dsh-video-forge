@@ -125,23 +125,26 @@ export function usageOf(value: unknown, basis: { tokens?: string; outputSeconds?
  *   `.PolicyViolation` (copyright), `.PrivacyInformation`, `.DeepFake` variants;
  *   `SensitiveContentDetected[.…]` (input text); `…RiskDetection`.
  * - MiniMax: `1026` (input refused), `1027` (output refused).
- * - OpenAI-shaped gateways: no fixed vocabulary; `moderation` / `content_policy`
- *   in the code is taken as a refusal on an unknown side.
+ * - OpenAI-shaped gateways: no fixed vocabulary; the OpenAI codes
+ *   `moderation_blocked` / `content_policy_violation` are taken as a refusal on
+ *   an unknown side, and nothing looser (a `moderation_service_unavailable`
+ *   is an outage, not a verdict).
  */
 export function moderationOf(protocol: string, code: string | null): ModerationStage | null {
   if (code === null) return null
   if (protocol === 'ark-seedance') {
-    if (!/SensitiveContentDetected|RiskDetection/.test(code)) return null
-    if (code.startsWith('Output')) return 'output'
-    if (code.startsWith('Input') || code.startsWith('SensitiveContentDetected')) return 'input'
-    return 'unknown'
+    // Anchored to the documented families: an unrelated code that merely
+    // contains one of these words must never block a request for good.
+    const side = /^(Input|Output)(Text|Image|Video|Audio)(SensitiveContentDetected|RiskDetection)(\.[A-Za-z]+)?$/.exec(code)
+    if (side !== null) return side[1] === 'Output' ? 'output' : 'input'
+    return /^SensitiveContentDetected(\.[A-Za-z]+)?$/.test(code) ? 'input' : null
   }
   if (protocol === 'minimax-video') {
     if (code === '1026') return 'input'
     if (code === '1027') return 'output'
     return null
   }
-  return /moderation|content_policy/i.test(code) ? 'unknown' : null
+  return /^(moderation_blocked|content_policy_violation)$/i.test(code) ? 'unknown' : null
 }
 
 /** A task error, tagged when it is the provider's content review. */

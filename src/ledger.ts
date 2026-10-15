@@ -280,11 +280,27 @@ function normaliseStatus(task: VideoTask): VideoTask {
   // A usage record this build cannot read (hand-edited, or reshaped by a newer
   // writer) is dropped, not trusted: the settlement pass asks the provider again.
   const billingOk = task.billing === undefined || task.billing === null || isBilling(task.billing)
-  // A moderation tag this build does not know is dropped, not guessed at.
-  const moderationOk = task.error === null || task.error.moderation === undefined || MODERATION_STAGES.includes(task.error.moderation)
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && moderationOk) return task
-  const error = moderationOk || task.error === null ? task.error : { message: task.error.message, code: task.error.code }
+  const error = errorOf(task.error)
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error) return task
   return { ...task, status, providerTaskId, error, ...(billingOk ? {} : { billing: null }) }
+}
+
+/**
+ * The row's error as this build can use it. A missing or malformed error reads
+ * as none — one odd row must never make the whole document unreadable, which
+ * would quarantine every paid task in it — and a moderation tag this build does
+ * not know is dropped, not guessed at. Returns the same object when it is fine.
+ */
+function errorOf(value: unknown): VideoTask['error'] {
+  if (typeof value !== 'object' || value === null) return null
+  const error = value as Partial<NonNullable<VideoTask['error']>>
+  if (typeof error.message !== 'string') return null
+  const code = typeof error.code === 'string' ? error.code : null
+  const moderationOk = error.moderation === undefined || MODERATION_STAGES.includes(error.moderation)
+  if (code === error.code && moderationOk) return value as NonNullable<VideoTask['error']>
+  return moderationOk && error.moderation !== undefined
+    ? { message: error.message, code, moderation: error.moderation }
+    : { message: error.message, code }
 }
 
 function isBilling(value: unknown): value is TaskBilling {

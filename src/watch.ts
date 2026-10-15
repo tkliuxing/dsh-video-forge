@@ -253,6 +253,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
         const artifact = await downloadArtifact({
           url: state.videoUrl,
           apiKey: context.apiKey,
+          apiOrigin: context.baseUrl,
           directory: core.outputDirectory,
           localId: task.localId,
           fetch: context.fetch,

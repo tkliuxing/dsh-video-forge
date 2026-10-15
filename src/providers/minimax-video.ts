@@ -100,6 +100,20 @@ export function minimaxVideoAdapter(options: MinimaxVideoOptions): ProtocolAdapt
       const response = await requestJson(context, `${trimSlash(context.baseUrl)}/v2/video_generation`, { method: 'POST', body })
       const id = readString(response, 'task_id')
       if (id === null || id === '') {
+        // MiniMax's older endpoints answer a refusal as HTTP 200 with a non-zero
+        // base_resp and no id. That is the provider's own verdict, not a lost
+        // answer: report it as a refusal (status 400) so the row is `failed`,
+        // tagged when it is a content review, rather than "may have been billed".
+        const statusCode = readPath(response, 'base_resp.status_code')
+        const statusMessage = readString(response, 'base_resp.status_msg')
+        if (typeof statusCode === 'number' && statusCode !== 0) {
+          throw new ProviderRequestError(`minimax-video: the provider refused the request: ${statusCode} — ${statusMessage ?? 'no message'}`, {
+            status: 400,
+            bodyExcerpt: excerpt(JSON.stringify(response)),
+            providerCode: String(statusCode),
+            providerMessage: statusMessage,
+          })
+        }
         throw new ProviderRequestError('minimax-video: the create response carried no task_id', {
           bodyExcerpt: excerpt(JSON.stringify(response ?? null)),
         })

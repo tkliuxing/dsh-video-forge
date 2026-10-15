@@ -35,8 +35,16 @@ export class DownloadError extends Error {
 
 export interface DownloadOptions {
   url: string
-  /** Credential for the artifact host; some relays authorize the download too. */
+  /** The provider's API key. Sent only to the provider's own origin (see `apiOrigin`). */
   apiKey: string | null
+  /**
+   * The provider's API base URL. The key goes with the download only when the
+   * artifact is served from that same origin (an OpenAI-shaped `/content`
+   * endpoint); a vendor CDN or a relay's presigned third-party URL never sees
+   * it — it is not theirs, and S3 refuses a presigned URL that also carries an
+   * Authorization header.
+   */
+  apiOrigin?: string | null
   /** Destination directory for this task's artifacts. */
   directory: string
   localId: string
@@ -50,7 +58,7 @@ export interface DownloadOptions {
 /** Download one artifact and describe it for the ledger. */
 export async function downloadArtifact(options: DownloadOptions): Promise<VideoArtifact> {
   const headers: Record<string, string> = {}
-  if (options.apiKey !== null) headers.authorization = `Bearer ${options.apiKey}`
+  if (options.apiKey !== null && sameOrigin(options.url, options.apiOrigin ?? null)) headers.authorization = `Bearer ${options.apiKey}`
 
   const response = await options.fetch(options.url, {
     method: 'GET',
@@ -97,4 +105,13 @@ function normalizeMime(value: string): string | null {
   if (trimmed === '') return null
   if (trimmed === 'application/mp4' || trimmed === 'application/octet-stream') return 'video/mp4'
   return trimmed in EXTENSION ? trimmed : null
+}
+
+function sameOrigin(url: string, base: string | null): boolean {
+  if (base === null) return false
+  try {
+    return new URL(url).origin === new URL(base).origin
+  } catch {
+    return false
+  }
 }
