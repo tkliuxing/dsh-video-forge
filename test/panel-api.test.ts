@@ -102,6 +102,7 @@ beforeAll(async () => {
     // also what a browser submission does (it has no agent to own a job).
     watchTask: () => null,
     cancels: new Map(),
+    watching: new Set(),
     activeCount: () => 0,
   }
   server = createServer((req, res) => { void panelHandler(runtime)(req, res) })

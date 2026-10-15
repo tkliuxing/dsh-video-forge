@@ -23,7 +23,7 @@
 import { awaitingBilling, settledBilling, unknownBilling } from './billing.ts'
 import { resolveApiKey } from './credentials.ts'
 import { downloadArtifact } from './download.ts'
-import { isOpen, type Ledger } from './ledger.ts'
+import type { Ledger } from './ledger.ts'
 import { isSending, unconfirmedMessage } from './operations.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
@@ -53,14 +53,18 @@ const inFlight = new WeakSet<VideoForgeRuntime>()
  * Settle everything the previous process left unresolved, open or orphaned.
  *
  * The tools are live while this runs, so the rows to settle are fixed up front:
- * a row this process is sending, or creates later, already has a watch (or a
- * submission) of its own and must not get a second one.
+ * a row this process is sending, watching, or created after the ledger was read
+ * already has a watch (or a submission) of its own and must not get a second one.
+ * `atLoad` is the set of rows on disk when the ledger was read; boot passes it,
+ * because boot waits for the credential store while the tools take submissions.
  */
-export async function reconcile(runtime: VideoForgeRuntime): Promise<void> {
+export async function reconcile(runtime: VideoForgeRuntime, atLoad?: ReadonlySet<string>): Promise<void> {
   if (inFlight.has(runtime)) return
   inFlight.add(runtime)
   try {
-    const inherited = new Set(runtime.ledger.list().filter(task => !isSending(task.localId)).map(task => task.localId))
+    const inherited = new Set(runtime.ledger.list()
+      .filter(task => (atLoad === undefined || atLoad.has(task.localId)) && !isSending(task.localId) && !runtime.watching.has(task.localId))
+      .map(task => task.localId))
     await recoverUnresolved(runtime, inherited)
     const open = runtime.ledger.open().filter(task => inherited.has(task.localId))
     const orphans = recoverableOrphans(runtime.ledger).filter(task => inherited.has(task.localId))
@@ -136,6 +140,8 @@ async function recordBilling(ledger: Ledger, task: VideoTask, billing: TaskBilli
  * has been downloaded, and the provider still answers queries for it.
  */
 export function recoverableOrphans(ledger: Ledger, now = Date.now()): VideoTask[] {
+  // An orphan never has a live watch: a watch that stops writes a settled status
+  // or `orphaned` itself, and `reattach` re-checks the watch table under the lock.
   return ledger.list()
     .filter(task => task.status === 'orphaned'
       && task.providerTaskId !== null
@@ -295,6 +301,9 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
   const settings = runtime.settings()
 
   for (const task of tasks) {
+    if (runtime.watching.has(task.localId)) continue
+    // Only the row as it was selected may be touched: same status, still unwatched.
+    const unchanged = (current: VideoTask): boolean => current.status === task.status && !runtime.watching.has(current.localId)
     let provider: ProviderSetting
     let model: ModelSetting
     try {
@@ -302,7 +311,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
       provider = target.provider
       model = target.model
     } catch (error: unknown) {
-      await markOrphaned(ledger, task, `no longer configured: ${messageOf(error)}`)
+      await markOrphaned(ledger, task, unchanged, `no longer configured: ${messageOf(error)}`)
       continue
     }
 
@@ -311,7 +320,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
     try {
       apiKey = (await resolveApiKey(runtime.ctx, provider)).value
     } catch (error: unknown) {
-      await markOrphaned(ledger, task, `the credential for its provider is not available (${messageOf(error)})`)
+      await markOrphaned(ledger, task, unchanged, `the credential for its provider is not available (${messageOf(error)})`)
       continue
     }
 
@@ -325,8 +334,9 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         // surface, not a reason to call a healthy task orphaned.
         let claimed = false
         await ledger.update(task.localId, (current) => {
-          if (!reattachable(current)) return current
+          if (!unchanged(current)) return current
           claimed = true
+          runtime.watching.add(current.localId)
           return {
             ...current,
             status: state.status === 'queued' ? 'queued' : 'running',
@@ -344,6 +354,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             pollIntervalMs: model.pollIntervalMs,
             outputDirectory: runtime.outputDirectory(fresh.localId),
             logger,
+            onExit: () => { runtime.watching.delete(fresh.localId) },
           })
         }
         logger.info(`video-forge: ${task.localId} is still running at the provider; watching it in the background`)
@@ -351,7 +362,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
       }
       if (state.status === 'succeeded' && state.videoUrl !== null) {
         const artifact = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
-        await ledger.update(task.localId, current => (reattachable(current)
+        await ledger.update(task.localId, current => (unchanged(current)
           ? {
               ...current,
               status: 'succeeded',
@@ -365,7 +376,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         logger.info(`video-forge: ${task.localId} had already finished; recorded its artifact`)
         continue
       }
-      await ledger.update(task.localId, current => (reattachable(current)
+      await ledger.update(task.localId, current => (unchanged(current)
         ? {
             ...current,
             status: state.status === 'cancelled' ? 'cancelled' : 'failed',
@@ -375,14 +386,9 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
           }
         : current))
     } catch (error: unknown) {
-      await markOrphaned(ledger, task, `the provider could not be reached (${messageOf(error)})`)
+      await markOrphaned(ledger, task, unchanged, `the provider could not be reached (${messageOf(error)})`)
     }
   }
-}
-
-/** Re-checked inside every write: only a row nobody is watching may be reattached or settled here. */
-function reattachable(task: VideoTask): boolean {
-  return isOpen(task) || task.status === 'orphaned'
 }
 
 function messageOf(error: unknown): string {
@@ -417,14 +423,14 @@ async function fetchArtifact(
  * An unchanged verdict is not rewritten, so a timer re-check of a task that is
  * still unreachable does not touch the ledger file.
  */
-async function markOrphaned(ledger: Ledger, task: VideoTask, reason: string): Promise<void> {
+async function markOrphaned(ledger: Ledger, task: VideoTask, may: (current: VideoTask) => boolean, reason: string): Promise<void> {
   const submittedAt = Date.parse(task.submittedAt)
   const retried = task.providerTaskId !== null && Number.isFinite(submittedAt) && Date.now() - submittedAt <= PROVIDER_HORIZON_MS
   const message = retried
     ? `${reason}; asked again automatically every ${ORPHAN_RETRY_MS / 60_000} minutes until ${new Date(submittedAt + PROVIDER_HORIZON_MS).toISOString()} — never re-submitted`
     : `${reason}; never re-submitted`
   await ledger.update(task.localId, (current) => {
-    if (!reattachable(current)) return current
+    if (!may(current)) return current
     if (current.status === 'orphaned' && current.error?.message === message) return current
     return {
       ...current,

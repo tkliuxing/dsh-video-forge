@@ -87,6 +87,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
         pollIntervalMs: input.model.pollIntervalMs,
         outputDirectory: runtime.outputDirectory(input.task.localId),
         logger,
+        onExit: () => { runtime.watching.delete(input.task.localId) },
         onUpdate: (task: VideoTask) => {
           if (task.status === 'succeeded') {
             const artifact = task.artifacts[0]
@@ -97,6 +98,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
         },
       }
 
+      runtime.watching.add(input.task.localId)
       const jobs = ctx.get('jobs')
       // A job is worth having — the model reads it with `job_output` and is woken
       // when it settles — but the registry only starts one for an owner whose
@@ -125,6 +127,7 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       return null
     },
     cancels: new Map(),
+    watching: new Set(),
     activeCount: () => ledger.list().filter(task => task.status === 'submitting' || task.status === 'queued' || task.status === 'running').length,
   }
 
@@ -155,7 +158,10 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     logger.info(`video-forge: configuration updated (${paths.map(path => path.join('.')).join(', ')})`)
   })
 
-  const loaded = ledger.load()
+  // The rows a previous process left are exactly those on disk at load time. A
+  // row submitted while boot waits for the credential store has a watch of its
+  // own and must not be "reconciled" into a second one.
+  const inherited = ledger.load()
     .catch((error: unknown) => {
       if (error instanceof LedgerCorruptError) {
         logger.warn(`video-forge: ${error.message}; starting from an empty ledger`)
@@ -163,6 +169,10 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       }
       throw error
     })
+    .then(() => new Set(ledger.list().map(task => task.localId)))
+  // Handled at once: boot awaits this only later, and an unhandled rejection in
+  // the meantime would take the whole host down. Boot still sees the failure.
+  inherited.catch(() => undefined)
 
   // Reconciliation needs every provider's key, and the credential store
   // publishes its service only once it has read its file; see
@@ -170,9 +180,12 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   scheduleReconciliation(
     ctx,
     async () => {
-      await loaded
-      await reconcile(runtime)
-      await settleBilling(runtime)
+      await reconcile(runtime, await inherited)
+      // Settling usage can take a while on the first boot after an upgrade; it
+      // must not hold the orphan timer back, so it runs on its own.
+      void settleBilling(runtime).catch((error: unknown) => {
+        logger.error(`video-forge: usage settlement failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
     },
     async () => {
       await retryOrphans(runtime)

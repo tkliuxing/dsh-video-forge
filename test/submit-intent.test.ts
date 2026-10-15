@@ -85,6 +85,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
     outputDirectory: localId => join(ledger.home, 'outputs', localId),
     watchTask: () => null,
     cancels: new Map(),
+    watching: new Set(),
     activeCount: () => 0,
   }
 }

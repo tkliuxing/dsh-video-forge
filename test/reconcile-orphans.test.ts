@@ -83,6 +83,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): { runtime: Vi
     outputDirectory: localId => join(ledger.home, 'outputs', localId),
     watchTask: () => null,
     cancels: new Map(),
+    watching: new Set(),
     activeCount: () => 0,
   }
   return { runtime, publishCredentials: () => { published = true } }
@@ -286,5 +287,40 @@ describe('usage settlement', () => {
 
     await reconcile(runtime)
     expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
+  })
+})
+
+describe('a row submitted while boot waits for the credential store', () => {
+  it('is left to its own watch: boot reconciles only the rows on disk at load time', async () => {
+    const fake = await fixture({ pollsBeforeDone: 1000 })
+    const inheritedId = await providerTask(fake)
+    const freshId = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ localId: 'v-old', providerTaskId: inheritedId }))
+    const atLoad = new Set(ledger.list().map(task => task.localId))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+    // Submitted during the wait: the tool path already started its watch.
+    await ledger.add(row({ localId: 'v-fresh', providerTaskId: freshId, status: 'queued' }))
+    runtime.watching.add('v-fresh')
+
+    await reconcile(runtime, atLoad)
+    const queried = (id: string): number => fake.requests.filter(entry => entry.method === 'GET' && entry.path.endsWith(`/${id}`)).length
+    expect(queried(inheritedId)).toBeGreaterThan(0)
+    expect(queried(freshId)).toBe(0)
+    expect(runtime.watching.has('v-old')).toBe(true)
+  })
+
+  it('is skipped by every pass while it has a live watch, even if it was on disk at load', async () => {
+    const fake = await fixture({ pollsBeforeDone: 1000 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ localId: 'v-watched', providerTaskId: id }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+    runtime.watching.add('v-watched')
+
+    await reconcile(runtime)
+    expect(fake.requests.filter(entry => entry.method === 'GET')).toHaveLength(0)
   })
 })

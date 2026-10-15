@@ -74,6 +74,8 @@ export interface WatchCore {
   onUpdate?: ((task: VideoTask) => void) | undefined
   /** Task-owned cancellation. */
   signal: AbortSignal
+  /** Called once the loop has stopped, however it stopped. */
+  onExit?: (() => void) | undefined
 }
 
 export interface WatchOptions extends Omit<WatchCore, 'signal'> {
@@ -114,7 +116,7 @@ export function startWatch(options: WatchOptions): JobId | null {
         const settle = runCore({ ...options, signal: controller.signal }, {
           line: (text, channel) => job.append(text, channel === undefined ? {} : { channel }),
           progress: line => job.updateProgress(line),
-        })
+        }).finally(() => { options.onExit?.() })
         const detach = options.onCancelReady?.(task.localId, async () => {
           if (controller.signal.aborted) return false
           try {
@@ -160,6 +162,11 @@ export function startInProcessWatch(options: Omit<WatchOptions, 'jobs' | 'owner'
     },
     // Every line already reaches the log; a live progress line has no reader here.
     progress: line => options.logger.info(`video-forge: ${options.task.localId} ${line}`),
+  }).finally(() => { options.onExit?.() })
+  // Nobody awaits an in-process watch; a ledger write failing inside it must be
+  // logged, not left as an unhandled rejection that takes the host down.
+  done.catch((error: unknown) => {
+    options.logger.error(`video-forge: watch of ${options.task.localId} stopped on an error: ${error instanceof Error ? error.message : String(error)}`)
   })
   return { cancel: () => controller.abort(), done }
 }

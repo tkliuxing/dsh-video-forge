@@ -33,6 +33,12 @@ export interface VideoForgeRuntime {
   }): JobId | null
   /** Cancel handles registered by watches, keyed by local task id. */
   readonly cancels: Map<string, () => Promise<boolean>>
+  /**
+   * Local ids with a live watch in this process. Reconciliation and the orphan
+   * retry skip them: a second watch on one row downloads the same artifact twice
+   * into one path and replaces the token the first one already handed out.
+   */
+  readonly watching: Set<string>
   /** How many tasks currently hold the provider. */
   activeCount(): number
 }
