@@ -25,10 +25,9 @@ import { resolveApiKey } from './credentials.ts'
 import { downloadArtifact } from './download.ts'
 import type { Ledger } from './ledger.ts'
 import { isSending, unconfirmedMessage } from './operations.ts'
-import { ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
-import { ConfigError, resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
+import { resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
 import { UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
 import { startInProcessWatch } from './watch.ts'
 
@@ -77,15 +76,24 @@ export async function reconcile(runtime: VideoForgeRuntime, atLoad?: ReadonlySet
   }
 }
 
-/** Ask the providers again about every orphaned task they may still know. */
+/**
+ * Ask the providers again about every task nobody is watching: orphans they may
+ * still know, and open rows whose watch stopped without settling them. A
+ * `job_kill` (or a torn-down session) stops the job, leaving the row `running`
+ * with the provider still working and billing; left alone until the next
+ * restart, its artifact URL can expire. Re-watching it in-process only fetches
+ * what was paid for — it reports nowhere, and it never re-submits.
+ */
 export async function retryOrphans(runtime: VideoForgeRuntime): Promise<void> {
   if (inFlight.has(runtime)) return
+  const unwatched = runtime.ledger.open().filter(task => !runtime.watching.has(task.localId) && !isSending(task.localId))
   const orphans = recoverableOrphans(runtime.ledger)
-  if (orphans.length === 0) return
+  if (unwatched.length === 0 && orphans.length === 0) return
   inFlight.add(runtime)
   try {
-    runtime.logger.info(`video-forge: asking again about ${orphans.length} orphaned task(s)`)
-    await reattach(runtime, orphans)
+    if (unwatched.length > 0) runtime.logger.info(`video-forge: re-watching ${unwatched.length} task(s) whose watch stopped`)
+    if (orphans.length > 0) runtime.logger.info(`video-forge: asking again about ${orphans.length} orphaned task(s)`)
+    await reattach(runtime, [...unwatched, ...orphans])
   } finally {
     inFlight.delete(runtime)
   }
@@ -104,7 +112,13 @@ const settling = new WeakSet<VideoForgeRuntime>()
  */
 export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
   if (settling.has(runtime)) return
-  const owed = runtime.ledger.list().filter(awaitingBilling)
+  const now = Date.now()
+  // An orphan the window closed on will never settle: its usage is unknown.
+  const expiredOrphan = (task: VideoTask): boolean => task.status === 'orphaned'
+    && task.providerTaskId !== null
+    && (task.billing === undefined || task.billing === null)
+    && !(now - Date.parse(task.submittedAt) <= PROVIDER_HORIZON_MS)
+  const owed = runtime.ledger.list().filter(task => awaitingBilling(task) || expiredOrphan(task))
   if (owed.length === 0) return
   settling.add(runtime)
   try {
@@ -115,10 +129,21 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
         await recordBilling(runtime.ledger, task, unknownBilling())
         continue
       }
-      // Anything that stops us asking today is retried on the next pass, until
-      // the window closes.
+      // A provider removed from the configuration will not come back by itself:
+      // record unknown now rather than asking every pass for seven days.
+      let target
       try {
-        const { provider, model } = resolveTarget(settings, task.provider, task.model)
+        target = resolveTarget(settings, task.provider, task.model)
+      } catch {
+        await recordBilling(runtime.ledger, task, unknownBilling())
+        continue
+      }
+      // Anything else that stops us asking today — a credential store not yet
+      // loaded, a key not yet stored, the network, an odd 404 — is retried on
+      // the next pass until the window closes. Giving up early would also skip
+      // the recovery below for a paid task an older build filed as failed.
+      try {
+        const { provider, model } = target
         const apiKey = (await resolveApiKey(runtime.ctx, provider)).value
         const context: AdapterContext = { baseUrl: provider.baseUrl, apiKey, fetch, signal: AbortSignal.timeout(20_000) }
         const state = await adapterFor(provider, model).query(context, task.providerTaskId ?? '')
@@ -134,13 +159,6 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
             : current))
         }
       } catch (error: unknown) {
-        // A provider no longer configured, or a task the provider no longer
-        // knows, will not answer next time either: record unknown now rather
-        // than asking two thousand more times before the window closes.
-        if (error instanceof ConfigError || (error instanceof ProviderRequestError && error.status === 404)) {
-          await recordBilling(runtime.ledger, task, unknownBilling())
-          continue
-        }
         runtime.logger.warn(`video-forge: usage of ${task.localId} not settled yet: ${messageOf(error)}`)
       }
     }
@@ -150,7 +168,9 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
 }
 
 async function recordBilling(ledger: Ledger, task: VideoTask, billing: TaskBilling): Promise<void> {
-  await ledger.update(task.localId, current => (awaitingBilling(current) ? { ...current, billing } : current))
+  await ledger.update(task.localId, current => (current.status === task.status && (current.billing === undefined || current.billing === null)
+    ? { ...current, billing }
+    : current))
 }
 
 /**

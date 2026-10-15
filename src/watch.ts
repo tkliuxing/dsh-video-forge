@@ -240,8 +240,9 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
       if (state.videoUrl === null) {
         const updated = await ledger.update(task.localId, current => ({
           ...current,
-          status: 'failed',
-          error: { message: 'the provider reported success without an artifact URL', code: null },
+          // Paid, and possibly just a transient empty answer: the retry asks again.
+          status: 'orphaned',
+          error: { message: 'the provider reported success without an artifact URL; the plugin asks again and never re-submits it', code: null },
           billing: settledBilling(state.usage, state.status),
           updatedAt: new Date().toISOString(),
         }))

@@ -406,3 +406,52 @@ describe('settled usage', () => {
     expect(doc.tasks[0]?.billing).toBeNull()
   })
 })
+
+describe('second review follow-ups', () => {
+  it('keeps asking when the credential is missing on the first pass, then recovers the older-build failed row', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    await ledger.add(row({ providerTaskId: id, status: 'failed', error: { message: 'polling failed 5 times: fetch failed', code: null } }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+
+    await settleBilling(runtime)
+    // Not settled, and certainly not written off as unknown.
+    expect(ledger.byId('v-20261015-0011')?.billing ?? null).toBeNull()
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('failed')
+
+    publishCredentials()
+    await settleBilling(runtime)
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('orphaned')
+    await retryOrphans(runtime)
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('succeeded')
+    expect(ledger.byId('v-20261015-0011')?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
+  })
+
+  it('re-watches an open row whose watch was killed, without waiting for a restart', async () => {
+    const fake = await fixture({ pollsBeforeDone: 0 })
+    const id = await providerTask(fake)
+    const ledger = await ledgerAt()
+    // job_kill stopped the watch; the row stays running and nobody watches it.
+    await ledger.add(row({ providerTaskId: id, status: 'running' }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+
+    await retryOrphans(runtime)
+    expect(ledger.byId('v-20261015-0011')?.status).toBe('succeeded')
+    expect(ledger.byId('v-20261015-0011')?.artifacts).toHaveLength(1)
+    expect(posts(fake)).toBe(1)
+  })
+
+  it('records unknown for an orphan the query window closed on', async () => {
+    const fake = await fixture()
+    const ledger = await ledgerAt()
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString()
+    await ledger.add(row({ localId: 'v-lost', providerTaskId: 'cgt-old', status: 'orphaned', submittedAt: old }))
+    const { runtime, publishCredentials } = runtimeFor(settingsFor(fake), ledger)
+    publishCredentials()
+    await settleBilling(runtime)
+    expect(ledger.byId('v-lost')?.billing?.state).toBe('unknown')
+    expect(fake.requests).toHaveLength(0)
+  })
+})
