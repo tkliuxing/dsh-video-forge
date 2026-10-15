@@ -14,7 +14,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
+import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type LedgerDocument, type TaskBilling, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN_STATUSES: ReadonlySet<VideoTaskStatus> = new Set<VideoTaskStatus>(['queued', 'running'])
@@ -280,8 +280,11 @@ function normaliseStatus(task: VideoTask): VideoTask {
   // A usage record this build cannot read (hand-edited, or reshaped by a newer
   // writer) is dropped, not trusted: the settlement pass asks the provider again.
   const billingOk = task.billing === undefined || task.billing === null || isBilling(task.billing)
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk) return task
-  return { ...task, status, providerTaskId, ...(billingOk ? {} : { billing: null }) }
+  // A moderation tag this build does not know is dropped, not guessed at.
+  const moderationOk = task.error === null || task.error.moderation === undefined || MODERATION_STAGES.includes(task.error.moderation)
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && moderationOk) return task
+  const error = moderationOk || task.error === null ? task.error : { message: task.error.message, code: task.error.code }
+  return { ...task, status, providerTaskId, error, ...(billingOk ? {} : { billing: null }) }
 }
 
 function isBilling(value: unknown): value is TaskBilling {

@@ -19,6 +19,7 @@ import {
   requestRaw,
   type AdapterContext,
   type ProtocolAdapter,
+  taskError,
   usageOf,
 } from './adapter.ts'
 
@@ -102,7 +103,7 @@ export function readArkState(body: unknown): ProviderTaskState {
     progress: null,
     videoUrl,
     error: normalized.status === 'failed'
-      ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: errorCode }
+      ? taskError('ark-seedance', errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, errorCode)
       : null,
     terminal: normalized.terminal,
     // Billed by token; `completion_tokens` is the documented reconciliation basis.

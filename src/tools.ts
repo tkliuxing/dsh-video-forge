@@ -49,6 +49,7 @@ const TASK_SCHEMA = {
     submitted_at: { type: 'string', required: true },
     play_url: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
     error: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
+    moderation: { required: true, oneOf: [{ type: 'null' }, { type: 'string', enum: ['input', 'output', 'unknown'] }] },
     billing: {
       required: true,
       oneOf: [
@@ -181,6 +182,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     description: [
       'List recent video generations with their provider, status, progress, error and (once finished) the artifact path and play URL.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
+      'moderation is set when the provider\'s content review refused the task (input or output side): the identical request is refused again, so rewrite the prompt or change the materials rather than retrying.',
       'billing is what the provider reported a finished task consumed (tokens for ARK, output seconds for MiniMax, every raw field under fields) — usage, not money; null until settled, "unknown" when the provider\'s seven-day query window closed first.',
       'Tasks marked orphaned lost contact with the provider (credential not yet loaded, network failure, a download that broke); while the provider still answers for them — up to seven days, if the task id is known and its provider is still configured — the plugin keeps asking and settles them on its own. It never re-submits them: check back here rather than generating again, and read the error field for what is known.',
       'Tasks marked unconfirmed were sent but the provider\'s answer was lost (timeout, network failure, restart): the provider may already have created and billed them, so never submit the same request again — the error field says what is known.',
@@ -217,6 +219,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
             `${row.provider}/${row.model}`,
             row.play_url === null ? '' : row.play_url,
             usageText(row.billing),
+            row.moderation === null ? '' : `refused by the provider's content review (${row.moderation})`,
             row.error ?? '',
           ].filter(part => part !== '').join(' · ')).join('\n'),
       }],
@@ -238,6 +241,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           submitted_at: row.submittedAt,
           play_url: row.playUrl,
           error: row.error,
+          moderation: row.moderation,
           billing: row.billing === null
             ? null
             : { state: row.billing.state, tokens: row.billing.tokens, output_seconds: row.billing.outputSeconds, fields: row.billing.fields },

@@ -45,6 +45,10 @@ export interface FixtureOptions {
   rejectSubmitStatus?: number
   /** Answer the first this-many artifact downloads with a 503, as a flaky CDN would. */
   failArtifactDownloads?: number
+  /** With `rejectSubmitStatus`: the provider's error code in the refusal body. */
+  rejectSubmitCode?: string
+  /** With `failAfterPolls`: fail the task with this provider error code (e.g. an output review refusal). */
+  failCode?: string
 }
 
 /** One task the fixture created, as its ARK task list reports it. */
@@ -116,7 +120,7 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       // Each vendor's own refusal shape, as recorded.
       res.end(JSON.stringify(options.mode === 'minimax'
         ? { type: 'error', error: { type: 'invalid_request_error', message: 'fixture refused the submission', http_code: options.rejectSubmitStatus }, request_id: 'fixture' }
-        : { error: { code: 'InvalidParameter', message: 'fixture refused the submission', param: '', type: 'BadRequest' } }))
+        : { error: { code: options.rejectSubmitCode ?? 'InvalidParameter', message: 'fixture refused the submission', param: '', type: 'BadRequest' } }))
       return
     }
 
@@ -203,7 +207,7 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
         return
       }
       if (state === 'failed') {
-        res.end(JSON.stringify({ ...common, status: 'failed', error: { code: 'InternalError', message: 'fixture failure' } }))
+        res.end(JSON.stringify({ ...common, status: 'failed', error: { code: options.failCode ?? 'InternalError', message: 'fixture failure' } }))
         return
       }
       res.end(JSON.stringify({ ...common, status: state }))
@@ -254,7 +258,9 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
         res.end(JSON.stringify({ task: {
           ...common,
           status: 'failed',
-          error: { code: '2013', message: 'content[1].image_url: media not found (HTTP 404). The URL does not exist.' },
+          error: options.failCode === undefined
+            ? { code: '2013', message: 'content[1].image_url: media not found (HTTP 404). The URL does not exist.' }
+            : { code: options.failCode, message: 'fixture failure' },
           usage: {},
         } }))
         return

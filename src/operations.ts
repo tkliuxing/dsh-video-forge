@@ -16,7 +16,7 @@ import { isAbsolute, join } from 'node:path'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
-import { ProviderRequestError } from './providers/adapter.ts'
+import { moderationOf, ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, cancelSupported, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting } from './settings.ts'
@@ -26,6 +26,7 @@ import {
   type GenerationRequest,
   type ResolvedMaterial,
   type VideoArtifact,
+  type ModerationStage,
   type TaskBilling,
   type VideoMode,
   type VideoTask,
@@ -277,10 +278,16 @@ async function submitIntent(
     const refused = !sent
       || (error instanceof ProviderRequestError && error.status !== null && error.status >= 400 && !ambiguousHttp(error.status))
     if (refused) {
+      // ARK reviews the inputs at submit time and answers 400 with its own code.
+      const moderation = error instanceof ProviderRequestError ? moderationOf(intent.protocol, error.providerCode) : null
       await runtime.ledger.update(intent.localId, current => ({
         ...current,
         status: 'failed',
-        error: { message: sent ? `the provider refused the submission: ${detail}` : `nothing was sent: ${detail}`, code: NOT_SUBMITTED_CODE },
+        error: {
+          message: sent ? `the provider refused the submission: ${detail}` : `nothing was sent: ${detail}`,
+          code: NOT_SUBMITTED_CODE,
+          ...(moderation === null ? {} : { moderation }),
+        },
         updatedAt: new Date().toISOString(),
       }))
       throw error
@@ -445,6 +452,8 @@ export interface TaskRow {
   error: string | null
   /** Provider-reported usage once settled; null while the task runs or before anyone asked. */
   billing: TaskBilling | null
+  /** Set when the provider's content review refused the task, and on which side. */
+  moderation: ModerationStage | null
 }
 
 export interface TaskList {
@@ -482,6 +491,7 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
         artifactBytes: artifact?.bytes ?? null,
         error: task.error === null ? null : task.error.message,
         billing: task.billing ?? null,
+        moderation: task.error?.moderation ?? null,
       }
     }),
     usage: {
@@ -657,6 +667,15 @@ function fingerprintOf(
 }
 
 function refuseDuplicate(runtime: VideoForgeRuntime, fingerprint: string): void {
+  // Outside any dedupe window: the provider's content review already refused
+  // this exact request, and asking again only buys the same verdict — possibly
+  // at a price. A changed prompt or material is a different request.
+  const refused = runtime.ledger.list().find(task => task.paramsFingerprint === fingerprint && task.error?.moderation !== undefined)
+  if (refused !== undefined) {
+    throw new ConfigError(
+      `this exact request was refused by the provider's content review (${refused.error?.moderation ?? 'unknown'} side) as ${refused.localId} on ${refused.submittedAt}: ${refused.error?.message ?? ''} — sending it again gets the same verdict; change the prompt or the materials instead`,
+    )
+  }
   const window = runtime.settings().dedupeWindowSeconds
   if (window <= 0) return
   const existing = runtime.ledger.byFingerprint(fingerprint, Date.now() - window * 1000)

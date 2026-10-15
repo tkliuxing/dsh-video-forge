@@ -146,7 +146,7 @@ describe('minimax-video', () => {
     expect(readMinimaxState({ task: { status: 'queued' } })).toMatchObject({ status: 'queued', terminal: false })
     expect(readMinimaxState({ task: { status: 'cancelled' } })).toMatchObject({ status: 'cancelled', terminal: true })
     expect(readMinimaxState({ task: { status: 'failed', error: { code: '1026', message: 'video description contains sensitive content' } } }).error)
-      .toEqual({ code: '1026', message: 'video description contains sensitive content' })
+      .toEqual({ code: '1026', message: 'video description contains sensitive content', moderation: 'input' })
     expect(readMinimaxState({ task: { status: 'weird' } })).toMatchObject({ status: 'unknown', terminal: false })
   })
 

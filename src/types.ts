@@ -108,7 +108,7 @@ export interface ProviderTaskState {
   progress: number | null
   /** Downloadable artifact URL, present only once the provider reports success. */
   videoUrl: string | null
-  error: { message: string; code: string | null } | null
+  error: VideoTaskError | null
   /** Whether the provider's own status vocabulary said the task is finished for good. */
   terminal: boolean
   /** What the provider says the task consumed, when the body carries any; never a price. */
@@ -162,9 +162,20 @@ export interface VideoTaskParams {
   referenceImages: string[]
 }
 
+/** Which side of a generation a provider's content review refused. */
+export type ModerationStage = 'input' | 'output' | 'unknown'
+
+export const MODERATION_STAGES: readonly ModerationStage[] = ['input', 'output', 'unknown']
+
 export interface VideoTaskError {
   message: string
   code: string | null
+  /**
+   * Set when the provider's content review refused the request. That is a
+   * verdict on these exact inputs, not a passing failure: the identical request
+   * is refused again — and may be billed again — so it is never re-sent as is.
+   */
+  moderation?: ModerationStage
 }
 
 /** One ledger row. */

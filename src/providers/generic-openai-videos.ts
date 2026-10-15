@@ -20,6 +20,7 @@ import {
   requestRaw,
   type AdapterContext,
   type ProtocolAdapter,
+  taskError,
   usageOf,
 } from './adapter.ts'
 import { fillTemplate, readNumber, readPath, readString } from './dot-path.ts'
@@ -179,13 +180,14 @@ export function readState(body: unknown, endpoints: EndpointSetting, providerTas
   const errorMessage = typeof errorValue === 'string'
     ? errorValue
     : (typeof errorValue === 'object' && errorValue !== null ? readString(errorValue, 'message') : null)
+  const errorCode = typeof errorValue === 'object' && errorValue !== null ? readString(errorValue, 'code') : null
 
   return {
     status: normalized.status,
     progress,
     videoUrl: url ?? fallback,
     error: normalized.status === 'failed'
-      ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: null }
+      ? taskError('generic-openai-videos', errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, errorCode)
       : null,
     terminal: normalized.terminal,
     // Gateways differ; keep whatever numbers a `usage` object carries, with no billing basis assumed.

@@ -24,6 +24,7 @@ import {
   requestJson,
   type AdapterContext,
   type ProtocolAdapter,
+  taskError,
   usageOf,
 } from './adapter.ts'
 
@@ -81,7 +82,7 @@ export function readMinimaxState(body: unknown): ProviderTaskState {
     progress: null,
     videoUrl: readString(body, 'task.content.url'),
     error: normalized.status === 'failed'
-      ? { message: errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, code: errorCode }
+      ? taskError('minimax-video', errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, errorCode)
       : null,
     terminal: normalized.terminal,
     // Billed by output seconds; the documented token fields were absent in real answers.
