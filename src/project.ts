@@ -74,9 +74,13 @@ export const DEFAULT_MANIFEST: ProjectManifest = {
 
 /** A manifest the plugin cannot use; the message names the field and how to fix it. */
 export class ManifestError extends ConfigError {
-  constructor(message: string) {
+  /** `invalid`: the file says something unusable; `unreadable`: the file could not be read at all. */
+  readonly kind: 'invalid' | 'unreadable'
+
+  constructor(message: string, kind: 'invalid' | 'unreadable' = 'invalid') {
     super(`${MANIFEST_FILE}: ${message}`)
     this.name = 'ManifestError'
+    this.kind = kind
   }
 }
 
@@ -162,7 +166,7 @@ export async function readProject(fs: WorkspaceFs, cwd: string, signal?: AbortSi
     if (fsErrorCode(error) === 'FS_NOT_FOUND') return { manifest: DEFAULT_MANIFEST, exists: false }
     if (fsErrorCode(error) === 'FS_TOO_LARGE') throw new ManifestError(`is larger than ${MAX_MANIFEST_BYTES / 1024} KiB`)
     if (error instanceof TypeError) throw new ManifestError('is not UTF-8 text')
-    throw new ManifestError(`cannot be read (${error instanceof Error ? error.message : String(error)})`)
+    throw new ManifestError(`cannot be read (${error instanceof Error ? error.message : String(error)})`, 'unreadable')
   }
   return { manifest: parseManifest(text), exists: true }
 }

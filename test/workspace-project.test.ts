@@ -422,7 +422,7 @@ describe('the default shot folder', () => {
     const { ledger, runtime, workspace } = await setup()
     const outcome = await generate(runtime, { prompt: 'tidy' }, { session: session(workspace) })
     await settled(ledger, outcome.task.localId)
-    expect((await readdir(join(workspace, 'renders', 'untitled'))).sort()).toEqual(['v001.json', 'v001.mp4'])
+    expect((await readdir(join(workspace, 'renders', 'untitled'))).sort()).toEqual(['v001.json', 'v001.last.jpg', 'v001.mp4'])
   })
 })
 

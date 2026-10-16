@@ -379,11 +379,18 @@ function isArtifact(value: unknown): value is VideoArtifact {
   return nonEmpty(artifact.path) && nonEmpty(artifact.token) && typeof artifact.bytes === 'number' && typeof artifact.mime === 'string'
 }
 
-/** The artifact with a location this build can trust; one it cannot read is dropped. */
+/** The artifact with a location and last frame this build can trust; one it cannot read is dropped. */
 function artifactOf(artifact: VideoArtifact): VideoArtifact {
-  if (artifact.location === undefined || isLocation(artifact.location)) return artifact
-  const { location: _unreadable, ...rest } = artifact
-  return rest
+  const locationOk = artifact.location === undefined || isLocation(artifact.location)
+  const frame = artifact.lastFrame as Partial<NonNullable<VideoArtifact['lastFrame']>> | undefined
+  const frameOk = frame === undefined || (typeof frame === 'object' && frame !== null && nonEmpty(frame.path) && nonEmpty(frame.mime) && typeof frame.bytes === 'number')
+  if (locationOk && frameOk) return artifact
+  const { location, lastFrame, ...rest } = artifact
+  return {
+    ...rest,
+    ...(locationOk && location !== undefined ? { location } : {}),
+    ...(frameOk && lastFrame !== undefined ? { lastFrame } : {}),
+  }
 }
 
 function isLocation(value: unknown): value is ArtifactLocation {

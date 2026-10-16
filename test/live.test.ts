@@ -7,7 +7,8 @@
  *                            a query for a task that does not exist.
  *   VIDEO_FORGE_LIVE=paid  — the free checks, then one cheapest generation per
  *                            provider (ARK 480p 4 s ≈ 40 594 tokens; MiniMax 480P
- *                            5 s), polled to the end and downloaded.
+ *                            5 s), polled to the end and downloaded — for ARK
+ *                            with its last frame (`return_last_frame`, free).
  *
  * Keys come from the environment only — ARK_API_KEY, MINIMAX_API_KEY — and a
  * provider without one is skipped. Optional: ARK_BASE_URL, MINIMAX_BASE_URL,
@@ -122,7 +123,7 @@ describe.skipIf(LIVE === undefined || ARK_KEY === '')('live: ARK Seedance', () =
     }
   })
 
-  it.skipIf(!PAID)('generates the cheapest clip, bills the documented tokens, and serves the bytes (paid)', async () => {
+  it.skipIf(!PAID)('generates the cheapest clip, bills the documented tokens, and serves the bytes and the last frame (paid)', async () => {
     const submitted = await adapter.submit(context(), request({ model: ARK_MODEL, durationSeconds: 4, resolution: '480p', aspectRatio: '16:9' }))
     expect(submitted.providerTaskId).toMatch(/^cgt-/)
     console.info(`live: ARK task ${submitted.providerTaskId} (${ARK_MODEL})`)
@@ -130,6 +131,8 @@ describe.skipIf(LIVE === undefined || ARK_KEY === '')('live: ARK Seedance', () =
     expect(state.status).toBe('succeeded')
     expect(state.progress).toBeNull()
     expect(state.videoUrl).toMatch(/^https:\/\//)
+    // The adapter always asks for it (`return_last_frame`); `from` continues from it (M3.3).
+    expect(state.lastFrameUrl).toMatch(/^https:\/\//)
     expect(state.usage?.tokens).toBe(state.usage?.fields.completion_tokens)
     if (ARK_MODEL === DEFAULT_ARK_MODEL) {
       // 480p 16:9 is 864×496; 4 s at 24 fps is 97 frames: ⌊864 × 496 × 97 / 1024⌋.
@@ -137,9 +140,12 @@ describe.skipIf(LIVE === undefined || ARK_KEY === '')('live: ARK Seedance', () =
     }
     const artifact = await downloadArtifact({
       url: state.videoUrl ?? '', apiKey: ARK_KEY, apiOrigin: ARK_BASE, directory: await mkdtemp(join(tmpdir(), 'video-forge-live-')),
-      localId: 'live-ark', fetch, signal: undefined, mimeHint: 'video/mp4',
+      localId: 'live-ark', fetch, signal: undefined, mimeHint: 'video/mp4', lastFrameUrl: state.lastFrameUrl ?? null,
     })
     expect((await stat(artifact.path)).size).toBeGreaterThan(10_000)
+    // Documented as a JPEG at the video's size, without a watermark.
+    expect(artifact.lastFrame?.mime).toBe('image/jpeg')
+    expect(artifact.lastFrame?.bytes).toBeGreaterThan(1_000)
   }, 15 * 60_000)
 })
 

@@ -13,6 +13,7 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
+import { exportArtifact } from '../src/operations.ts'
 import { registerTools } from '../src/tools.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
@@ -126,8 +127,8 @@ describe('video_generate', () => {
     return definition
   }
 
-  it('registers all four tools with a canonical output contract', () => {
-    expect([...definitions.keys()].sort()).toEqual(['video_cancel', 'video_export', 'video_generate', 'video_status'])
+  it('registers the three tools with a canonical output contract; video_export is gone', () => {
+    expect([...definitions.keys()].sort()).toEqual(['video_cancel', 'video_generate', 'video_status'])
     expect(generate().output.schema).toBeDefined()
     expect(generate().isConcurrencySafe?.({} as never)).toBe(false)
   })
@@ -223,7 +224,7 @@ describe('video_generate', () => {
   })
 })
 
-describe('video_status / video_cancel / video_export', () => {
+describe('video_status / video_cancel, and the panel\'s export', () => {
   it('lists tasks with a play URL once an artifact exists', async () => {
     const ledger = await makeLedger()
     const artifactPath = join(ledger.home, 'out.mp4')
@@ -248,6 +249,26 @@ describe('video_status / video_cancel / video_export', () => {
     // Usage, never money: the provider's own numbers, passed through.
     expect(value.tasks[0]?.billing).toMatchObject({ state: 'reported', tokens: 40594 })
     expect(value.usage.tasks).toBe(1)
+  })
+
+  it('reports the setup when asked without a task id, and only then', async () => {
+    const ledger = await makeLedger()
+    await ledger.add(openTask('v-20261013-0009'))
+    definitions.clear()
+    registerTools(runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger))
+    const status = definitions.get('video_status')
+    const value = await status?.execute({}, exec) as { setup: Record<string, unknown> | null }
+    expect(value.setup).toMatchObject({
+      enabled: true,
+      default_provider: 'ark',
+      providers: [{ id: 'ark', protocol: 'ark-seedance', key: 'not required', key_problem: null, continuable: true, models: [{ id: MODEL.id }] }],
+      workspace: { state: 'default-layout', folder: WORKSPACE, mode: null, renders: 'renders', characters: [], style: false, problem: null },
+    })
+    const text = (status?.output.render?.({}, value as never) as { text: string }[])[0]?.text ?? ''
+    expect(text).toMatch(/provider ark \(default\) \[ark-seedance\], key not required, takes can be continued with from/)
+    expect(text).toMatch(/no video-project\.yaml yet \(default layout\)/)
+    const one = await status?.execute({ task_id: 'v-20261013-0009' }, exec) as { setup: unknown }
+    expect(one.setup).toBeNull()
   })
 
   it('explains an unknown task id', async () => {
@@ -287,13 +308,12 @@ describe('video_status / video_cancel / video_export', () => {
     expect(value.status).toBe('running')
   })
 
+  // The tool is gone (M3.3); the workbench panel still exports until M3.4 removes it.
   it('refuses to export before an artifact exists, and requires an absolute target', async () => {
     const ledger = await makeLedger()
     await ledger.add(openTask('v-20261013-0003'))
-    definitions.clear()
-    registerTools(runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger))
-    const definition = definitions.get('video_export')
-    await expect(definition?.execute({ task_id: 'v-20261013-0003', target_path: '/tmp/x.mp4' }, exec))
+    const runtime = runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger)
+    await expect(exportArtifact(runtime, 'v-20261013-0003', '/tmp/x.mp4'))
       .rejects.toThrowError(/has no artifact to export yet/)
 
     const artifactPath = join(ledger.home, 'in.mp4')
@@ -306,7 +326,7 @@ describe('video_status / video_cancel / video_export', () => {
         token: 'e'.repeat(32), createdAt: new Date().toISOString(),
       }],
     }))
-    await expect(definition?.execute({ task_id: 'v-20261013-0003', target_path: 'relative.mp4' }, exec))
+    await expect(exportArtifact(runtime, 'v-20261013-0003', 'relative.mp4'))
       .rejects.toThrowError(/must be absolute/)
   })
 
@@ -322,13 +342,11 @@ describe('video_status / video_cancel / video_export', () => {
         token: 'd'.repeat(32), createdAt: new Date().toISOString(),
       }],
     })
-    definitions.clear()
-    registerTools(runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger))
-    const definition = definitions.get('video_export')
+    const runtime = runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger)
     const target = join(ledger.home, 'exported.mp4')
-    const value = await definition?.execute({ task_id: 'v-20261013-0004', target_path: target }, exec) as { path: string; bytes: number }
+    const value = await exportArtifact(runtime, 'v-20261013-0004', target)
     expect(value.bytes).toBe(5)
-    await expect(definition?.execute({ task_id: 'v-20261013-0004', target_path: target }, exec))
+    await expect(exportArtifact(runtime, 'v-20261013-0004', target))
       .rejects.toThrowError(/already exists/)
   })
 })

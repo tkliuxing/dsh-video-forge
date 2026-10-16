@@ -12,7 +12,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { VideoArtifact } from './types.ts'
+import type { ArtifactFrame, VideoArtifact } from './types.ts'
 
 /** Extension for a media type we are willing to store. */
 const EXTENSION: Record<string, string> = {
@@ -53,6 +53,19 @@ export interface DownloadOptions {
   /** Media type the provider declared, used when the response omits one. */
   mimeHint?: string | null
   maxBytes?: number
+  /** The video's last frame, when the provider returned one; fetched best-effort beside it. */
+  lastFrameUrl?: string | null | undefined
+}
+
+const FRAME_TIMEOUT_MS = 30_000
+
+/** A last frame is one image; anything near this size is not one. */
+const MAX_FRAME_BYTES = 20 * 1024 * 1024
+
+const FRAME_EXTENSION: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
 }
 
 /** Download one artifact and describe it for the ledger. */
@@ -87,6 +100,10 @@ export async function downloadArtifact(options: DownloadOptions): Promise<VideoA
   // this directory is ours, so the file is always created by this call.
   await writeFile(path, body, { mode: 0o600 })
 
+  const lastFrame = options.lastFrameUrl === undefined || options.lastFrameUrl === null
+    ? null
+    : await downloadFrame(options, options.lastFrameUrl)
+
   return {
     path,
     bytes: body.byteLength,
@@ -96,6 +113,36 @@ export async function downloadArtifact(options: DownloadOptions): Promise<VideoA
     durationSec: null,
     token: randomBytes(16).toString('hex'),
     createdAt: new Date().toISOString(),
+    ...(lastFrame === null ? {} : { lastFrame }),
+  }
+}
+
+/**
+ * The last frame, or null when it cannot be had. Never throws: the video is
+ * the paid artifact, and a missing frame only means `from` cannot continue it.
+ */
+async function downloadFrame(options: DownloadOptions, url: string): Promise<ArtifactFrame | null> {
+  try {
+    const headers: Record<string, string> = {}
+    if (options.apiKey !== null && sameOrigin(url, options.apiOrigin ?? null)) headers.authorization = `Bearer ${options.apiKey}`
+    // Its own short deadline: an optional frame must not hold back recording the paid video.
+    const deadline = AbortSignal.timeout(FRAME_TIMEOUT_MS)
+    const signal = options.signal === undefined ? deadline : AbortSignal.any([options.signal, deadline])
+    const response = await options.fetch(url, { method: 'GET', headers, signal })
+    if (!response.ok) return null
+    const body = new Uint8Array(await response.arrayBuffer())
+    if (body.byteLength === 0 || body.byteLength > MAX_FRAME_BYTES) return null
+    const declared = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? ''
+    // ARK documents a JPEG; trust the bytes over a generic header.
+    const mime = body[0] === 0xff && body[1] === 0xd8 ? 'image/jpeg'
+      : body[0] === 0x89 && body[1] === 0x50 ? 'image/png'
+        : Object.hasOwn(FRAME_EXTENSION, declared) ? declared : null
+    if (mime === null) return null
+    const path = join(options.directory, `${options.localId}.last.${FRAME_EXTENSION[mime] ?? 'jpg'}`)
+    await writeFile(path, body, { mode: 0o600 })
+    return { path, mime, bytes: body.byteLength }
+  } catch {
+    return null
   }
 }
 

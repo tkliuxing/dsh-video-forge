@@ -440,7 +440,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
         // While the claim is held, the row is ours if its status has not moved.
         const owned = (current: VideoTask): boolean => current.status === task.status
         try {
-          const downloaded = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context)
+          const downloaded = await fetchArtifact(runtime, task, state.videoUrl, apiKey, context, state.lastFrameUrl ?? null)
           if (downloaded === null) {
             // Finished and paid, but the bytes did not arrive: stay an orphan so the
             // next pass fetches it again, with whatever fresh URL the provider gives.
@@ -494,6 +494,7 @@ async function fetchArtifact(
   url: string,
   apiKey: string | null,
   context: AdapterContext,
+  lastFrameUrl: string | null,
 ): Promise<VideoTask['artifacts'][number] | null> {
   try {
     return await downloadArtifact({
@@ -505,6 +506,7 @@ async function fetchArtifact(
       fetch: context.fetch,
       signal: undefined,
       mimeHint: 'video/mp4',
+      lastFrameUrl,
     })
   } catch (error: unknown) {
     runtime.logger.warn(`video-forge: could not download ${task.localId}: ${error instanceof Error ? error.message : String(error)}`)

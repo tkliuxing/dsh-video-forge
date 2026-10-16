@@ -76,6 +76,9 @@ export function buildArkBody(request: GenerationRequest, options: ArkSeedanceOpt
     model: request.model,
     content: buildArkContent(request, options.roles),
     watermark: options.watermark,
+    // The last frame comes free with the task (a JPEG at the video's size, no
+    // watermark). It is what `from` continues a shot from (DESIGN §17.4).
+    return_last_frame: true,
   }
   if (request.durationSeconds !== null) body.duration = request.durationSeconds
   if (request.resolution !== null) body.resolution = request.resolution
@@ -102,6 +105,7 @@ export function readArkState(body: unknown): ProviderTaskState {
     // ARK publishes no progress field; claiming one would be invented data.
     progress: null,
     videoUrl,
+    lastFrameUrl: normalized.status === 'succeeded' ? readString(body, 'content.last_frame_url') : null,
     error: normalized.status === 'failed'
       ? taskError('ark-seedance', errorMessage ?? `task reported status "${raw ?? 'unknown'}"`, errorCode)
       : null,
@@ -118,7 +122,18 @@ export function arkVideosAdapter(options: ArkSeedanceOptions): ProtocolAdapter {
 
     async submit(context: AdapterContext, request: GenerationRequest) {
       const body = buildArkBody(request, options)
-      const response = await requestJsonSafe(context, `${trimSlash(context.baseUrl)}/contents/generations/tasks`, body)
+      const url = `${trimSlash(context.baseUrl)}/contents/generations/tasks`
+      let response: unknown
+      try {
+        response = await requestJsonSafe(context, url, body)
+      } catch (error: unknown) {
+        // A model or relay that does not know `return_last_frame` refuses the
+        // request at the door (a 4xx creates nothing and bills nothing). Ask
+        // once more without it: the video matters, the frame is a convenience.
+        if (!refusesLastFrame(error)) throw error
+        const { return_last_frame: _unsupported, ...plain } = body
+        response = await requestJsonSafe(context, url, plain)
+      }
       const id = readString(response, 'id')
       if (id === null || id === '') {
         throw new ProviderRequestError('ark-seedance: the create response carried no task id', {
@@ -193,6 +208,13 @@ export function readArkSummary(item: unknown): ProviderTaskSummary | null {
     model: readString(item, 'model'),
     createdAt: typeof created === 'number' && Number.isFinite(created) ? created * 1000 : null,
   }
+}
+
+/** A 4xx refusal that names the `return_last_frame` parameter. */
+function refusesLastFrame(error: unknown): boolean {
+  // Only a plain bad-request refusal: a 408/409 from a relay may come after it forwarded the request.
+  if (!(error instanceof ProviderRequestError) || (error.status !== 400 && error.status !== 422)) return false
+  return [error.message, error.providerMessage ?? '', error.bodyExcerpt ?? ''].some(text => text.includes('return_last_frame'))
 }
 
 async function requestJsonSafe(context: AdapterContext, url: string, body: unknown): Promise<unknown> {

@@ -13,7 +13,7 @@
  * (see {@link workspaceFsOf}).
  */
 
-import { mkdir, open, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -29,6 +29,8 @@ export interface WorkspaceFs {
   stat(target: WorkspaceTarget, signal?: AbortSignal): Promise<{ type: 'file' | 'directory' | 'other'; size?: number } | undefined>
   readBytes(target: WorkspaceTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
   readByteRange(target: WorkspaceTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array>
+  /** Direct children of a directory, in stable name order. Optional only for test doubles. */
+  listDir?(target: WorkspaceTarget, signal?: AbortSignal): Promise<{ name: string; type: 'file' | 'directory' | 'other' }[]>
   /**
    * The absolute path of a target in the filesystem's execution world.
    * Optional only because the slice is also implemented by test doubles; every
@@ -99,6 +101,12 @@ export const hostWorkspaceFs: WorkspaceFs = {
   },
   async readByteRange(target, range, signal) {
     return readRange(String(target.targetKey), range.offset, range.length, signal)
+  },
+  async listDir(target) {
+    const entries = await readdir(String(target.targetKey), { withFileTypes: true })
+    return entries
+      .map(entry => ({ name: entry.name, type: entry.isFile() ? 'file' as const : entry.isDirectory() ? 'directory' as const : 'other' as const }))
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
   },
   processPath: target => String(target.targetKey),
   processPathFromHostPath: hostPath => (isAbsolute(hostPath) ? resolvePath(hostPath) : undefined),

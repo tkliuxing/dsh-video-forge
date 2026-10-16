@@ -17,7 +17,7 @@ import type { JobId } from '@deepseek-ai/dsh-jobs'
 import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
 import { moderationOf, ProviderRequestError } from './providers/adapter.ts'
-import { adapterFor, cancelSupported, type AdapterContext } from './providers/index.ts'
+import { adapterFor, cancelSupported, returnsLastFrame, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting } from './settings.ts'
 import {
@@ -32,8 +32,9 @@ import {
   type VideoTask,
 } from './types.ts'
 import { describe } from './watch.ts'
+import { compose } from './compose.ts'
 import { describeLocation, planDestination } from './destination.ts'
-import { DEFAULT_SHOT, isShotName, MANIFEST_FILE, readProject, type ProjectState } from './project.ts'
+import { DEFAULT_SHOT, isShotName, MANIFEST_FILE, ManifestError, readProject, type ProjectState } from './project.ts'
 import type { TaskSession } from './session-context.ts'
 import { workspaceFsOf } from './workspace-fs.ts'
 
@@ -59,8 +60,12 @@ export interface GenerateInput {
   durationSeconds?: number | null | undefined
   resolution?: string | undefined
   aspectRatio?: string | undefined
-  /** Shot (directory under `renders/`) the artifact belongs to; defaults to `untitled`. */
+  /** Shot (directory under `renders/`) the artifact belongs to; defaults to the continued take's, else `untitled`. */
   shot?: string | undefined
+  /** Continue an earlier take (task id or video path): its last frame becomes the first frame. */
+  from?: string | undefined
+  /** Characters registered in `video-project.yaml` to keep consistent. */
+  characters?: string[] | undefined
 }
 
 export interface GenerateOutcome {
@@ -97,14 +102,19 @@ export async function generate(
   await runtime.ledger.ready()
 
   const session = options.session ?? null
-  const shot = blankToNull(input.shot) ?? DEFAULT_SHOT
-  if (!isShotName(shot)) throw new ConfigError(`shot "${shot}" must be letters, digits, "-", "_" or "." (it names a folder under renders/)`)
+  const requestedShot = blankToNull(input.shot)
+  if (requestedShot !== null && !isShotName(requestedShot)) {
+    throw new ConfigError(`shot "${requestedShot}" must be letters, digits, "-", "_" or "." (it names a folder under renders/)`)
+  }
 
   // The workspace's manifest, read before anything else is decided: its
   // defaults fill what the request leaves out, and its paths say where the
   // artifact goes. One that does not parse stops the request here, unpaid.
   const project = await readSessionProject(runtime, session, options.signal)
-  const applied = withProjectDefaults(input, project)
+  // `from`, characters and the project style, applied by the tool itself.
+  const composition = await compose(runtime, input, project, session, options.signal)
+  const shot = requestedShot ?? composition.inheritedShot ?? DEFAULT_SHOT
+  const applied = withProjectDefaults(composition.input, project)
   const destination = await planDestination(runtime.ctx, session, project, shot)
 
   let target: ReturnType<typeof resolveTarget>
@@ -118,6 +128,9 @@ export async function generate(
   }
   const { provider, model } = target
   const request = normaliseRequest(applied.input)
+  if (composition.impliedS2v && !supportsMode(model, 's2v')) {
+    throw new ConfigError(`the characters' reference images need mode s2v, which model "${model.id}" does not support; pass mode t2v to send only their descriptions, or choose a model with s2v`)
+  }
   if (!supportsMode(model, request.mode)) {
     throw new ConfigError(`model "${model.id}" does not declare mode ${request.mode}; it supports ${model.modes.join('/')}`)
   }
@@ -148,6 +161,9 @@ export async function generate(
     generateAudio: model.generateAudio ? true : null,
   }
 
+  // The shot is deliberately not part of the fingerprint: the same inputs for
+  // another shot are the same paid generation, and a content-review refusal of
+  // these inputs must not be sidestepped by naming a different folder.
   const fingerprint = fingerprintOf(provider.id, model.id, generation, request.descriptors)
   refuseDuplicate(runtime, fingerprint)
   refuseOverConcurrency(runtime, settings.maxConcurrent)
@@ -177,7 +193,11 @@ export async function generate(
     updatedAt: now.toISOString(),
     paramsFingerprint: fingerprint,
     params: {
-      prompt: request.prompt,
+      prompt: input.prompt,
+      ...(composition.sentPrompt === input.prompt ? {} : { sentPrompt: composition.sentPrompt }),
+      ...(composition.style === null ? {} : { style: composition.style }),
+      ...(composition.characters.length === 0 ? {} : { characters: composition.characters }),
+      ...(composition.from === null ? {} : { from: composition.from }),
       mode: request.mode,
       durationSeconds: request.durationSeconds,
       resolution: request.resolution,
@@ -228,11 +248,14 @@ export async function generate(
     jobId: done ? null : jobId,
     artifact,
     kind: done ? 'done' : 'job',
-    message: done
-      ? `finished ${final.localId}: ${artifact.bytes} bytes at ${describeLocation(artifact)}`
-      : final.status === 'failed' || final.status === 'cancelled'
-        ? describe(final).trim()
-        : `submitted ${final.localId} (${provider.id}/${model.id}); track it with video_status — do not re-submit`,
+    message: [
+      done
+        ? `finished ${final.localId}: ${artifact.bytes} bytes at ${describeLocation(artifact)}`
+        : final.status === 'failed' || final.status === 'cancelled'
+          ? describe(final).trim()
+          : `submitted ${final.localId} (${provider.id}/${model.id})${destination.kind === 'workspace' ? ` for ${destination.renders}/${destination.shot}/` : ''}; track it with video_status — do not re-submit`,
+      ...composition.notes,
+    ].join('; '),
   }
 }
 
@@ -541,6 +564,83 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
       overByteLimit: retention.overByteLimit,
     },
     active: all.filter(task => IN_FLIGHT.has(task.status)).length,
+  }
+}
+
+/** What `video_status` with no task id tells the model about the setup (DESIGN §16.3). */
+export interface SetupStatus {
+  enabled: boolean
+  defaultProvider: string | null
+  defaultModel: string | null
+  providers: {
+    id: string
+    protocol: string
+    /** `set`: a key resolves; `not required`: a loopback provider with none; `missing`: see `keyProblem`. */
+    key: 'set' | 'not required' | 'missing'
+    keyProblem: string | null
+    /** Whether its takes can be continued with `from` (the provider returns the last frame). */
+    continuable: boolean
+    models: ProviderStatus['models']
+  }[]
+  workspace: {
+    /** `none`: no workspace conversation; `unavailable`: the filesystem service is away. */
+    state: 'none' | 'unavailable' | 'default-layout' | 'manifest' | 'invalid-manifest'
+    folder: string | null
+    /** The conversation's permission mode; `read-only` refuses generation before anything is paid. */
+    mode: string | null
+    renders: string | null
+    characters: string[]
+    style: boolean
+    problem: string | null
+  }
+}
+
+/** The setup as the model needs it to act: providers, keys, models, and this workspace. */
+export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSession | null, signal?: AbortSignal): Promise<SetupStatus> {
+  const settings = runtime.settings()
+  const providers = (await describeProviders(runtime)).map(provider => ({
+    id: provider.id,
+    protocol: provider.protocol,
+    key: provider.credential.configured ? (provider.credential.masked === null ? 'not required' as const : 'set' as const) : 'missing' as const,
+    keyProblem: provider.credential.error,
+    continuable: returnsLastFrame(provider.protocol),
+    models: provider.models,
+  }))
+
+  const workspace: SetupStatus['workspace'] = {
+    state: 'none',
+    folder: session?.cwd ?? null,
+    mode: session?.mode ?? null,
+    renders: null,
+    characters: [],
+    style: false,
+    problem: null,
+  }
+  if (session !== null && session.cwd !== null) {
+    const fs = workspaceFsOf(runtime.ctx, true)
+    if (fs === null) {
+      workspace.state = 'unavailable'
+      workspace.problem = 'the host filesystem service is not available'
+    } else {
+      try {
+        const project = await readProject(fs, session.cwd, signal)
+        workspace.state = project.exists ? 'manifest' : 'default-layout'
+        workspace.renders = project.manifest.paths.renders
+        workspace.characters = Object.keys(project.manifest.characters)
+        workspace.style = project.manifest.style !== null
+      } catch (error: unknown) {
+        workspace.state = error instanceof ManifestError && error.kind === 'invalid' ? 'invalid-manifest' : 'unavailable'
+        workspace.problem = error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  return {
+    enabled: settings.enabled,
+    defaultProvider: settings.defaultProvider === '' ? null : settings.defaultProvider,
+    defaultModel: settings.defaultModel === '' ? null : settings.defaultModel,
+    providers,
+    workspace,
   }
 }
 

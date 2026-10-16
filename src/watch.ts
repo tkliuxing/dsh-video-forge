@@ -265,6 +265,7 @@ async function runCore(core: WatchCore, reporter: WatchReporter): Promise<JobOut
           fetch: context.fetch,
           signal,
           mimeHint: 'video/mp4',
+          lastFrameUrl: state.lastFrameUrl,
         })
         const billing = settledBilling(state.usage, state.status)
         const artifact = core.deliver === undefined

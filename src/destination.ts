@@ -36,7 +36,7 @@ import type { Ledger } from './ledger.ts'
 import { initialManifestText, MANIFEST_FILE, type ProjectState } from './project.ts'
 import { SANDBOX_MODES, type SandboxMode, type TaskSession } from './session-context.ts'
 import { ConfigError } from './settings.ts'
-import type { ArtifactDestination, ArtifactLocation, TaskBilling, VideoArtifact, VideoTask } from './types.ts'
+import type { ArtifactDestination, ArtifactFrame, ArtifactLocation, TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { fsErrorCode, workspaceFsOf, type WorkspaceFs } from './workspace-fs.ts'
 import type { WatchLogger } from './watch.ts'
 
@@ -142,10 +142,20 @@ export async function deliverArtifact(
     return keep(`writing into the workspace failed (${message})`)
   }
 
+  // The last frame goes beside its take under the same number, best-effort:
+  // without it the take only cannot be continued with `from`.
+  const lastFrame = artifact.lastFrame === undefined
+    ? undefined
+    : await placeFrame(artifact.lastFrame, placed.path).catch((error: unknown) => {
+        context.logger.warn(`video-forge: could not place the last frame of ${task.localId}: ${messageOf(error)}`)
+        return artifact.lastFrame
+      })
+  const delivered: VideoArtifact = { ...artifact, path: placed.path, ...(lastFrame === undefined ? {} : { lastFrame }) }
+
   const policy = mode === null ? undefined : { mode, workspaceRoot: destination.root, ...(task.session === undefined ? {} : { sessionId: task.session.id }) }
   const sidecarPath = placed.relativePath.replace(/\.[^./]+$/, '.json')
   // Create-only: a sidecar is never written over another take's.
-  const sidecar = await writeText(fs, destination.root, sidecarPath, sidecarText(task, artifact, placed, billing), policy, true)
+  const sidecar = await writeText(fs, destination.root, sidecarPath, sidecarText(task, delivered, placed, billing), policy, true)
     .then(() => sidecarPath)
     .catch((error: unknown) => {
       context.logger.warn(`video-forge: could not write ${sidecarPath} for ${task.localId}: ${messageOf(error)}`)
@@ -168,13 +178,27 @@ export async function deliverArtifact(
     version: placed.version,
     sidecar,
   }
-  return { ...artifact, path: placed.path, location }
+  return { ...delivered, location }
+}
+
+/** Copy a staged last frame beside the published video as `vNNN.last.<ext>`. */
+async function placeFrame(frame: ArtifactFrame, videoPath: string): Promise<ArtifactFrame> {
+  const extension = extname(frame.path) === '' ? '.jpg' : extname(frame.path)
+  const target = join(dirname(videoPath), `${basename(videoPath, extname(videoPath))}.last${extension}`)
+  // Exclusive: the take's number is ours, but never write over anything.
+  await copyFile(frame.path, target, constants.COPYFILE_EXCL)
+  // Placed is placed: a permission tweak that fails must not orphan the copy.
+  await chmod(target, 0o666 & ~process.umask()).catch(() => undefined)
+  return { ...frame, path: target }
 }
 
 /** Remove the downloaded copy once the ledger records a delivery elsewhere. */
 export async function discardStaging(downloaded: VideoArtifact, delivered: VideoArtifact): Promise<void> {
   if (downloaded.path === delivered.path) return
   await unlink(downloaded.path).catch(() => undefined)
+  if (downloaded.lastFrame !== undefined && downloaded.lastFrame.path !== delivered.lastFrame?.path) {
+    await unlink(downloaded.lastFrame.path).catch(() => undefined)
+  }
   await rmdir(dirname(downloaded.path)).catch(() => undefined)
 }
 
@@ -398,6 +422,7 @@ function sidecarText(
     generator: 'dsh-video-forge',
     version: 1,
     file: basename(placed.relativePath),
+    lastFrame: artifact.lastFrame !== undefined && dirname(artifact.lastFrame.path) === dirname(artifact.path) ? basename(artifact.lastFrame.path) : null,
     shot: task.destination?.kind === 'workspace' ? task.destination.shot : null,
     take: placed.version,
     taskId: task.localId,
@@ -405,6 +430,10 @@ function sidecarText(
     model: task.model,
     providerTaskId: task.providerTaskId,
     prompt: task.params.prompt,
+    // What was actually sent, when the project's style or characters were added to it.
+    sentPrompt: task.params.sentPrompt ?? null,
+    style: task.params.style ?? null,
+    characters: task.params.characters ?? [],
     mode: task.params.mode,
     durationSeconds: task.params.durationSeconds,
     resolution: task.params.resolution,
@@ -414,7 +443,7 @@ function sidecarText(
       lastFrame: portable(task.params.lastFrame, root),
       referenceImages: task.params.referenceImages.map(entry => portable(entry, root)),
     },
-    from: null,
+    from: task.params.from ?? null,
     submittedAt: task.submittedAt,
     deliveredAt: new Date().toISOString(),
     bytes: artifact.bytes,

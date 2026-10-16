@@ -65,3 +65,12 @@ export function cancelSupported(provider: ProviderSetting, model: ModelSetting, 
 
 export { arkVideosAdapter, minimaxVideoAdapter, openAiVideosAdapter }
 export type { AdapterContext, ProtocolAdapter } from './adapter.ts'
+
+/**
+ * Whether a protocol hands back the video's last frame, which `from` needs.
+ * Only ARK does (`return_last_frame`); MiniMax and the OpenAI-shaped relays do
+ * not, and without a local ffmpeg (undecided, DESIGN §16.8) nothing else can.
+ */
+export function returnsLastFrame(protocol: string): boolean {
+  return protocol === 'ark-seedance'
+}

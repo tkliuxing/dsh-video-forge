@@ -1,9 +1,9 @@
 /**
- * The four model-facing tools.
+ * The three model-facing tools: generate, status, cancel.
  *
  * These are adapters: the schema, the model-facing prose and the card metadata
  * live here, while every side effect — validate, de-duplicate, submit, watch,
- * cancel, export — belongs to `operations.ts`, shared with the workbench panel.
+ * cancel — belongs to `operations.ts`, shared with the workbench panel.
  * Two implementations of a paid side effect drift, and the one that drifts is
  * always the quieter one.
  *
@@ -22,7 +22,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { cancelTask, exportArtifact, generate, listTasks } from './operations.ts'
+import { cancelTask, describeSetup, generate, listTasks, type SetupStatus } from './operations.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
@@ -71,6 +71,112 @@ const TASK_SCHEMA = {
   },
 } as const
 
+const STRINGS = { type: 'array', required: true, items: { type: 'string' } } as const
+const NULLABLE_STRING = { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] } as const
+
+/** `video_status` with no task id: what the model needs to know before generating. */
+const SETUP_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    enabled: { type: 'boolean', required: true },
+    default_provider: NULLABLE_STRING,
+    default_model: NULLABLE_STRING,
+    providers: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          protocol: { type: 'string', required: true },
+          key: { type: 'string', required: true, enum: ['set', 'not required', 'missing'] },
+          key_problem: NULLABLE_STRING,
+          continuable: { type: 'boolean', required: true },
+          models: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                label: { type: 'string', required: true },
+                modes: STRINGS,
+                durations: { type: 'array', required: true, items: { type: 'number' } },
+                resolutions: STRINGS,
+                aspect_ratios: STRINGS,
+                cancelable: { type: 'boolean', required: true },
+              },
+            },
+          },
+        },
+      },
+    },
+    workspace: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      properties: {
+        state: { type: 'string', required: true, enum: ['none', 'unavailable', 'default-layout', 'manifest', 'invalid-manifest'] },
+        folder: NULLABLE_STRING,
+        mode: NULLABLE_STRING,
+        renders: NULLABLE_STRING,
+        characters: STRINGS,
+        style: { type: 'boolean', required: true },
+        problem: NULLABLE_STRING,
+      },
+    },
+  },
+} as const
+
+/** The setup in the tool's snake_case vocabulary. */
+function setupValue(setup: SetupStatus) {
+  return {
+    enabled: setup.enabled,
+    default_provider: setup.defaultProvider,
+    default_model: setup.defaultModel,
+    providers: setup.providers.map(provider => ({
+      id: provider.id,
+      protocol: provider.protocol,
+      key: provider.key,
+      key_problem: provider.keyProblem,
+      continuable: provider.continuable,
+      models: provider.models.map(model => ({
+        id: model.id,
+        label: model.label,
+        modes: [...model.modes],
+        durations: [...model.durations],
+        resolutions: [...model.resolutions],
+        aspect_ratios: [...model.aspectRatios],
+        cancelable: model.cancelable,
+      })),
+    })),
+    workspace: { ...setup.workspace, characters: [...setup.workspace.characters] },
+  }
+}
+
+/** The setup as a few lines of text. */
+function setupText(setup: ReturnType<typeof setupValue>): string {
+  const lines = [setup.enabled ? 'video-forge is enabled' : 'video-forge is DISABLED in its settings']
+  if (setup.providers.length === 0) lines.push('no provider is configured: the user adds one under Plugins → Video Forge')
+  for (const provider of setup.providers) {
+    const key = provider.key === 'missing' ? `key missing (${provider.key_problem ?? 'not set'})` : `key ${provider.key}`
+    const marker = provider.id === setup.default_provider ? ' (default)' : ''
+    lines.push(`provider ${provider.id}${marker} [${provider.protocol}], ${key}${provider.continuable ? ', takes can be continued with from' : ''}: ${provider.models.map(model => `${model.id} (${model.modes.join('/')})`).join(', ')}`)
+  }
+  const workspace = setup.workspace
+  if (workspace.state === 'none') lines.push('no workspace: videos stay in the plugin\'s own folder')
+  else if (workspace.state === 'unavailable' || workspace.state === 'invalid-manifest') lines.push(`workspace ${workspace.folder ?? ''}: ${workspace.problem ?? workspace.state}`)
+  else {
+    lines.push(`workspace ${workspace.folder ?? ''} (${workspace.mode ?? 'unfenced'}): ${workspace.state === 'manifest' ? 'video-project.yaml' : 'no video-project.yaml yet (default layout)'}, renders in ${workspace.renders ?? 'renders'}/`
+      + `${workspace.characters.length > 0 ? `, characters ${workspace.characters.join(', ')}` : ''}${workspace.style ? ', project style set' : ''}`)
+    if (workspace.mode === 'read-only') lines.push('this conversation is read-only: generating is refused until the user allows writing')
+  }
+  return lines.join('\n')
+}
+
 /** Usage as one short phrase for the text rendering; never a price. */
 function usageText(billing: { state: string; tokens: number | null; output_seconds: number | null } | null): string {
   if (billing === null) return ''
@@ -91,7 +197,9 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'Generate a video with an online model provider.',
       'Returns immediately with a task id and a background job id; the generation continues while you work, and its completion is delivered to you as a notice. Use video_status to check on it.',
       'Inputs: prompt (required), optional provider/model, mode t2v (text only), i2v (first_frame), flf2v (first_frame + last_frame) or s2v (reference_images).',
-      'A local image must be an absolute workspace path that already exists; verify it with the read tool first.',
+      'A local image is a path relative to the workspace (or absolute) that already exists; verify it with the read tool first.',
+      'shot names the take\'s folder under renders/. from continues an earlier take (its task id or video path): its last frame becomes the first frame and its shot carries over — only providers that return a last frame (ARK) can be continued.',
+      'characters names characters registered in video-project.yaml: their descriptions are added to the prompt and their reference images are sent (mode s2v when you set no mode). The project style from video-project.yaml is added to every prompt.',
       'Never re-submit the same prompt to work around a timeout: call video_status instead. A duplicate submission inside the dedupe window is refused.',
       'The finished video is saved into the workspace as renders/<shot>/vNNN.mp4 (folders per video-project.yaml, whose defaults also fill omitted parameters), with a vNNN.json description beside it. A read-only conversation or a remote workspace is refused before anything is paid for.',
     ].join(' '),
@@ -100,12 +208,15 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       provider: { type: 'string', description: 'Provider id, or `providerId::modelId`. Defaults to the configured default provider.' },
       model: { type: 'string', description: 'Model id at that provider. Defaults to the provider\'s first declared model.' },
       mode: { type: 'string', enum: ['t2v', 'i2v', 'flf2v', 's2v'], description: 'Input shape. Defaults to t2v.' },
-      first_frame: { type: 'string', description: 'Absolute image path or http(s) URL used as the first frame.' },
-      last_frame: { type: 'string', description: 'Absolute image path or http(s) URL used as the last frame (flf2v only).' },
+      first_frame: { type: 'string', description: 'Image path (workspace-relative or absolute) or http(s) URL used as the first frame.' },
+      last_frame: { type: 'string', description: 'Image path (workspace-relative or absolute) or http(s) URL used as the last frame (flf2v only).' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Subject/style reference images (s2v only).' },
       duration_seconds: { type: 'number', description: 'Requested length; the model\'s declared durations decide what is valid.' },
       resolution: { type: 'string', description: 'e.g. 720p, 1080p.' },
       aspect_ratio: { type: 'string', description: 'e.g. 16:9, 9:16, 1:1.' },
+      shot: { type: 'string', description: 'Folder under renders/ for this take, e.g. opening or shot-03 (letters, digits, - _ .). Defaults to the continued take\'s shot, else untitled.' },
+      from: { type: 'string', description: 'Continue an earlier take: its task id (v-…) or its video path (renders/<shot>/vNNN.mp4). Its last frame becomes this take\'s first frame.' },
+      characters: { type: 'array', items: { type: 'string' }, description: 'Names of characters registered under characters: in video-project.yaml.' },
       wait_seconds: { type: 'number', description: 'Optionally block up to this many seconds for a finished artifact before returning the job handle. 0 (default) returns at once.' },
     },
     output: {
@@ -152,6 +263,9 @@ export function registerTools(runtime: VideoForgeRuntime): void {
         durationSeconds: args.duration_seconds ?? null,
         resolution: args.resolution,
         aspectRatio: args.aspect_ratio,
+        shot: args.shot,
+        from: args.from,
+        characters: args.characters,
       }, {
         owner: exec.agent?.id,
         session: sessionContextOf(runtime.ctx, exec.agent),
@@ -184,7 +298,8 @@ export function registerTools(runtime: VideoForgeRuntime): void {
   ctx.tools.register(defineTool({
     name: 'video_status',
     description: [
-      'List recent video generations with their provider, status, progress, error and (once finished) the artifact path and play URL.',
+      'List recent video generations with their provider, status, progress, error and (once finished) where the video is and its play URL.',
+      'Without task_id it also reports the setup (setup): configured providers and whether their keys are set, their models and modes, and this workspace (manifest, renders folder, characters, permission mode) — check it before a first generation or when one is refused.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
       'moderation is set when the provider\'s content review refused the task (input or output side): the identical request is refused again, so rewrite the prompt or change the materials rather than retrying.',
       'billing is what the provider reported a finished task consumed (tokens for ARK, output seconds for MiniMax, every raw field under fields) — usage, not money; null until settled, "unknown" when the provider\'s seven-day query window closed first.',
@@ -201,6 +316,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
         additionalProperties: false,
         properties: {
           tasks: { type: 'array', required: true, items: TASK_SCHEMA },
+          setup: { required: true, oneOf: [{ type: 'null' }, SETUP_SCHEMA] },
           usage: {
             type: 'object',
             required: true,
@@ -216,7 +332,9 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       },
       render: (_args, value) => [{
         type: 'text',
-        text: value.tasks.length === 0
+        text: [
+          ...(value.setup === null ? [] : [setupText(value.setup)]),
+          value.tasks.length === 0
           ? 'no video tasks yet'
           : value.tasks.map(row => [
             `${row.task_id} ${row.status}${row.progress === null ? '' : ` ${Math.round(row.progress * 100)}%`}`,
@@ -227,6 +345,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
             row.moderation === null ? '' : `refused by the provider's content review (${row.moderation})`,
             row.error ?? '',
           ].filter(part => part !== '').join(' · ')).join('\n'),
+        ].join('\n\n'),
       }],
       presentationMeta: (_args, value) => ({ tasks: value.tasks }),
     },
@@ -234,9 +353,12 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     presentCall: () => ({ card: 'generic', title: 'Video task status' }),
     presentResult: () => ({ card: 'generic', title: 'Video tasks' }),
 
-    async execute(args) {
+    async execute(args, exec) {
       const list = listTasks(runtime, { taskId: args.task_id, limit: args.limit ?? 10 })
+      const single = args.task_id !== undefined && args.task_id !== ''
+      const setup = single ? null : setupValue(await describeSetup(runtime, sessionContextOf(runtime.ctx, exec.agent), exec.signal))
       return {
+        setup,
         tasks: list.tasks.map(row => ({
           task_id: row.taskId,
           provider: row.provider,
@@ -300,42 +422,6 @@ export function registerTools(runtime: VideoForgeRuntime): void {
         status: outcome.status,
         message: outcome.message,
       }
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'video_export',
-    description: [
-      'Copy a finished artifact to another path. Only needed for a video that video_status reports as kept outside the workspace; one already in renders/ needs no export.',
-      'Requires an absolute target path; refuses to overwrite an existing file unless overwrite is true.',
-      'The artifact stays where it is: nothing is moved or deleted.',
-    ].join(' '),
-    parameters: {
-      task_id: { type: 'string', required: true, description: 'The task whose artifact should be exported.' },
-      target_path: { type: 'string', required: true, description: 'Absolute destination path, e.g. /home/me/project/out/clip.mp4' },
-      overwrite: { type: 'boolean', description: 'Replace an existing file. Defaults to false.' },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          task_id: { type: 'string', required: true },
-          path: { type: 'string', required: true },
-          bytes: { type: 'number', required: true },
-        },
-      },
-      render: (_args, value) => [{ type: 'text', text: `exported ${value.bytes} bytes to ${value.path}` }],
-      presentationMeta: (_args, value) => ({ taskId: value.task_id, path: value.path, bytes: value.bytes }),
-    },
-    isConcurrencySafe: () => false,
-    timeoutMs: 120_000,
-    presentCall: args => ({ card: 'generic', title: `Export ${args.task_id}`, locations: [{ path: args.target_path }] }),
-    presentResult: (_args, result) => (result.isError ? undefined : { card: 'generic', title: 'Video exported' }),
-
-    async execute(args) {
-      const outcome = await exportArtifact(runtime, args.task_id, args.target_path, args.overwrite === true)
-      return { task_id: outcome.taskId, path: outcome.path, bytes: outcome.bytes }
     },
   }))
 }

@@ -49,6 +49,8 @@ export interface FixtureOptions {
   rejectSubmitCode?: string
   /** With `failAfterPolls`: fail the task with this provider error code (e.g. an output review refusal). */
   failCode?: string
+  /** ARK: refuse a create body carrying `return_last_frame`, as a model that does not know it would. */
+  rejectLastFrame?: boolean
 }
 
 /** One task the fixture created, as its ARK task list reports it. */
@@ -79,6 +81,10 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
   const pollsBeforeDone = options.pollsBeforeDone ?? 1
   const artifact = Buffer.alloc(options.artifactBytes ?? 2048, 7)
   const polls = new Map<string, number>()
+  /** ARK tasks created with `return_last_frame: true`. */
+  const wantsLastFrame = new Set<string>()
+  /** A JPEG's signature, enough for the plugin to recognise it by its bytes. */
+  const lastFrame = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9])
   const requests: FixtureRequest[] = []
   const created: FixtureTask[] = []
   let counter = 0
@@ -115,6 +121,12 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
       return
     }
 
+    if (req.method === 'GET' && path.startsWith('/frame/')) {
+      res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': String(lastFrame.byteLength) })
+      res.end(lastFrame)
+      return
+    }
+
     if (req.method === 'POST' && options.rejectSubmitStatus !== undefined) {
       res.writeHead(options.rejectSubmitStatus, { 'content-type': 'application/json' })
       // Each vendor's own refusal shape, as recorded.
@@ -137,9 +149,15 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
 
   async function handleArk(req: IncomingMessage, res: ServerResponse, path: string, body: string): Promise<void> {
     if (req.method === 'POST' && path.endsWith('/contents/generations/tasks')) {
+      if (options.rejectLastFrame === true && 'return_last_frame' in (JSON.parse(body === '' ? '{}' : body) as object)) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'InvalidParameter', message: 'The parameter `return_last_frame` specified in the request is not valid for this model.', param: 'return_last_frame', type: 'BadRequest' } }))
+        return
+      }
       counter += 1
       const id = `cgt-fixture-${counter}`
       polls.set(id, 0)
+      if ((JSON.parse(body === '' ? '{}' : body) as { return_last_frame?: unknown }).return_last_frame === true) wantsLastFrame.add(id)
       created.push({ id, model: modelOf(body), createdAt: Math.floor(Date.now() / 1000) })
       await answerSubmit(res, { id })
       return
@@ -195,7 +213,10 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
         res.end(JSON.stringify({
           ...common,
           status: 'succeeded',
-          content: { video_url: `${baseUrl()}/artifact/${id}.mp4` },
+          content: {
+            video_url: `${baseUrl()}/artifact/${id}.mp4`,
+            ...(wantsLastFrame.has(id) ? { last_frame_url: `${baseUrl()}/frame/${id}.jpeg` } : {}),
+          },
           // 4 s of 480p 16:9: 864 × 496 × 97 frames / 1024, as billed for real.
           usage: { completion_tokens: 40594, total_tokens: 40594 },
           seed: 47035,

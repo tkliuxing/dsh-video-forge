@@ -112,6 +112,8 @@ export interface ProviderTaskState {
   progress: number | null
   /** Downloadable artifact URL, present only once the provider reports success. */
   videoUrl: string | null
+  /** The video's last frame as an image, where the protocol returns one (ARK `return_last_frame`). */
+  lastFrameUrl?: string | null
   error: VideoTaskError | null
   /** Whether the provider's own status vocabulary said the task is finished for good. */
   terminal: boolean
@@ -177,6 +179,14 @@ export type ArtifactLocation =
       reason: string | null
     }
 
+/** An image of the video's last frame (DESIGN §17.4: what `from` continues from). */
+export interface ArtifactFrame {
+  /** Absolute path on this machine, beside the video. */
+  path: string
+  mime: string
+  bytes: number
+}
+
 /** A produced artifact: in the workspace, or in `$DSH_HOME` (see `location`). */
 export interface VideoArtifact {
   /** Absolute path on this machine; for a workspace artifact, the real path at write time. */
@@ -189,6 +199,8 @@ export interface VideoArtifact {
   /** 128-bit random hex, the only thing that authorizes media access besides the task id. */
   token: string
   createdAt: string
+  /** The video's last frame, kept beside it; absent where the protocol returns none. */
+  lastFrame?: ArtifactFrame
   /** Absent on rows written before M3.2; those are in `$DSH_HOME`. */
   location?: ArtifactLocation
 }
@@ -204,6 +216,14 @@ export interface VideoTaskParams {
   firstFrame: string | null
   lastFrame: string | null
   referenceImages: string[]
+  /** The prompt as sent, when the project's style or characters were added to `prompt`. */
+  sentPrompt?: string
+  /** The project style applied (from `video-project.yaml`). */
+  style?: string
+  /** Registered characters applied, by name. */
+  characters?: string[]
+  /** The task this one continues from (`from`): its last frame is this one's first. */
+  from?: string
 }
 
 /** Which side of a generation a provider's content review refused. */
