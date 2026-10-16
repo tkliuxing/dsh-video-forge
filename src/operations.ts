@@ -446,6 +446,8 @@ export async function cancelTask(
     await runtime.ledger.update(task.localId, current => ({
       ...current,
       status: 'cancelled',
+      // The caller asked for this and holds the answer: no notice on top.
+      quiet: true,
       updatedAt: new Date().toISOString(),
     }))
   }

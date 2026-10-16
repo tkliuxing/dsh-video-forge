@@ -348,10 +348,25 @@ function normaliseStatus(task: VideoTask): VideoTask {
   if (status === 'succeeded' && task.artifacts.length > 0 && artifacts.length === 0) {
     status = 'orphaned'
   }
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk && destinationOk && artifactsOk) return task
-  const { session: _stored, ...withoutSession } = task
+  // Notice bookkeeping a newer or hand-edited row spells differently is dropped
+  // field by field: a dropped `notifiedAt` at worst repeats one notice.
+  const noticeOk = optionalOf(task.takenOverAt, isTimestamp) && optionalOf(task.notifiedAt, isTimestamp)
+    && optionalOf(task.quiet, value => typeof value === 'boolean')
+    && optionalOf(task.noticeAttempts, value => typeof value === 'number' && Number.isInteger(value) && value >= 0)
+    && optionalOf(task.noticeAbandoned, value => typeof value === 'string')
+    && optionalOf(task.noticeError, value => typeof value === 'string')
+    && optionalOf(task.noticeLastAttemptAt, isTimestamp)
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk && destinationOk && artifactsOk && noticeOk) return task
+  const { session: _stored, takenOverAt, notifiedAt, quiet, noticeAttempts, noticeAbandoned, noticeError, noticeLastAttemptAt, ...withoutSession } = task
   return {
     ...withoutSession,
+    ...(optionalOf(takenOverAt, isTimestamp) && takenOverAt !== undefined ? { takenOverAt } : {}),
+    ...(optionalOf(notifiedAt, isTimestamp) && notifiedAt !== undefined ? { notifiedAt } : {}),
+    ...(typeof quiet === 'boolean' ? { quiet } : {}),
+    ...(typeof noticeAttempts === 'number' && Number.isInteger(noticeAttempts) && noticeAttempts >= 0 ? { noticeAttempts } : {}),
+    ...(typeof noticeAbandoned === 'string' ? { noticeAbandoned } : {}),
+    ...(typeof noticeError === 'string' ? { noticeError } : {}),
+    ...(optionalOf(noticeLastAttemptAt, isTimestamp) && noticeLastAttemptAt !== undefined ? { noticeLastAttemptAt } : {}),
     status,
     providerTaskId,
     error: status === 'orphaned' && task.status === 'succeeded' && artifacts.length === 0
@@ -401,6 +416,14 @@ function isLocation(value: unknown): value is ArtifactLocation {
     && nonEmpty(location.root) && nonEmpty(location.relativePath) && nonEmpty(location.shot)
     && typeof location.version === 'number' && Number.isInteger(location.version) && location.version > 0
     && (location.sidecar === null || nonEmpty(location.sidecar))
+}
+
+function optionalOf(value: unknown, check: (value: unknown) => boolean): boolean {
+  return value === undefined || check(value)
+}
+
+function isTimestamp(value: unknown): boolean {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
 function nonEmpty(value: unknown): value is string {

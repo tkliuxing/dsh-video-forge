@@ -30,6 +30,7 @@ import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
 import { resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
 import { UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
+import { deliverNotices } from './notify.ts'
 import { startInProcessWatch } from './watch.ts'
 
 /** Clock skew tolerated between our submission time and the provider's `created_at`. */
@@ -391,6 +392,8 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             ...current,
             status: state.status === 'queued' ? 'queued' : 'running',
             error: null,
+            // No job watches it now, so nothing else will tell its session it finished.
+            takenOverAt: current.takenOverAt ?? new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
         })
@@ -408,6 +411,8 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             onExit: () => {
               runtime.watching.delete(fresh.localId)
               runtime.cancels.delete(fresh.localId)
+              // The row is settled (or let go) by now; tell its session if it is owed.
+              void deliverNotices(runtime)
             },
           })
           // An accepted video_cancel stops this watch too, as it does a tool's.
@@ -458,6 +463,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
                 artifacts: [artifact],
                 error: null,
                 billing: settledBilling(state.usage, state.status),
+                takenOverAt: current.takenOverAt ?? new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               }
             : current))
@@ -475,6 +481,7 @@ async function reattach(runtime: VideoForgeRuntime, tasks: readonly VideoTask[])
             status: state.status === 'cancelled' ? 'cancelled' : 'failed',
             error: state.error ?? { message: `the provider reported status "${state.status}" while reconciling`, code: null },
             billing: settledBilling(state.usage, state.status),
+            takenOverAt: current.takenOverAt ?? new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
         : current))

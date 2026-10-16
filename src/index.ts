@@ -18,10 +18,11 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { Config, snapshot, type Config as VideoForgeConfig } from './config.ts'
 import { deliverArtifact } from './destination.ts'
 import { LedgerCorruptError, sharedLedger } from './ledger.ts'
+import { deliverNotices, quietOnKill, setNoticeHost, type NoticeHost } from './notify.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
-import { artifactUrl, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
+import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { registerTools } from './tools.ts'
@@ -54,6 +55,9 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     maxTasks: config.maxTasks.get(),
     maxGiB: config.maxGiB.get(),
   })
+
+  /** The job watching each task, while it lives; only a kill through the registry is told apart by it. */
+  const jobTasks = jobTableFor(ledger.path)
 
   const runtime: VideoForgeRuntime = {
     ctx,
@@ -117,7 +121,10 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
             return () => runtime.cancels.delete(localId)
           },
         })
-        if (jobId !== null) return jobId
+        if (jobId !== null) {
+          jobTasks.set(jobId, input.task.localId)
+          return jobId
+        }
       } else if (jobs === undefined) {
         logger.warn('video-forge: the jobs service is not loaded; tasks are watched in-process and reported through video_status')
       }
@@ -153,6 +160,31 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
 
   registerTools(runtime)
 
+  // Notices travel through the session controller, which may come up after
+  // boot reconciliation has already settled a task: wait for it, then deliver
+  // whatever is owed.
+  ctx.inject(['sessionController', 'agents', 'sessions'], (scope) => {
+    const host = {
+      sessionController: scope.get('sessionController'),
+      agents: scope.get('agents'),
+      sessions: scope.get('sessions'),
+    } as unknown as NoticeHost
+    setNoticeHost(runtime, host)
+    scope.effect(() => () => { setNoticeHost(runtime, undefined) }, 'video-forge: notice services')
+    void deliverNotices(runtime)
+  })
+
+  // A watch that was killed — the model's `job_kill`, the user stopping it, the
+  // session being archived — was let go on purpose: the provider keeps working
+  // and the orphan retry still fetches what was paid for, but its session is not
+  // told (see `quietOnKill`). A teardown (a restart) is not a choice, and is
+  // announced when the task is taken over and finishes.
+  ctx.inject(['jobs'], (scope) => {
+    const jobs = scope.get('jobs')
+    if (jobs === undefined) return
+    scope.effect(() => jobs.events.subscribe({ owners: 'all' }, quietOnKill(ledger, jobTasks, logger)), 'video-forge: watches stopped with job_kill')
+  })
+
   // A live config edit reaches us here. Nothing needs re-registering: the tools
   // and the route read `runtime.settings()` per operation, so the only work is
   // to tell the operator what changed.
@@ -183,6 +215,8 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     ctx,
     async () => {
       await reconcile(runtime, await inherited)
+      // Not awaited: resuming sessions must never hold back the orphan retry.
+      void deliverNotices(runtime)
       // Settling usage can take a while on the first boot after an upgrade; it
       // must not hold the orphan timer back, so it runs on its own.
       void settleBilling(runtime).catch((error: unknown) => {
@@ -192,6 +226,8 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     async () => {
       await retryOrphans(runtime)
       await settleBilling(runtime)
+      // Also the retry for notices a session could not take last time.
+      await deliverNotices(runtime)
     },
     (error: unknown) => {
       logger.error(`video-forge: reconciliation failed: ${error instanceof Error ? error.message : String(error)}`)

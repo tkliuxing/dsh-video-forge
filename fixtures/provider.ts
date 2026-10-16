@@ -51,6 +51,8 @@ export interface FixtureOptions {
   failCode?: string
   /** ARK: refuse a create body carrying `return_last_frame`, as a model that does not know it would. */
   rejectLastFrame?: boolean
+  /** Listen on this port instead of a free one (an isolated instance configured with a fixed provider address). */
+  port?: number
 }
 
 /** One task the fixture created, as its ARK task list reports it. */
@@ -363,7 +365,7 @@ export async function startFixture(options: FixtureOptions): Promise<Fixture> {
     return `http://127.0.0.1:${address.port}`
   }
 
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>(resolve => server.listen(options.port ?? 0, '127.0.0.1', resolve))
   return {
     url: baseUrl(),
     requests,

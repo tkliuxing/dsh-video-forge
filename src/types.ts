@@ -267,6 +267,23 @@ export interface VideoTask {
   /** Where the artifact is to be delivered; absent on rows written before M3.2 (`$DSH_HOME`). */
   destination?: ArtifactDestination
   /**
+   * When boot reconciliation or the orphan retry took the task over (no job
+   * watches it, so nothing else will tell its session it finished).
+   */
+  takenOverAt?: string
+  /** When its session was told it finished (DESIGN §17.2); set once, after a flushed delivery. */
+  notifiedAt?: string
+  /** Let go on purpose (a killed watch, an accepted cancel): it is never announced. */
+  quiet?: boolean
+  /** Failed notice deliveries so far. */
+  noticeAttempts?: number
+  /** Why the last delivery failed (cleared once one succeeds). */
+  noticeError?: string
+  /** When the last failed delivery was tried; attempts are paced by it. */
+  noticeLastAttemptAt?: string
+  /** Why a notice was given up on. */
+  noticeAbandoned?: string
+  /**
    * Settled provider usage. Absent (or null) until the task has finished and the
    * provider has been asked; rows written before usage was recorded read the same.
    */

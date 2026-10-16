@@ -80,3 +80,20 @@ export function watchTableFor(ledgerPath: string): Set<string> {
 }
 
 const WATCH_TABLES = new Map<string, Set<string>>()
+
+/**
+ * The live watch jobs for one ledger file (job id → task), shared like the
+ * watch table: a re-applied instance must still recognise a kill of a watch
+ * the previous instance started.
+ */
+export function jobTableFor(ledgerPath: string): Map<string, string> {
+  const key = resolvePath(ledgerPath)
+  let table = JOB_TABLES.get(key)
+  if (table === undefined) {
+    table = new Map()
+    JOB_TABLES.set(key, table)
+  }
+  return table
+}
+
+const JOB_TABLES = new Map<string, Map<string, string>>()

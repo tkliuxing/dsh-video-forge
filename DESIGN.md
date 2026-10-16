@@ -738,7 +738,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 | 会话权限档位 | 三档 `read-only` / `workspace-write` / `danger-full-access`，按会话记在会话日志里，**会话中途可以变**。插件**不会被自动约束**：没有"我会写文件"的声明字段，`package.json` 的 `capabilities` 宿主根本不读；内置工具都是自己调 `ctx.sandboxPolicy.resolve({ session })` 再交给 `ctx.fs` 执行。插件代码在进程内运行，不受沙箱约束，所以要自己判断 | `packages/sandbox/sandbox/src/index.ts:30`；`packages/sandbox/sandbox-policy/src/index.ts:164-171`；`packages/fs/tool-fs/src/write.ts:111-118` |
 | 拖进对话的文件 | **不会落到工作区**，存在 `$DSH_HOME/attachments/v1`。图片存为**没有扩展名**的规范化副本（最多约 4.2 百万像素、会重新编码、GIF 只留第一帧），模型看到 `Normalized copy … "<路径>"`；其他文件（视频、音频…）保留原名，模型看到 `verbatim read-only copy saved at "<路径>"`。桌面版拖入非图片文件时插入的是 `@原始路径`。插件可以注入 `ctx.attachments`：拿会话历史里的完整引用调 `readImage` / `readFileStream` 读字节，但光凭 id 不行 | `packages/llm/llm/src/content.ts:66,157`；`packages/attachment/attachment-local/src/store.ts:51-54`；`packages/attachment/attachment/src/index.ts:53-263` |
 | 聊天卡片实时刷新 | 卡片收到的数据在结果出来后就**冻结**，不会自己更新。合规做法：客户端用 `@deepseek-ai/dsh-client-store` 的 `createSnapshotStore` 自己维护数据，通过注册时的 `inject.keyedHooks` 按任务 id 交给卡片，卡片 `useEffect` 里调用注入的 `watch` / `cancel` 回调（`ui-jobs`、`ui-deliverables` 都是这个模式）。历史卡片每次加载页面都会重新挂载，**只对未结束的任务轮询** | `packages/client/ui-tool/src/client/contract/slots.ts:26-31`；`packages/client/ui-slots/src/index.ts:506-591`；`packages/client/web/src/platform.ts:8-14` |
-| 重启后通知模型 | job 盯守结束时，`tool-jobs` 会自动通知所属会话并唤醒它。进程内盯守没有这个机制，要用 `ctx.sessionController.resolveAgent(sessionId)` 拿到（或恢复）会话的 agent，在 `ctx.agents.withoutInitiator` 里调 `agent.followup(消息)` 唤醒，再 `ctx.sessions.flush`。`dsh-schedule` 就是这么做的。`inject()` 不会唤醒，不能用。job id 重启后会被复用，不能当持久标识 | `packages/schedule/schedule/src/runtime.ts:51,101-125`；`packages/api/session-controller/src/index.ts:219`；`packages/jobs/tool-jobs/src/index.ts:262-308` |
+| 重启后通知模型 | job 盯守结束时，`tool-jobs` 会自动通知所属会话并唤醒它。进程内盯守没有这个机制，要用 `ctx.sessionController.resolveAgent(sessionId)` 拿到（或恢复）会话的 agent，在 `ctx.agents.withoutInitiator` 里调 `agent.followup(消息)` 唤醒，再 `ctx.sessions.flush`。`dsh-schedule` 就是这么做的。`inject()` 不会唤醒空闲的 agent，所以不能用来唤醒；但对正忙的 agent，它会进入下一步要读的收件箱，M3.5 就是这么用的。job id 重启后会被复用，不能当持久标识 | `packages/schedule/schedule/src/runtime.ts:51,101-125`；`packages/api/session-controller/src/index.ts:219`；`packages/jobs/tool-jobs/src/index.ts:262-308` |
 
 ### 17.2 据此定下的做法
 
@@ -768,7 +768,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 | **M3.2 项目与产物**（**已完成**，见 17.7） | 解析清单（目录映射、默认参数、风格、角色）；产物落点规划（工作区或 `$DSH_HOME`，附原因）；`renders/<shot>/vNNN` 版本号不撞号地分配（实现为 `link(2)` 发布，见 17.7）；视频写入与包含检查；说明文件经 `ctx.fs.writeText` 写；媒体路由能播工作区文件（真实路径检查、文件被移走时给明确状态） | fixture 端到端：工作区、只读回退、符号链接逃逸被拒、版本号并发 |
 | **M3.3 工具收敛**（**已完成**，见 17.8） | `video_generate` 加 `shot` / `from` / `characters`，素材用工作区相对路径；`video_status` 无参数时给出配置与可用模型状态；删除 `video_export`；`from` 走方舟 `return_last_frame` 取尾帧（MiniMax 不支持就明确拒绝） | 单测 + 在线测试 `paid` 档加一条带 `return_last_frame` 的方舟任务 |
 | **M3.4 卡片与界面**（**已完成**，见 17.9） | 删除工作台页（`main` + `sidebar.panellist`）和面板的 `generate` / `export`；卡片显示实时进度、播放、取消；`overview` 支持按任务过滤 | jsdom 单测 + 隔离实例里用真浏览器看一遍卡片 |
-| **M3.5 重启通知** | `resolveAgent` + `followup`，台账 `notifiedAt`，声明消息来源类型 | 单测（假 agent）+ 隔离实例重启实测 |
+| **M3.5 重启通知**（**已完成**，见 17.10） | `resolveAgent` + `followup`，台账 `notifiedAt`，声明消息来源类型 | 单测（假 agent）+ 隔离实例重启实测 |
 | **M3.6 收尾** | 独立审查、回写 §4/§5/§9、更新 README | — |
 
 ### 17.4 默认做法（未单独询问）
@@ -940,4 +940,48 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
   - **暂不处理**：
     - 角标仍然轮询完整的 overview。
     - 打开很长的对话时，每张卡片同时发一次请求，没做批量合并。HTTP/1.1 下可能短暂占满连接，实际出现问题再做 `taskIds=a,b,c` 批量查询。
+
+### 17.10 M3.5 实施记录（2026-10-16）
+
+测试 311 → 326 例（新增 `test/notify.test.ts`，用假 agent 驱动，供应商为 fixture）；独立审查记录见文末。
+
+- **哪些任务通知**：被开机对账或孤儿重试接管（台账记 `takenOverAt`），并最终结束（成功、失败、已取消）的任务；同时要求任务记录了提交时的会话、还没通知过（`notifiedAt`）、没有放弃通知，也没被标记为 `quiet`。
+  - 盯守 job 被杀时（jobs 事件里 `cause: 'kill'`），只要任务还没通知过，就标记为 `quiet`，之后永不通知。被杀的情况包括：模型的 `job_kill`、用户在界面上停止、会话被归档。
+    - 这比 `tool-jobs` 宽：`tool-jobs` 只对模型自己的 `job_kill` 保持沉默。这样做是有意的：这几种都是主动不再跟进，归档后更不应该再把会话恢复起来。
+    - 即使被杀时任务已经因为下载中断变成了孤儿，也照样标记。
+  - 被接受的取消（`video_cancel` 或卡片上的取消按钮）同样标记为 `quiet`：调用方已经拿到了结果。
+  - 宿主卸载（`teardown`）不算主动停止：重启之后任务照样通知。
+- **怎么送达**：沿用 `dsh-schedule` 的做法。在 `agents.withoutInitiator` 里调用 `sessionController.resolveAgent(会话 id)`，拿到（或恢复）会话的 agent；agent 空闲时用 `followup` 唤醒，正忙时用 `inject` 放进它下一步会读的收件箱；然后 `sessions.flush`。
+  - 消息是 user 角色，来源为插件自己的 `{ kind: 'video-forge', form: 'notice', summary: 'video <id> <状态>' }`（摘要不超过 120 字）。正文直接写结果与产物位置（这条路径上没有 `job_output` 可读）；成功时提醒"不要重新提交"，失败时要求先查 `video_status`。
+  - 消息形状与 `createUserMessage` 一致（随机 id、深冻结），因此不新增 `dsh-llm` 依赖。
+- **防重复**：flush 成功之后才写 `notifiedAt`。语义是"至少一次"：两步之间崩溃会重复一次，但不会漏发；flush 没确认、消息却已进了收件箱时，重试也会多送一次。
+  - 进程内同一任务同时只投递一次；每次投递前都重新读一遍这一行，所以重叠的几轮（审查发现过）不会把同一条通知送两次。
+  - 投递失败（会话不存在、flush 没确认、抛错，或 60 秒内没有回应）会计入 `noticeAttempts`，并记下原因 `noticeError` 和时间 `noticeLastAttemptAt`。
+  - 两次尝试至少间隔 4 分钟，所以开机时几轮挤在一起，也不会在几秒内把机会用完。第 3 次失败后写入 `noticeAbandoned` 并停止。
+- **触发时机**：开机对账结束后、每轮孤儿重试结束后、对账接手的进程内盯守结束时（`onExit`），以及会话服务就绪时。开机那一轮不等待投递完成：恢复会话再慢，也不能拖住孤儿重试。
+- **隔离实例里的实测发现**：开机对账跑完时，插件的 `ctx.get('sessionController')` 还拿不到（`agents` 与 `sessions` 已经在了）。所以改成用 `ctx.inject(['sessionController', 'agents', 'sessions'])` 等这三个服务就绪，再把它们交给通知模块，并立即投递积压的通知；服务卸载时撤回。服务没就绪时通知只是等待，不计失败次数。
+- **隔离实例重启实测**（2026-10-16，免费）：
+  - 在实例配置的地址（`127.0.0.1:34800`）上起了一个 fixture 版"方舟"，里面有一个已完成的任务；台账里预置一条运行中的行，会话 id 是一个不存在的会话。
+  - 重启后，开机对账接手了这条任务，下载了视频和尾帧，通知送到了真实的会话控制器，得到回答 `session "session-m35-does-not-exist" not found`，记为第 1 次失败。这证明真实组合里整条链路是通的。
+  - **没有实测"唤醒真实会话"这最后一步**：那会触发一次付费的 LLM 调用，按用户要求跳过了，由单测里的假 agent 覆盖（`followup` / `inject` / flush / 不重复 / 重试 / 放弃）。
+  - 实测结束后已恢复台账备份、删除产物，实例与 fixture 均已关闭，端口释放。
+- **独立审查**：第一轮要求修改，以下均已修复并补了测试：
+  - 1 条 HIGH：重叠的投递轮次会把同一条通知送两次；已复现，回归测试在去掉修复时会失败。
+  - 5 条 MEDIUM：
+    - 下载中被杀的任务仍会通知；
+    - 尝试次数几秒内就用完；
+    - 开机一轮等待投递，会拖住孤儿重试；
+    - 被接受的取消仍会唤醒会话；
+    - 缺测试。
+  - LOW 中的代码问题也已修：
+    - 供应商的报错原文改为引用并截断，不当作这条 user 消息自己的话；
+    - job 与任务的映射按台账文件共享，插件重新加载后仍能认出旧盯守被杀。
+  - **审查记录、暂不处理**：
+    - 已归档的会话也会被恢复并写入通知。归档门会拦下这一步，不会产生模型费用，但通知会留在已归档的会话日志里。
+    - 子代理会话的通知 `resolveAgent` 拒绝，三次后放弃，不会转给父会话。
+    - 忙碌 agent 收到的 `inject` 如果被用户取消清空收件箱，就丢了（`tool-jobs` 也一样）。
+    - 消息来源没有对 `MessageSourceMap` 做类型声明合并（为了不增加 `dsh-llm` 依赖；运行时与界面都能处理未知来源）。
+    - 三个宿主服务按结构类型断言，接口改名要到运行时才会以失败计数的形式暴露出来。
+    - 取消被供应商接受的那一刻，若接手任务的盯守正好有一次查询在途，它可能先写下“已取消”并在结束时发出通知，`cancelTask` 随后才写 `quiet`。窗口只有一次请求那么长，接受。
+  - 第二轮审查通过；剩下的 LOW 里，时钟回拨、两处过时注释、引用里的引号转义已修。
 
