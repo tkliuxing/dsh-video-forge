@@ -1,72 +1,49 @@
-# Video Forge — usage guide
+# Video Forge — 使用指南
 
-Use this when the user asks how to use the video plugin ("怎么用", "how do I
-make a video", "help with video", etc.). Answer in the user's language. Never
-volunteer this guide when the user has not asked for it.
+当用户问怎么用这个视频插件（"怎么用""帮我做视频"等）时使用本技能。用用户的语言回答。用户没问时，不要主动给出这份指南。
 
-## How to answer
+## 回答方式
 
-1. **Diagnose first.** Call `video_status` with no arguments to read the live
-   state: whether the plugin is enabled, the default provider/model, whether
-   each provider has a key set, which models are available, and the current
-   workspace's manifest, permission mode and registered characters.
-2. **Then give at most three next steps**, matched to what the diagnosis found.
-   Do not dump the whole guide. Hold detail until the user asks a follow-up.
-3. **Answer only the part they asked about.** If they ask about cost, talk
-   about cost; if they ask about continuing a shot, talk about `from`.
+1. **先诊断**。调用 `video_status`（不带参数）读实时状态：插件是否启用、默认供应商/模型、各供应商 key 是否已设置、可用模型、当前工作区的清单/权限/角色。
+2. **再给最多三条下一步**，针对诊断结果。不要一股脑全讲，用户追问了再展开。
+3. **只答用户问的那一块**。问费用就讲费用，问续拍就讲 `from`。
 
-## Getting started (three steps)
+## 上手三步
 
-1. **Configure a provider and key.** Open the plugin settings (sidebar →
-   Plugins → Video Forge), add a provider (Volcengine ARK Seedance, MiniMax, or
-   an OpenAI-compatible relay), and set its API key. This is the only step the
-   model cannot do for the user.
-2. **Open a conversation in a project workspace.** The workspace is the video
-   project; finished videos land in its `renders/<shot>/vNNN.mp4`.
-3. **Just say what you want.** For example: "Make a 5-second shot of a sunset
-   over the sea, wide shot, gentle waves."
+1. **配置供应商和 key**。打开插件设置（侧栏 → 插件 → Video Forge），添加供应商（火山方舟 Seedance、MiniMax 或 OpenAI 兼容中转站），填 API key。这一步模型替用户做不了。
+2. **在项目工作区里开对话**。工作区就是视频项目，成片落在 `renders/<镜头>/vNNN.mp4`。
+3. **直接说要什么**。例如："生成一段 5 秒的海上日落，广角镜头，海浪轻拂。"
 
-If `video_status` reports a provider with no key, tell the user to set it in
-the plugin settings and point there — do not pretend you can do it.
+如果 `video_status` 报告某供应商没 key，让用户去插件设置里填，别假装你能填。
 
-## What you can ask for (with example phrasings)
+## 能做什么（附示例话术）
 
-- **One-shot generation**: "Make a 5-second video of …"
-- **Animate a material**: "Make materials/cat.png come alive — the cat turns to
-  look at the camera." (Dragged-in files also work: pass the path you were
-  given.)
-- **Iterate / continue**: "Shot 3, brighter" or "Continue from the last shot"
-  (the latter uses `from`, ARK Seedance only).
-- **Embed in a larger task**: while building a site or deck, generate a video
-  clip; it lands in the workspace alongside the other files.
-- **Ask the cost**: "How much have the videos in this project cost?" (an
-  estimate — see below).
+- 一句话出片："做一段 5 秒的……视频"
+- 让素材动起来："让 materials/cat.png 里的猫转头看镜头"（拖进对话的文件也能用，传你看到的路径）
+- 迭代 / 续拍："镜头 3 再亮一点"，或"接着上一段往下拍"（后者用 `from`，仅方舟 Seedance 支持）
+- 嵌进更大的任务：做网页或 PPT 时生成一段视频素材，成片落在工作区
+- 问花费："这个项目的视频一共花了多少？"（是估算，见下）
 
-## What it cannot do
+## 看视频 / 展示视频（重要）
 
-- **Batch-generate a shot list** — one generation per call, one video at a time.
-- **Concatenate clips into a film** — there is no joining/editing; do it
-  outside the plugin.
-- **Continue a MiniMax or relay take with `from`** — only ARK Seedance returns a
-  last frame; pass a `first_frame` image instead.
+**视频生成完成后，会自动出现在对话里的「生成卡片」中，卡片自带播放器，用户直接点开就能播原片。** 当用户说"给我看视频""展示一下"时，直接告诉他"看上面的生成卡片，点播放即可"，**不要**转 GIF、不要抽帧、不要用任何方式"代替"——卡片里就是原片。
 
-## Things to say when relevant
+只有当卡片显示"已从保存位置移走或删除"时，才说明文件被用户动过了，需要处理。
 
-- **Every generation is paid.** It spends real provider quota.
-- **Amounts are estimates.** Cost = usage × an editable price table, labelled
-  "estimate, the provider bill is authoritative". The real bill is only in the
-  provider's console.
-- **After a timeout or restart, check `video_status` — never resubmit.** A task
-  that was sent may already be running and billing; resubmitting the same
-  request is blocked for a while anyway.
-- **Videos live in `renders/<shot>/`** in the workspace; a `vNNN.json` beside
-  each one records how it was made.
-- **Project-wide settings live in `video-project.yaml`** (default model,
-  resolution, style, characters), not in the plugin settings.
+## 做不到的事
 
-## When a tool call fails
+- 不能按分镜批量生成——一次一个镜头、一次一条视频。
+- 不能把多段拼接成片——没有剪辑/拼接，去插件外做。
+- 不能用 `from` 续拍 MiniMax 或中转站的成片——只有方舟 Seedance 返回尾帧，改用 `first_frame` 传图。
 
-A failure is a response to an action, not an invitation to lecture — still say
-plainly how to fix it: "no provider configured" points to the plugin settings;
-"read-only conversation" means the user must allow writing; "content review
-refused" means change the prompt or the materials, not resend.
+## 相关要点（该提时再提）
+
+- 每次生成都花钱，消耗真实供应商配额。
+- 金额是估算：用量 × 可改价格表，标注"估算，以供应商账单为准"。真实账单只在供应商控制台。
+- 超时或重启后查 `video_status`，**绝不要重复提交**——已发出的任务可能正在跑、正在计费，重复提交会被拦截。
+- 成片在 `renders/<镜头>/`，旁边 `vNNN.json` 记录它是怎么做的。
+- 项目级设置（默认模型 / 分辨率 / 风格 / 角色）在 `video-project.yaml`，不在插件设置里。
+
+## 工具调用失败时
+
+失败是对动作的回应，不是上课——仍要讲清怎么修："没配置供应商"指向插件设置；"只读会话"让用户允许写入；"内容审核拒绝"改提示词或素材，别重发。

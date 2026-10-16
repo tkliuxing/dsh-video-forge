@@ -35,35 +35,35 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-project',
     description:
-      'The workspace layout and video-project.yaml manifest for the dsh-video-forge plugin: where generated videos land, how to write and read the manifest, path mapping, and version numbering. Use when creating or explaining a video project structure, or when the meaning of the manifest is in question.',
+      'dsh-video-forge 插件的工作区布局和 video-project.yaml 清单：成片落在哪、清单怎么写怎么读、目录映射、版本编号。在创建或解释视频项目结构、或清单含义存疑时使用。',
     file: 'video-project.md',
     userInvocable: true,
   },
   {
     name: 'video-prompting',
     description:
-      'How to write and revise video-generation prompts (subject, motion, camera, light, style) and pick duration, resolution and aspect ratio for dsh-video-forge, including provider differences. Use whenever composing or fixing a prompt for video_generate, or when a generation looks wrong and the prompt is the likely cause.',
+      '如何为 dsh-video-forge 撰写和修改视频生成提示词（主体、动作、镜头、光线、风格），以及挑选时长/分辨率/画幅（含供应商差异）。在撰写或修改 video_generate 的提示词、或生成效果不对且提示词可能是原因时使用。',
     file: 'video-prompting.md',
     userInvocable: false,
   },
   {
     name: 'video-storyboard',
     description:
-      'How to break a script into a shot list (storyboard/shots.yaml) and generate it one shot at a time with dsh-video-forge. Use when the user wants to plan a multi-shot video or turn a script into shots.',
+      '如何把剧本拆成分镜表（storyboard/shots.yaml），并用 dsh-video-forge 一次一个镜头地生成。在用户想规划多镜头视频或把剧本拆成分镜时使用。',
     file: 'video-storyboard.md',
     userInvocable: true,
   },
   {
     name: 'video-iterate',
     description:
-      'How to redo a take, continue a shot from its last frame (the from parameter), and keep a character consistent across shots with dsh-video-forge. Use when iterating on a video, continuing a shot, or keeping a character consistent.',
+      '如何重拍成片、用 from 从尾帧续拍、让角色跨镜头保持一致（dsh-video-forge）。在迭代视频、续拍镜头、或保持角色一致时使用。',
     file: 'video-iterate.md',
     userInvocable: false,
   },
   {
     name: 'video-guide',
     description:
-      'How to use the dsh-video-forge plugin end to end: setup, what it can and cannot do, cost estimates, and where videos land. Use when the user asks how to use the video plugin or needs guidance on its workflow.',
+      'dsh-video-forge 插件端到端使用：配置、能做什么不能做什么、费用估算、成片落在哪。在用户问怎么用视频插件、或需要工作流指导时使用。',
     file: 'video-guide.md',
     userInvocable: true,
   },

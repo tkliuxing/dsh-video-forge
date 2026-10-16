@@ -1,66 +1,51 @@
-# Video Storyboard — breaking a script into shots
+# Video Storyboard — 把剧本拆成分镜
 
-Use this when the user wants to plan a video as a sequence of shots, or when a
-script needs to be turned into a shot list. The shot list is **reference text
-you write and read** — the plugin generates one shot at a time and never reads
-`shots.yaml` to batch-generate.
+当用户想把视频规划成一串镜头，或要把剧本拆成分镜表时使用。分镜表是**你写、你读的参考文本**——插件一次只生成一个镜头，从不读 `shots.yaml` 做批量生成。
 
-## Breaking a script into shots
+## 把剧本拆成镜头
 
-A shot is one continuous piece of footage — one camera position, one subject
-focus, one beat of action. Split a script at every change of:
+一个镜头是一段连续的素材——一个机位、一个主体焦点、一拍动作。在下列变化处切分：
 
-- **place or time** (new location, cut to later),
-- **camera** (wide establishing shot → close-up → reverse angle),
-- **subject focus** (who or what the camera follows).
+- **地点或时间**变化（换场景、切到稍后），
+- **机位**变化（远景交代 → 特写 → 反打），
+- **主体焦点**变化（镜头跟着谁/什么）。
 
-Give each shot a short slug and a one-sentence description that says what is
-seen *and* what moves. Number them in story order.
+给每个镜头起个短标识，再写一句描述，说明"看到什么"+"什么在动"。按故事顺序编号。
 
-## The shots.yaml format
+## shots.yaml 格式
 
-Keep it simple — the fields below are for you and the user, not parsed by the
-plugin. The plugin only cares about the `shot` *name* you pass to
-`video_generate` (it becomes the `renders/<shot>/` folder).
+保持简单——下面这些字段是给你和用户看的，插件不解析。插件只关心你传给 `video_generate` 的 `shot` 名（它会成为 `renders/<镜头>/` 文件夹）。
 
 ```yaml
 shots:
-  - id: establishing       # becomes the `shot` folder: renders/establishing/
-    description: "Wide low shot of a river at dawn, mist over the water, a red boat enters from the left"
+  - id: establishing       # 成为 shot 文件夹：renders/establishing/
+    description: "黎明河面的低机位远景，薄雾笼罩水面，一艘红船从左侧入画"
     duration_seconds: 5
     aspect_ratio: "16:9"
   - id: closeup
-    description: "Close-up of the boat's paper hull creasing against a ripple, soft morning light"
+    description: "纸船船体在涟漪里折皱的特写，柔和的晨光"
     duration_seconds: 5
     aspect_ratio: "16:9"
   - id: reveal
-    description: "Overhead shot as the boat rounds a bend into open water"
+    description: "俯拍镜头，纸船绕过河湾驶入开阔水面"
     duration_seconds: 5
     aspect_ratio: "16:9"
 ```
 
-The `id` is the `shot` parameter; keep it short and filesystem-safe (letters,
-digits, `-`, `_`, `.`).
+`id` 就是 `shot` 参数；保持简短、文件系统安全（字母、数字、`-`、`_`、`.`）。
 
-## Generating from a shot list
+## 从分镜表生成
 
-Generate **one shot per `video_generate` call** — the tool takes a single
-prompt and produces a single video. Work through the list in order:
+**每次 `video_generate` 只生成一个镜头**——工具收一条 prompt、出条一条视频。按顺序走：
 
-1. Read the shot's description.
-2. Expand it into a full prompt using the `video-prompting` skill (add motion,
-   camera, light, style; the manifest `style` is appended automatically).
-3. Call `video_generate` with `shot: <id>` and the prompt.
-4. Wait for the result (or check `video_status`), then move to the next shot.
+1. 读这个镜头的描述。
+2. 用 video-prompting 技能把它扩成完整 prompt（加上运动、镜头、光线、风格；清单 `style` 会自动追加）。
+3. 调 `video_generate`，带 `shot: <id>` 和 prompt。
+4. 等结果（或查 `video_status`），再进下一个镜头。
 
-For consistency across shots, reuse the same `characters` from the manifest and
-keep the wording of shared elements (character, location, palette) identical
-from shot to shot.
+跨镜头保持一致：复用清单里同样的 `characters`，共享元素（角色、地点、色调）的措辞每个镜头保持一字不差。
 
-## What the plugin will not do
+## 插件不会做的事
 
-- It will **not** read `shots.yaml` and generate the whole list — that is a
-  known non-goal (one generation at a time, paid).
-- It will **not** concatenate the shots into a film. Sequencing and editing are
-  done outside the plugin. Say this plainly if the user expects an assembled
-  video.
+- **不会**读 `shots.yaml` 然后整批生成——这是明确的非目标（一次一条、每条付费）。
+- **不会**把镜头拼成一条成片。排序和剪辑在插件外做。如果用户期待一条组装好的成片，明确说清楚这一点。

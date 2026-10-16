@@ -1,44 +1,40 @@
-# Video Project — workspace layout and manifest
+# Video Project — 工作区布局与清单
 
-The `video-forge` plugin treats the current DSH workspace as a video project:
-every generated video is saved into this workspace, so the files it writes are
-as much "the project" as your scripts and notes.
+`video-forge` 插件把当前 DSH 工作区当成视频项目：每段生成的视频都存进这个工作区，所以它写的文件和你的脚本、笔记一样，都是"项目"的一部分。
 
-## Default layout
+## 默认布局
 
 ```
-<workspace>/
-  video-project.yaml          # manifest: defaults, style, characters, path mapping
-  script/                     # your script (optional, your own structure)
-  storyboard/shots.yaml       # shot list (reference text — see the video-storyboard skill)
-  materials/                  # character / scene reference images, audio
-  renders/<shot>/v001.mp4     # generated videos, one folder per shot, numbered versions
-  renders/<shot>/v001.json    # description beside each video (prompt, model, params, usage)
-  .dsh-video/                 # the plugin's own cache — leave it alone
+<工作区>/
+  video-project.yaml          # 清单：默认参数、风格、角色、目录映射
+  script/                     # 你的剧本（可选，结构自定）
+  storyboard/shots.yaml       # 分镜表（参考文本——见 video-storyboard 技能）
+  materials/                  # 角色 / 场景参考图、音频
+  renders/<镜头>/v001.mp4     # 生成成片，每个镜头一个文件夹，版本递增
+  renders/<镜头>/v001.json    # 每条视频旁的说明（prompt、模型、参数、用量）
+  .dsh-video/                 # 插件自己的缓存——别动它
 ```
 
-The plugin writes only `renders/` and `.dsh-video/`. It never moves or edits
-your files; everything else is yours.
+插件只写 `renders/` 和 `.dsh-video/`，从不移动或改写你的文件；其余都归你。
 
-## The manifest (video-project.yaml)
+## 清单（video-project.yaml）
 
-The plugin reads `video-project.yaml` from the workspace root on every
-generation. Recognized keys:
+插件每次生成都会读工作区根目录的 `video-project.yaml`。可识别的键：
 
 ```yaml
 version: 1
-defaults:                 # used only for request fields the caller left out
-  provider: ark           # provider id from the plugin settings
+defaults:                 # 只在请求漏填时才用
+  provider: ark           # 插件设置里的供应商 id
   model: seedance-2.0-mini
   resolution: 720p
   aspect_ratio: "16:9"
   duration_seconds: 5
-style: "cinematic, warm color grade"    # appended to every prompt by the tool
-characters:               # role registry, expanded by the `characters` parameter
+style: "cinematic, warm color grade"    # 由工具自动拼到每条 prompt 后面
+characters:               # 角色登记，由 `characters` 参数展开
   alice:
-    refs: [materials/alice/*.png]       # * and ? globs in the file name only
-    description: "short brown hair, red coat"
-paths:                    # map the layout onto your own folders (all workspace-relative)
+    refs: [materials/alice/*.png]       # 文件名里可用 * 和 ? 通配
+    description: "短发，红色外套"
+paths:                    # 把布局映射到你自己的目录（都是工作区相对路径）
   script: script
   storyboard: storyboard
   materials: materials
@@ -46,47 +42,31 @@ paths:                    # map the layout onto your own folders (all workspace-
   cache: .dsh-video
 ```
 
-Rules:
-- `paths` values must be workspace-relative; absolute paths, `~`, and `..` are
-  refused.
-- Unknown **top-level** keys are ignored (room for future versions). Unknown
-  keys *inside* `defaults`, `paths`, or a character are refused — treat them as
-  typos (`render:` instead of `renders:`).
-- A manifest that fails to parse is refused before anything is submitted (paid).
-- `style` and `characters` are added to the prompt by the tool, not by you:
-  keep the user's own prompt separate from the manifest style.
+规则：
+- `paths` 的值必须是工作区相对路径；绝对路径、`~`、`..` 都会被拒绝。
+- 不认识的**顶层**键会被忽略（给未来版本留余地）；`defaults`、`paths`、某个角色**里面**的不认识键会被拒绝——当拼写错误处理（`render:` 写成了 `renders:`）。
+- 解析不了的清单在提交前就被拒绝（不会花钱）。
+- `style` 和 `characters` 由工具加进 prompt，不是你加：把用户自己的 prompt 和清单风格分开。
 
-## Creating a project
+## 建项目
 
-There is no init command. Set a project up with your normal `write` tool:
+没有 init 命令。用你常规的 `write` 工具来搭：
 
-1. Write `video-project.yaml`.
-2. Create `materials/` and put reference images in it.
-3. Optionally write `storyboard/shots.yaml`.
+1. 写 `video-project.yaml`。
+2. 建 `materials/`，放参考图。
+3. 可选写 `storyboard/shots.yaml`。
 
-The first time a video lands in a workspace that has no manifest yet, the plugin
-also writes a commented `video-project.yaml` and a `renders/.gitignore`
-containing `*` (so generated videos are not committed by default). Delete that
-`.gitignore` if you want to commit videos (for example with Git LFS). If the
-user has already created either file, the plugin leaves it alone.
+视频第一次落进一个还没有清单的工作区时，插件也会自动写一份带注释的 `video-project.yaml` 和一个内容为 `*` 的 `renders/.gitignore`（让成片默认不进 git）。想把成片提交（比如用 Git LFS）就删掉那个 `.gitignore`。如果用户已经建过这两个文件，插件不动它们。
 
-## Where a video lands
+## 成片落在哪
 
-- Each generation goes to `renders/<shot>/vNNN.mp4`, numbered from `v001` up.
-- The shot is the `shot` parameter of `video_generate`; it defaults to
-  `untitled`. Allowed characters: letters, digits, `-`, `_`, `.` (no `..`).
-- A version number is never reused — deleting `v003` does not make `v003` come
-  back. Numbers are assigned by the host, so two conversations generating into
-  the same shot do not clobber each other.
-- A `vNNN.json` description sits beside each video. Read it with your normal
-  read tool to recall how a video was made (prompt, model, params, whether it
-  was continued with `from`, usage).
+- 每次生成落到 `renders/<镜头>/vNNN.mp4`，从 `v001` 往上编号。
+- 镜头名就是 `video_generate` 的 `shot` 参数，默认 `untitled`。允许的字符：字母、数字、`-`、`_`、`.`（不含 `..`）。
+- 版本号永不复用——删掉 `v003` 也不会再冒出 `v003`。编号由宿主分配，两个对话同时给同一镜头生成也不会互相覆盖。
+- 每条视频旁有 `vNNN.json` 说明。用常规 read 工具读它，就能回溯这条视频怎么做出来的（prompt、模型、参数、是否 `from` 续拍、用量）。
 
-## Cross-cutting rules
+## 跨场景规则
 
-- In a read-only conversation, or a remote (SSH) workspace, generation is
-  refused before anything is paid. Do not promise a video in those cases.
-- The plugin never concatenates clips. Combining several shots into one film is
-  a known non-goal — do it outside the plugin.
-- Call `video_status` with no arguments to see the current workspace's manifest
-  state, registered characters, and whether a style is set.
+- 只读会话、或远程（SSH）工作区，生成在提交前就被拒绝（不花钱）。这些情况下不要承诺能做视频。
+- 插件从不拼接片段。把多段合成为一条成片是明确的非目标——去插件外做。
+- 不带参数调 `video_status` 能看到当前工作区的清单状态、已登记角色、是否设了风格。

@@ -1,59 +1,36 @@
-# Video Iterate — revising takes, continuing shots, keeping characters consistent
+# Video Iterate — 重拍、续拍、保持角色一致
 
-Use this when the user wants to redo a take, continue from the end of a
-previous shot, or keep a character looking the same across several videos.
+当用户想重做一条成片、从上一段结尾续拍、或让一个角色在多个视频里保持一致时使用。
 
-## Redo vs continue: pick the right move
+## 重拍还是续拍：选对动作
 
-- **Redo (new version)** — the shot is wrong and should be generated again from
-  the same starting point. Call `video_generate` again with the same `shot` and
-  a revised prompt. The host assigns the next version number (`v002`, …); the
-  old take is not overwritten.
-- **Continue (`from`)** — the shot is right and the next shot should begin where
-  it ended. Pass `from: <task_id>` (or a path to a finished `vNNN.mp4`) and the
-  tool uses that take's **last frame** as the new `first_frame`. Do not also
-  pass `first_frame`, and do not set `mode` to `t2v`/`s2v` with `from`.
+- **重拍（新版本）**——镜头不对，要从同一起点重新生成。再次调 `video_generate`，同样的 `shot`、改过的 prompt。宿主会分派下一个版本号（`v002`、…），旧的那条不会被覆盖。
+- **续拍（`from`）**——镜头是对的，下一段要从它结束的地方接下去。传 `from: <任务id>`（或一条已完成 `vNNN.mp4` 的路径），工具会把那条成片的**尾帧**当成新片的首帧。不要同时再传 `first_frame`，也不要设 `mode` 为 `t2v`/`s2v`。
 
-`from` rules (the tool enforces them and refuses before charging):
+`from` 规则（工具会强制，且花钱前就拒绝）：
 
-- Only a **succeeded take made by Volcengine ARK Seedance** can be continued —
-  it is the only provider that returns a last frame. MiniMax and relay takes,
-  takes made before last frames were kept, or takes whose last frame was not
-  downloaded, are all refused with a hint to pass a `first_frame` image instead.
-- The shot defaults to the source take's shot; give a new `shot` to branch.
-- The source's last frame is saved next to it as `vNNN.last.jpg`; if the user
-  moved or deleted that file, `from` is refused — ask for a `first_frame` image.
+- 只有**由火山方舟 Seedance 生成、且成功**的成片能续拍——它是唯一返回尾帧的供应商。MiniMax 或中转站的成片、尾帧还没下载的成片，都会被拒绝，并提示改传 `first_frame` 图片。
+- 镜头默认沿用来源那条的 `shot`；给个新 `shot` 就是开分支。
+- 来源的尾帧存在它旁边，叫 `vNNN.last.jpg`；如果用户把那个文件移动或删除了，`from` 会被拒绝——改用 `first_frame` 图片。
 
-## Character consistency
+## 角色一致性
 
-The manifest registers characters under `characters:`. To keep a character
-looking the same across shots:
+清单里用 `characters:` 登记角色。要让一个角色跨镜头保持一致：
 
-1. Put reference images in `materials/<name>/…` and list them as
-   `refs: [materials/<name>/*.png]` in the manifest.
-2. Pass `characters: ["<name>"]` to `video_generate`. The tool expands the
-   refs (globs in the file name only) and appends the character description to
-   the prompt; with reference images the generation runs in `s2v` mode.
-3. Keep the character's description short and factual (hair, outfit, build).
-   Vague or contradictory descriptions make consistency worse, not better.
+1. 把参考图放进 `materials/<名字>/…`，在清单里写成 `refs: [materials/<名字>/*.png]`。
+2. 给 `video_generate` 传 `characters: ["<名字>"]`。工具会展开 refs（只认文件名里的通配）并把角色描述追加进 prompt；带参考图时生成走 `s2v`。
+3. 角色描述写短而具体（发型、服装、体型）。含糊或自相矛盾的描述只会让一致性更差。
 
-If a request carries reference images but names no `mode`, the tool switches to
-`s2v` automatically; if the model does not support `s2v` it is refused, and you
-should use `mode: t2v` with only the description.
+如果请求带了参考图却没指定 `mode`，工具会自动切到 `s2v`；如果模型不支持 `s2v` 会被拒绝，这时用 `mode: t2v` 只发描述。
 
-## Self-check before you deliver
+## 交付前自检
 
-You cannot watch a video, but you can read images. An ARK take has its last
-frame saved next to it as `vNNN.last.jpg`. Before telling the user a video is
-ready, read that frame with your image tool and check it against the prompt:
-is the subject right, the composition sensible, the frame intact? If it looks
-wrong, iterate; if it looks right, say so and point at the video.
+你看不了视频，但能看图片。方舟的成片旁有它的尾帧 `vNNN.last.jpg`。在告诉用户"视频好了"之前，用你的图片工具读那一帧，对照 prompt 检查：主体对不对、构图合不合理、画面有没有崩。不对就迭代；对就明说并指向视频。
 
-## Iterating cheaply
+注意：这个尾帧是**给你自己检查用的**，不是给用户看的替代品——用户看的是生成卡片里的播放器（见 video-guide 技能）。
 
-- Fix one thing per iteration; changing several variables at once hides which
-  change helped.
-- Prefer re-prompting at the shortest duration the user accepts; lengthen only
-  after the content is right.
-- Read the `vNNN.json` beside a take to recall exactly what prompt and
-  parameters produced it, before you change something.
+## 省钱迭代
+
+- 一次只改一样；一次改好几个变量，就不知道是哪个改对了。
+- 用户能接受的最短时长先试，内容对了再拉长。
+- 改之前先读那条成片旁的 `vNNN.json`，回忆它当初用了什么 prompt 和参数。

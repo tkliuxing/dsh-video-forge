@@ -1,71 +1,41 @@
-# Video Prompting — writing prompts that produce the shot the user asked for
+# Video Prompting — 写出用户要的那个镜头的提示词
 
-Use this when composing or revising the `prompt` (and any `first_frame` /
-`last_frame` / `reference_images`) for `video_generate`. Video models are not
-image models: describe motion and time, not just a still frame.
+在撰写或修改 `video_generate` 的 `prompt`（以及 `first_frame` / `last_frame` / `reference_images`）时使用。视频模型不是图片模型：要描述运动和时间的流逝，而不是只描述一张静态画面。
 
-## Prompt structure
+## 提示词结构
 
-A strong video prompt names, in order:
+一条好的视频提示词按顺序点名：
 
-1. **Subject** — who or what is in frame, and what it looks like.
-2. **Action & motion** — what changes over time. This is the part image prompts
-   leave out and video models depend on.
-3. **Camera** — shot size (close-up / medium / wide), angle (low / high /
-   overhead), and movement (static, pan, tilt, dolly in, tracking, handheld).
-4. **Setting & light** — location, time of day, light quality.
-5. **Style** — photographic style, film look, or "3D render"; keep it short.
+1. **主体**——画面里是谁/什么，长什么样。
+2. **动作与运动**——随时间变化的是什么。这是图片提示词漏掉、而视频模型依赖的部分。
+3. **镜头**——景别（特写/中景/远景）、角度（低/高/俯拍）、运镜（固定、横摇、俯仰、推近、跟拍、手持）。
+4. **场景与光线**——地点、时间、光质。
+5. **风格**——摄影风格、电影质感，或"3D 渲染"；保持简短。
 
-Example: "A red paper boat (subject) drifts downstream, rocking gently past
-reeds (motion), low tracking shot at water level (camera), overcast morning
-light on a quiet river (setting), soft film look (style)."
+示例："一艘红色纸船（主体）顺流漂下，轻轻摇晃着掠过芦苇（运动），贴水面的低角度跟拍（镜头），阴天清晨的安静河面（场景），柔和的胶片质感（风格）。"
 
-Keep the prompt one coherent paragraph. Do not use shot-list syntax or
-comma-dumps; the model reads it as prose.
+写成一段连贯的话。不要用分镜表语法，也不要堆逗号——模型当散文读。
 
-## Duration and aspect ratio
+## 时长与画幅
 
-- Choose `duration_seconds` and `resolution` only from what the target model
-  declares. Call `video_status` (no arguments) to see each provider's models and
-  their allowed durations, resolutions and aspect ratios; the tool refuses
-  anything else before it is paid.
-- Match aspect ratio to the use: `9:16` for short-form vertical, `16:9` for
-  landscape, `1:1` for square feeds.
-- Shorter is cheaper and safer to iterate. Start at the shortest useful length;
-  extend only when the user asks.
+- `duration_seconds` 和 `resolution` 只从目标模型声明的值里选。调 `video_status`（不带参数）看每个供应商的模型及允许的时长/分辨率/画幅；工具会在花钱之前拒绝任何不合规的组合。
+- 画幅按用途匹配：竖屏短视频用 `9:16`，横屏用 `16:9`，方形信息流用 `1:1`。
+- 越短越便宜也越好迭代。从最短可用的长度起步，用户要求了再拉长。
 
-## Provider differences
+## 供应商差异
 
-- **Volcengine ARK Seedance**: strongest with cinematic motion and camera
-  language; supports `return_last_frame`, so it is the only provider that can be
-  continued with `from`. Prefer explicit camera movement wording.
-- **MiniMax (Hailuo)**: strong with character/subject consistency and fast
-  turnaround; it does **not** return a last frame, so `from` is refused for it.
-  If the user wants to continue a MiniMax take, ask for a `first_frame` image
-  instead.
-- **OpenAI-compatible relays / Sora**: field names and behavior vary per relay;
-  the plugin maps them, but keep prompts provider-neutral unless the user pinned
-  one.
+- **火山方舟 Seedance**：电影化运镜和镜头语言最强；支持 `return_last_frame`，是唯一能用 `from` 续拍的供应商。运镜措辞可以写得更明确。
+- **MiniMax（海螺）**：角色/主体一致性、出片速度强；它**不**返回尾帧，所以 `from` 对它会拒绝。要续拍 MiniMax 的成片，改传 `first_frame` 图片。
+- **OpenAI 兼容中转站 / Sora**：字段名和形态因中转站而异，插件会做映射；除非用户指定了某家，提示词保持通用。
 
-When the user has configured more than one provider, ask which one they want
-(or read the manifest `defaults.provider`) rather than guessing — submitting to
-the wrong endpoint costs money.
+当用户配了不止一家供应商时，先问清用哪家（或读清单 `defaults.provider`），不要猜——提交到错误的端点是要花钱的。
 
-## Reference images and first/last frames
+## 参考图与首/尾帧
 
-- A `first_frame` sets the opening image; a `last_frame` sets the ending image
-  (first+last together is a start/end transition).
-- `reference_images` (or a character's `refs` in the manifest) guide subject
-  appearance in a `s2v` generation. Describe in the prompt how to use them
-  ("keep the character's face and outfit exactly as in the reference").
-- Reference images are read from the workspace or from `$DSH_HOME/attachments`;
-  pass the path the user gave you. A dragged-in image has no extension — the
-  plugin recognizes it by its file header, so pass its path as-is.
+- `first_frame` 定开场画面；`last_frame` 定结束画面（首+尾一起就是起止转场）。
+- `reference_images`（或清单里角色的 `refs`）在 `s2v` 生成里引导主体外观。在 prompt 里说明怎么用它们（"保持角色脸和服装与参考图完全一致"）。
+- 参考图从工作区或 `$DSH_HOME/attachments` 读；传用户给你的路径。拖进对话的图片没有扩展名——插件按文件头识别格式，路径原样传即可。
 
-## Content review
+## 内容审核
 
-Providers run content moderation and refuse some prompts. Avoid wording that
-could read as violence, gore, explicit content, or real-person likeness without
-consent. If a generation is refused as moderation, do **not** resend the same
-prompt — the plugin blocks the identical request. Change the wording, the
-materials, or both, then try again.
+供应商有内容审核，会拒绝部分提示词。避开可能读作暴力、血腥、露骨、或未经同意的真人肖像的措辞。若被判定为审核拒绝，**不要**原样重发——插件会拦截完全相同的请求。改措辞、改素材、或两者都改，再试。
