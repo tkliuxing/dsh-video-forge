@@ -109,7 +109,7 @@ type JobOwner = NonNullable<Parameters<JobRegistry['start']>[0]['owner']>
  */
 export function startWatch(options: WatchOptions): JobId | null {
   const controller = new AbortController()
-  const { jobs, owner, adapter, context, task } = options
+  const { jobs, owner, task } = options
   const ownership: { owner: JobOwner } | Record<string, never> = owner === undefined ? {} : { owner: owner as JobOwner }
 
   let jobId: JobId
@@ -123,16 +123,13 @@ export function startWatch(options: WatchOptions): JobId | null {
           line: (text, channel) => job.append(text, channel === undefined ? {} : { channel }),
           progress: line => job.updateProgress(line),
         }).finally(() => { options.onExit?.() })
+        // `video_cancel` has already asked the provider and been accepted when
+        // it calls this: stop watching, and do not ask again (a second DELETE on
+        // a cancelled ARK task deletes its record, and settlement then 404s).
         const detach = options.onCancelReady?.(task.localId, async () => {
           if (controller.signal.aborted) return false
-          try {
-            const cancelled = await adapter.cancel(context, task.providerTaskId ?? '')
-            if (cancelled) controller.abort()
-            return cancelled
-          } catch (error: unknown) {
-            options.logger.warn(`video-forge: provider cancel failed for ${task.localId}: ${String(error)}`)
-            return false
-          }
+          controller.abort()
+          return true
         })
 
         return {

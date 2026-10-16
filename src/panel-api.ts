@@ -18,9 +18,10 @@
 
 import { lstat, realpath, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { describeProviders, listTasks, cancelTask, type TaskRow } from './operations.ts'
+import { describeProviders, LedgerUnavailableError, listTasks, cancelTask, requireLedger, type TaskRow } from './operations.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
-import { ConfigError } from './settings.ts'
+import { adapterFor, cancelSupported } from './providers/index.ts'
+import { ConfigError, resolveTarget } from './settings.ts'
 import { isTrustedRequest } from './trust.ts'
 import type { VideoTask } from './types.ts'
 
@@ -100,9 +101,9 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
         const taskId = url.searchParams.get('taskId')
         if (taskId !== null) {
           if (taskId.trim() === '') return sendError(res, 400, 'taskId must name one task')
-          // Right after a restart the ledger may still be reading: answer from
-          // it, not from an empty document that would call every task unknown.
-          await runtime.ledger.ready()
+          // Answer from the ledger as read, never from an empty unread document
+          // that would call every task unknown (a 404 stops a card for good).
+          await requireLedger(runtime)
           let list: ReturnType<typeof listTasks>
           try {
             list = listTasks(runtime, { taskId })
@@ -112,11 +113,17 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
           }
           sendJson(res, 200, {
             ok: true,
-            tasks: await Promise.all(list.tasks.map(async (row: TaskRow) => ({ ...row, artifactState: await artifactState(runtime.ledger.byId(row.taskId)) }))),
+            tasks: await Promise.all(list.tasks.map(async (row: TaskRow) => ({
+              ...row,
+              artifactState: await artifactState(runtime.ledger.byId(row.taskId)),
+              // So the card offers cancel only where the provider can be asked to stop.
+              cancelable: cancelableNow(runtime, row),
+            }))),
             active: list.active,
           })
           return
         }
+        await requireLedger(runtime)
         const settings = runtime.settings()
         const list = listTasks(runtime, { limit: 50 })
         sendJson(res, 200, {
@@ -154,12 +161,26 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
         sendError(res, 400, error.message)
         return
       }
+      if (error instanceof LedgerUnavailableError) {
+        sendError(res, 503, error.message)
+        return
+      }
       // A domain error (bad config, provider refusal) is the operator's to read,
       // so it is reported verbatim rather than flattened into "internal error".
       const message = error instanceof Error ? error.message : String(error)
       runtime.logger.warn(`video-forge: panel ${action} failed: ${message}`)
       sendError(res, 400, message)
     }
+  }
+}
+
+/** Whether `video_cancel` could ask the provider to stop this task (configuration as it is now). */
+function cancelableNow(runtime: VideoForgeRuntime, row: TaskRow): boolean {
+  try {
+    const { provider, model } = resolveTarget(runtime.settings(), row.provider, row.model)
+    return cancelSupported(provider, model, adapterFor(provider, model))
+  } catch {
+    return false
   }
 }
 

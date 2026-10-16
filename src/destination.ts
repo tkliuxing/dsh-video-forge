@@ -142,32 +142,41 @@ export async function deliverArtifact(
     return keep(`writing into the workspace failed (${message})`)
   }
 
-  // The last frame goes beside its take under the same number, best-effort:
-  // without it the take only cannot be continued with `from`.
-  const lastFrame = artifact.lastFrame === undefined
-    ? undefined
-    : await placeFrame(artifact.lastFrame, placed.path).catch((error: unknown) => {
+  // The video is published: from here on nothing may throw, or the caller
+  // would treat a delivered, paid video as undelivered and fetch it again —
+  // publishing another take each time. Everything below is best-effort.
+  let delivered: VideoArtifact = { ...artifact, path: placed.path }
+  let sidecar: string | null = null
+  try {
+    // The last frame goes beside its take under the same number: without it
+    // the take only cannot be continued with `from`.
+    if (artifact.lastFrame !== undefined) {
+      const lastFrame = await placeFrame(artifact.lastFrame, placed.path).catch((error: unknown) => {
         context.logger.warn(`video-forge: could not place the last frame of ${task.localId}: ${messageOf(error)}`)
         return artifact.lastFrame
       })
-  const delivered: VideoArtifact = { ...artifact, path: placed.path, ...(lastFrame === undefined ? {} : { lastFrame }) }
-
-  const policy = mode === null ? undefined : { mode, workspaceRoot: destination.root, ...(task.session === undefined ? {} : { sessionId: task.session.id }) }
-  const sidecarPath = placed.relativePath.replace(/\.[^./]+$/, '.json')
-  // Create-only: a sidecar is never written over another take's.
-  const sidecar = await writeText(fs, destination.root, sidecarPath, sidecarText(task, delivered, placed, billing), policy, true)
-    .then(() => sidecarPath)
-    .catch((error: unknown) => {
-      context.logger.warn(`video-forge: could not write ${sidecarPath} for ${task.localId}: ${messageOf(error)}`)
-      return null
-    })
-  if (destination.writeManifest) {
-    // Written only if still absent: the user may have created either meanwhile.
-    for (const [path, text] of [[MANIFEST_FILE, initialManifestText()], [`${destination.renders}/.gitignore`, '*\n']] as const) {
-      await writeText(fs, destination.root, path, text, policy, true).catch((error: unknown) => {
-        if (fsErrorCode(error) !== 'FS_NOT_OBSERVED') context.logger.warn(`video-forge: could not write ${path}: ${messageOf(error)}`)
-      })
+      if (lastFrame !== undefined) delivered = { ...delivered, lastFrame }
     }
+
+    const policy = mode === null ? undefined : { mode, workspaceRoot: destination.root, ...(task.session === undefined ? {} : { sessionId: task.session.id }) }
+    const sidecarPath = placed.relativePath.replace(/\.[^./]+$/, '.json')
+    // Create-only: a sidecar is never written over another take's.
+    sidecar = await Promise.resolve()
+      .then(async () => writeText(fs, destination.root, sidecarPath, sidecarText(task, delivered, placed, billing), policy, true))
+      .then(() => sidecarPath, (error: unknown) => {
+        context.logger.warn(`video-forge: could not write ${sidecarPath} for ${task.localId}: ${messageOf(error)}`)
+        return null
+      })
+    if (destination.writeManifest) {
+      // Written only if still absent: the user may have created either meanwhile.
+      for (const [path, text] of [[MANIFEST_FILE, initialManifestText()], [`${destination.renders}/.gitignore`, '*\n']] as const) {
+        await writeText(fs, destination.root, path, text, policy, true).catch((error: unknown) => {
+          if (fsErrorCode(error) !== 'FS_NOT_OBSERVED') context.logger.warn(`video-forge: could not write ${path}: ${messageOf(error)}`)
+        })
+      }
+    }
+  } catch (error: unknown) {
+    context.logger.warn(`video-forge: ${task.localId} is in the workspace, but finishing beside it failed: ${messageOf(error)}`)
   }
 
   const location: ArtifactLocation = {
@@ -238,6 +247,18 @@ const STRICTNESS: Record<SandboxMode | 'unknown' | 'none', number> = {
   'workspace-write': 2,
   'unknown': 3,
   'read-only': 3,
+}
+
+/**
+ * Why a generation from this workspace would be refused for where the
+ * workspace is (not on this machine, or gone), or null when it would not be.
+ * The same check {@link planDestination} makes; `video_status` reports it.
+ */
+export async function workspaceRefusal(fs: WorkspaceFs, cwd: string): Promise<string | null> {
+  const root = await localRoot(fs, cwd).catch(() => ({ kind: 'missing' as const, detail: 'the workspace folder could not be checked' }))
+  if (root.kind === 'remote') return `the workspace is not on this machine (${root.detail}); videos cannot be saved into a remote workspace yet`
+  if (root.kind === 'missing') return root.detail
+  return null
 }
 
 type RootCheck =

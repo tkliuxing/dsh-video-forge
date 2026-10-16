@@ -111,7 +111,6 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger, host: Host): V
     },
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
   return runtime
 }

@@ -14,8 +14,9 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve as resolvePath } from 'node:path'
+import { isProjectPath, isShotName } from './project.ts'
 import { taskSessionOf } from './session-context.ts'
-import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_TASK_STATUSES, type ArtifactDestination, type ArtifactLocation, type LedgerDocument, type TaskBilling, type VideoArtifact, type VideoTask, type VideoTaskStatus } from './types.ts'
+import { MODERATION_STAGES, NOT_SUBMITTED_CODE, VIDEO_MODES, VIDEO_TASK_STATUSES, type VideoMode, type ArtifactDestination, type ArtifactLocation, type LedgerDocument, type TaskBilling, type VideoArtifact, type VideoTask, type VideoTaskStatus } from './types.ts'
 
 /** Statuses that mean the provider may still be working on the task. */
 const OPEN_STATUSES: ReadonlySet<VideoTaskStatus> = new Set<VideoTaskStatus>(['queued', 'running'])
@@ -210,6 +211,11 @@ export class Ledger {
   async add(task: VideoTask, guard?: () => void): Promise<VideoTask> {
     await this.#exclusive(async () => {
       guard?.()
+      // An id minted before the document was read could name an existing row;
+      // every later write by id would then land on that older (paid) row.
+      if (this.#document.tasks.some(entry => entry.localId === task.localId)) {
+        throw new Error(`task id ${task.localId} is already in the ledger; nothing was submitted to a provider — try again`)
+      }
       this.#document.tasks.push(task)
       try {
         await this.#flush()
@@ -340,14 +346,21 @@ function normaliseStatus(task: VideoTask): VideoTask {
   // A destination this build cannot read becomes `$DSH_HOME`, said so: never a
   // guess at a workspace path.
   const destinationOk = task.destination === undefined || isDestination(task.destination)
-  const artifacts = task.artifacts.filter(isArtifact).map(artifactOf)
-  const artifactsOk = artifacts.length === task.artifacts.length && artifacts.every((entry, index) => entry === task.artifacts[index])
+  // An artifact list this build cannot read is kept as an empty one, never a
+  // reason to drop the row: the row is the only record of a paid task.
+  const storedArtifacts: unknown[] = Array.isArray(task.artifacts) ? task.artifacts : [task.artifacts]
+  const artifacts = storedArtifacts.filter(isArtifact).map(artifactOf)
+  const artifactsOk = Array.isArray(task.artifacts) && artifacts.length === storedArtifacts.length && artifacts.every((entry, index) => entry === storedArtifacts[index])
   // A finished row whose every artifact entry was unreadable no longer says
   // where its paid video is: hand it to the orphan retry, which asks the
-  // provider again (within its query window) and fetches it afresh.
-  if (status === 'succeeded' && task.artifacts.length > 0 && artifacts.length === 0) {
-    status = 'orphaned'
-  }
+  // provider again (within its query window) and fetches it afresh. Its session
+  // already heard it finished, so the recovery is not announced again.
+  const lostArtifacts = status === 'succeeded' && storedArtifacts.length > 0 && artifacts.length === 0
+  if (lostArtifacts) status = 'orphaned'
+  // Request facts a newer or hand-edited row spells differently are made
+  // usable, never trusted as they are: delivery writes them into a sidecar.
+  const params = paramsOf(task.params)
+  const paramsOk = params === task.params
   // Notice bookkeeping a newer or hand-edited row spells differently is dropped
   // field by field: a dropped `notifiedAt` at worst repeats one notice.
   const noticeOk = optionalOf(task.takenOverAt, isTimestamp) && optionalOf(task.notifiedAt, isTimestamp)
@@ -356,13 +369,14 @@ function normaliseStatus(task: VideoTask): VideoTask {
     && optionalOf(task.noticeAbandoned, value => typeof value === 'string')
     && optionalOf(task.noticeError, value => typeof value === 'string')
     && optionalOf(task.noticeLastAttemptAt, isTimestamp)
-  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk && destinationOk && artifactsOk && noticeOk) return task
+  if (status === task.status && providerTaskId === task.providerTaskId && billingOk && error === task.error && sessionOk && destinationOk && artifactsOk && noticeOk && paramsOk) return task
   const { session: _stored, takenOverAt, notifiedAt, quiet, noticeAttempts, noticeAbandoned, noticeError, noticeLastAttemptAt, ...withoutSession } = task
   return {
     ...withoutSession,
     ...(optionalOf(takenOverAt, isTimestamp) && takenOverAt !== undefined ? { takenOverAt } : {}),
     ...(optionalOf(notifiedAt, isTimestamp) && notifiedAt !== undefined ? { notifiedAt } : {}),
-    ...(typeof quiet === 'boolean' ? { quiet } : {}),
+    ...(lostArtifacts ? { quiet: true } : typeof quiet === 'boolean' ? { quiet } : {}),
+    params,
     ...(typeof noticeAttempts === 'number' && Number.isInteger(noticeAttempts) && noticeAttempts >= 0 ? { noticeAttempts } : {}),
     ...(typeof noticeAbandoned === 'string' ? { noticeAbandoned } : {}),
     ...(typeof noticeError === 'string' ? { noticeError } : {}),
@@ -379,12 +393,48 @@ function normaliseStatus(task: VideoTask): VideoTask {
   }
 }
 
+/** The request facts in a shape the rest of the plugin can rely on; the same object when it already is. */
+function paramsOf(value: unknown): VideoTask['params'] {
+  const raw = (typeof value === 'object' && value !== null ? value : {}) as Partial<Record<keyof VideoTask['params'], unknown>>
+  const stringOrNull = (field: unknown): string | null => (typeof field === 'string' ? field : null)
+  const numberOrNull = (field: unknown): number | null => (typeof field === 'number' && Number.isFinite(field) ? field : null)
+  const ok = typeof raw.prompt === 'string'
+    && VIDEO_MODES.includes(raw.mode as VideoMode)
+    && (raw.durationSeconds === null || typeof raw.durationSeconds === 'number')
+    && (raw.resolution === null || typeof raw.resolution === 'string')
+    && (raw.aspectRatio === null || typeof raw.aspectRatio === 'string')
+    && (raw.firstFrame === null || typeof raw.firstFrame === 'string')
+    && (raw.lastFrame === null || typeof raw.lastFrame === 'string')
+    && Array.isArray(raw.referenceImages) && raw.referenceImages.every(entry => typeof entry === 'string')
+    && optionalOf(raw.sentPrompt, field => typeof field === 'string')
+    && optionalOf(raw.style, field => typeof field === 'string')
+    && optionalOf(raw.characters, field => Array.isArray(field) && field.every(entry => typeof entry === 'string'))
+    && optionalOf(raw.from, field => typeof field === 'string')
+  if (ok) return value as VideoTask['params']
+  return {
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
+    mode: VIDEO_MODES.includes(raw.mode as VideoMode) ? raw.mode as VideoMode : 't2v',
+    durationSeconds: numberOrNull(raw.durationSeconds),
+    resolution: stringOrNull(raw.resolution),
+    aspectRatio: stringOrNull(raw.aspectRatio),
+    firstFrame: stringOrNull(raw.firstFrame),
+    lastFrame: stringOrNull(raw.lastFrame),
+    referenceImages: Array.isArray(raw.referenceImages) ? raw.referenceImages.filter((entry): entry is string => typeof entry === 'string') : [],
+    ...(typeof raw.sentPrompt === 'string' ? { sentPrompt: raw.sentPrompt } : {}),
+    ...(typeof raw.style === 'string' ? { style: raw.style } : {}),
+    ...(Array.isArray(raw.characters) ? { characters: raw.characters.filter((entry): entry is string => typeof entry === 'string') } : {}),
+    ...(typeof raw.from === 'string' ? { from: raw.from } : {}),
+  }
+}
+
 function isDestination(value: unknown): value is ArtifactDestination {
   if (typeof value !== 'object' || value === null) return false
   const destination = value as Partial<Record<string, unknown>>
   if (destination.kind === 'home') return typeof destination.reason === 'string'
+  // A shot or renders folder that could leave the workspace is unreadable, whatever wrote it.
   return destination.kind === 'workspace'
-    && nonEmpty(destination.root) && nonEmpty(destination.renders) && nonEmpty(destination.shot)
+    && nonEmpty(destination.root) && nonEmpty(destination.renders) && isProjectPath(destination.renders)
+    && nonEmpty(destination.shot) && isShotName(destination.shot)
     && typeof destination.writeManifest === 'boolean'
 }
 
@@ -413,7 +463,7 @@ function isLocation(value: unknown): value is ArtifactLocation {
   const location = value as Partial<Record<string, unknown>>
   if (location.kind === 'home') return location.reason === null || typeof location.reason === 'string'
   return location.kind === 'workspace'
-    && nonEmpty(location.root) && nonEmpty(location.relativePath) && nonEmpty(location.shot)
+    && nonEmpty(location.root) && nonEmpty(location.relativePath) && nonEmpty(location.shot) && isShotName(location.shot)
     && typeof location.version === 'number' && Number.isInteger(location.version) && location.version > 0
     && (location.sidecar === null || nonEmpty(location.sidecar))
 }
@@ -468,7 +518,6 @@ function isTask(value: unknown): value is VideoTask {
     && typeof row.model === 'string'
     && typeof row.status === 'string'
     && typeof row.submittedAt === 'string'
-    && Array.isArray(row.artifacts)
 }
 
 function formatDay(now: Date): string {

@@ -80,7 +80,6 @@ function runtimeFor(fake: Fixture, ledger: Ledger, host: FakeHost | null): Video
     watchTask: () => null,
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
 }
 

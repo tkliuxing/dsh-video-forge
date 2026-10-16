@@ -1,9 +1,10 @@
 /**
  * Host half of dsh-video-forge.
  *
- * Wiring, in order: read the config snapshot, open the ledger, register the four
- * tools and the media route, then reconcile whatever the previous process left
- * open. The last step is why the ledger exists at all — a generation is paid
+ * Wiring, in order: read the config snapshot, open the ledger, register the
+ * three tools, the media route and the panel API, then reconcile whatever the
+ * previous process left open and tell sessions about tasks that finished
+ * meanwhile. The last step is why the ledger exists at all — a generation is paid
  * work owned by a vendor, and a restart must reattach to it rather than lose it.
  */
 
@@ -25,6 +26,7 @@ import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
+import { requireLedger } from './operations.ts'
 import { registerTools } from './tools.ts'
 import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
@@ -129,16 +131,21 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
         logger.warn('video-forge: the jobs service is not loaded; tasks are watched in-process and reported through video_status')
       }
 
-      const fallback = startInProcessWatch(common)
+      const fallback = startInProcessWatch({
+        ...common,
+        onExit: () => {
+          common.onExit()
+          runtime.cancels.delete(input.task.localId)
+        },
+      })
       runtime.cancels.set(input.task.localId, async () => {
         fallback.cancel()
-        return false
+        return true
       })
       return null
     },
     cancels: new Map(),
     watching: watchTableFor(ledger.path),
-    activeCount: () => ledger.list().filter(task => task.status === 'submitting' || task.status === 'queued' || task.status === 'running').length,
   }
 
   // The media route is registered through an effect because (unlike
@@ -211,10 +218,16 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   // Reconciliation needs every provider's key, and the credential store
   // publishes its service only once it has read its file; see
   // `scheduleReconciliation` for why this waits rather than starting here.
+  // Whether the rows a previous process left have been reconciled. A boot read
+  // that failed leaves this false, and the timer pass then retries the read and
+  // runs the reconciliation boot missed — otherwise those tasks would wait for
+  // the next restart while their artifact URLs expire.
+  let inheritedReconciled = false
   scheduleReconciliation(
     ctx,
     async () => {
       await reconcile(runtime, await inherited)
+      inheritedReconciled = true
       // Not awaited: resuming sessions must never hold back the orphan retry.
       void deliverNotices(runtime)
       // Settling usage can take a while on the first boot after an upgrade; it
@@ -224,6 +237,16 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
       })
     },
     async () => {
+      try {
+        await requireLedger(runtime)
+      } catch (error: unknown) {
+        logger.warn(`video-forge: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      if (!inheritedReconciled) {
+        await reconcile(runtime)
+        inheritedReconciled = true
+      }
       await retryOrphans(runtime)
       await settleBilling(runtime)
       // Also the retry for notices a session could not take last time.

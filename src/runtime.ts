@@ -39,8 +39,6 @@ export interface VideoForgeRuntime {
    * into one path and replaces the token the first one already handed out.
    */
   readonly watching: Set<string>
-  /** How many tasks currently hold the provider. */
-  activeCount(): number
 }
 
 /** Absolute path of the plugin's home under `$DSH_HOME`. */

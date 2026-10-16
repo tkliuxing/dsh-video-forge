@@ -133,10 +133,14 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
   }
 
   if (facts.isError) {
+    const text = resultText(facts.content) ?? ''
+    // A submission whose outcome is unknown is not a failure: it may be billing.
+    const unconfirmed = /may already have created and billed/.test(text)
     return (
       <div style={STYLE_ROW}>
-        <div style={STYLE_TITLE}>{t('generate.failed')}</div>
-        <div style={STYLE_ERROR}>{resultText(facts.content) ?? ''}</div>
+        <div style={STYLE_TITLE}>{unconfirmed ? t('generate.unconfirmed') : t('generate.failed')}</div>
+        <div style={STYLE_ERROR}>{text}</div>
+        {unconfirmed ? <div style={STYLE_META}>{t('status.unconfirmedHint')}</div> : null}
       </div>
     )
   }
@@ -169,7 +173,7 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
   }
   // Offered only once the live state confirms the task can still be stopped,
   // never on the frozen result alone, and not again after it was accepted.
-  const cancellable = props.liveTasks !== undefined && live.loaded && !live.stopped && row !== null && CANCELLABLE.has(status)
+  const cancellable = props.liveTasks !== undefined && live.loaded && !live.stopped && row !== null && row.cancelable !== false && CANCELLABLE.has(status)
 
   return (
     <div style={STYLE_ROW}>
@@ -216,7 +220,7 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
   )
 }
 
-/** `video_status` / `video_cancel` / `video_export` share a compact row. */
+/** `video_status`: the task list as a compact row. */
 export function VideoStatusRow(props: VideoCardProps): ReactNode {
   const { t } = props
   const facts = blockFacts(props.block)

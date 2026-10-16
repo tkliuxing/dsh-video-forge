@@ -262,4 +262,20 @@ describe('a ledger read that failed once', () => {
     })
     expect(ledger.byId('v-1')?.status).toBe('submitting')
   })
+
+  it('refuses a second row under an id that already exists, instead of letting its writes land on the older paid row', async () => {
+    const { Ledger } = await import('../src/ledger.ts')
+    const dir = await mkdtemp(join(tmpdir(), 'video-forge-idguard-'))
+    const now = new Date().toISOString()
+    const row = {
+      localId: 'v-1', provider: 'ark', protocol: 'ark-seedance', model: 'm', providerTaskId: null, status: 'submitting', progress: null,
+      submittedAt: now, updatedAt: now, paramsFingerprint: 'fp',
+      params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+      artifacts: [], error: null,
+    }
+    const ledger = new Ledger({ path: join(dir, 'tasks.json'), maxTasks: 10, maxGiB: 1 })
+    await ledger.ensureLoaded()
+    await ledger.add(row as never)
+    await expect(ledger.add(row as never)).rejects.toThrow(/already in the ledger/)
+  })
 })

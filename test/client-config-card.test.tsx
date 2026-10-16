@@ -6,9 +6,8 @@
  * operator changed must reach the host as the right path op, and text that is not
  * valid JSON must be refused locally instead of being written as a string.
  *
- * The panel's own behaviour is covered by the API tests plus the pure helpers
- * below; a full interaction sweep of the workbench page would need a scripted
- * fetch face and belongs with the M2 follow-up on the panel's UX.
+ * The panel API's own behaviour is covered by its tests; the helpers below are
+ * the pure ones the configuration card shares with the chat cards.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -214,7 +213,7 @@ describe('configuration card: API keys', () => {
   })
 })
 
-describe('workbench helpers', () => {
+describe('shared card helpers', () => {
   it('resolves a document-relative media URL and refuses anything else', () => {
     expect(safeUrl('video-forge/media/v-1/tok/x.mp4', 'http://127.0.0.1:3080/'))
       .toBe('http://127.0.0.1:3080/video-forge/media/v-1/tok/x.mp4')

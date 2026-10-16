@@ -4,7 +4,7 @@
 > 原占位名 `dsh-video-studio` **在 npm 上已被他人占用**（`dsh-video-studio@0.4.3`，作者 litao36253，是一个仅 Windows、自装 ffmpeg 的本地剪辑工作台，功能面正好落在本文 §1 的非目标里）。
 > 本地目录仍是 `~/Code/github.com/tkliuxing/dsh-video-studio`（本文所有路径按此写）。**仓库与目录将一并改名为 `dsh-video-forge`**（2026-10-15 决定，随 M5 发布链路一起做；本地目录由用户自己改，因为会话就在这个目录里运行）。
 > 本文是设计决策记录，不是最终 API 契约；实施中出现的新事实回写到这里。
-> **2026-10-15 规划讨论改变了方向**：插件以模型工具为主，整个视频工作流在工作区的对话里完成，工作区就是项目，工作台页面删除，工具收敛为 3 个，另配 5 个 skill。§4、§5、§9 描述的仍是 M2.1 已实现的状态；与新方向冲突的地方以 **§16** 为目标设计，实施时再回写到各节。
+> **2026-10-15 规划讨论改变了方向**：插件以模型工具为主，整个视频工作流在工作区的对话里完成，工作区就是项目，工作台页面删除，工具收敛为 3 个，另配 5 个 skill。M3（2026-10-16 完成）之后，§3、§4、§5、§9 已回写为当前实现；§16 仍是目标设计，§17 是 M3 的计划与实施记录。
 
 ## 1. 目标与非目标
 
@@ -50,46 +50,58 @@
 dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 ├── package.json
 ├── tsconfig.json
-├── tsdown.config.ts            # Host 入口 + Client 入口双产物（抄 dsh-presets-hidden）
+├── tsdown.config.ts            # Host 入口 + Client 入口双产物
+├── vitest.config.ts            # 单测（排除在线测试）
+├── vitest.live.config.ts       # 在线测试（`pnpm test:live`，有 key 才跑）
 ├── cordis.patch.yml            # 插入一行：id=video-forge, name=dsh-video-forge
 ├── icon.svg                    # 市场卡片图标，自包含 SVG，≤256 KiB
-├── locale/en.json              # meta.title / meta.description + 全部文案键
+├── locale/en.json              # meta.title / meta.description
 ├── locale/zh.json
 ├── src/                        # Host 半区（函数插件）
-│   ├── index.ts                # name / inject / Config / apply
+│   ├── index.ts                # name / inject / Config / apply：组装运行时、注册工具与路由、开机对账、等宿主服务
 │   ├── config.ts               # schemastery Config（volatile）+ snapshot() 取普通值
-│   ├── ledger.ts               # 任务台账：原子写、恢复、容量策略
-│   ├── watch.ts                # 盯守：轮询 → ctx.jobs 输出环 → 结算
-│   ├── download.ts             # 拉取 provider 产物 → $DSH_HOME 落盘（0600/0700）
-│   ├── settings.ts             # 纯类型 + 默认值 + 解析规则（无 DSH 依赖，可单测）
-│   ├── runtime.ts              # 工具共享的运行时面（设置快照、产物路径、URL 构造）
+│   ├── settings.ts             # 纯类型 + 默认值 + 解析规则（无 DSH 依赖）
+│   ├── provider-presets.ts     # 供应商预设目录（纯数据 + 校验）
+│   ├── types.ts                # 台账、产物、请求的共享词汇
+│   ├── ledger.ts               # 任务台账：先读后写、原子写、逐字段校验、进程内按文件共享
+│   ├── operations.ts           # 生成 / 取消 / 列表 / 配置状态的唯一实现（工具与面板 API 共用）
+│   ├── compose.ts              # from / characters / style：确定性地组装请求
+│   ├── project.ts              # video-project.yaml 的读取与校验
+│   ├── destination.ts          # 产物落点（提交前）与交付进工作区（下载后）
+│   ├── session-context.ts      # 调用会话：id、工作区、权限档位
+│   ├── workspace-fs.ts         # ctx.fs 的切片 + 测试用的本机实现
+│   ├── materials.ts            # 素材解析（路径经 ctx.fs 读、文件头识别；URL 透传）
+│   ├── watch.ts                # 盯守：轮询 → ctx.jobs 输出 → 下载 → 交付 → 结算
+│   ├── reconcile.ts            # 开机对账、孤儿重试、用量补查
+│   ├── notify.ts               # 接手任务结束后通知所属会话（M3.5）
+│   ├── download.ts             # 拉取产物与尾帧到 $DSH_HOME（0600/0700 + 128-bit token）
+│   ├── billing.ts              # 用量结算规则
 │   ├── credentials.ts          # 凭据解析顺序（对象解构！）
-│   ├── download.ts             # 产物落盘（0600/0700 + 128-bit token）
-│   ├── materials.ts            # 素材解析（绝对路径 / http(s) URL → data: URL + digest）
+│   ├── runtime.ts              # 运行时面，以及按台账文件共享的盯守表 / job 表
 │   ├── providers/              # 协议表
-│   │   ├── adapter.ts          # 协议接口 + HTTP/状态归一化
+│   │   ├── adapter.ts          # 协议接口 + HTTP/状态/错误归一化 + 审核分类
 │   │   ├── dot-path.ts         # 可配置字段提取（中转站形状不可预知）
-│   │   ├── index.ts            # adapterFor(provider, model)
+│   │   ├── index.ts            # adapterFor / cancelSupported / returnsLastFrame
 │   │   ├── generic-openai-videos.ts  # OpenAI 兼容 /v1/videos（中转站、Sora 类）
-│   │   └── ark-seedance.ts     # 火山方舟 Seedance
-│   ├── operations.ts           # 提交/取消/导出/列表的唯一实现（工具与面板共用）
-│   ├── tools.ts                # 四个工具的 schema/文案/卡片元数据（薄适配层）
+│   │   ├── ark-seedance.ts     # 火山方舟 Seedance（含 return_last_frame）
+│   │   └── minimax-video.ts    # MiniMax 海螺
+│   ├── tools.ts                # 三个工具的 schema/文案/卡片元数据（薄适配层）
 │   ├── trust.ts                # 面板 API 的信任门（回环 / 已配对设备）
-│   ├── media-route.ts          # token 化媒体路由（GET/HEAD + Range/206）
-│   └── panel-api.ts            # 工作台的宿主路由族 /video-forge/api/*
-├── client/                     # Client 半区
-│   ├── index.ts                # 座位注册：toolview 卡片 / main+panellist / overlay badge / 配置卡
-│   ├── cards.tsx               # 四个工具的结果卡片
-│   ├── video-card-model.ts     # 卡片的纯推导（无 React，可单测）
-│   ├── panel.tsx               # 工作台页（提交 + 任务/产物列表 + 取消/导出）
-│   ├── panel-api.ts            # 面板的 HTTP 客户端（文档相对 URL）
+│   ├── media-route.ts          # token 化媒体路由（GET/HEAD + Range/206，工作区文件的句柄校验）
+│   └── panel-api.ts            # 面板 API /video-forge/api/{overview,cancel}
+├── src/client/                 # Client 半区
+│   ├── index.ts                # 座位注册：toolview 卡片 / overlay badge / 配置卡；实时任务 store
+│   ├── cards.tsx               # 工具卡片（生成卡片跟随实时状态）
+│   ├── live-tasks.ts           # 按任务 id 的实时快照与引用计数轮询
+│   ├── video-card-model.ts     # 卡片的纯推导（无 React）
+│   ├── panel-api.ts            # 面板 API 的 HTTP 客户端（文档相对 URL）
 │   ├── badge.tsx               # shell.overlay 的进度 badge（无事时 return null）
-│   ├── settings-card.tsx       # 配置卡（默认项/限额/供应商状态/JSON 编辑）
-│   ├── config-card-seat.ts     # 主位+回退座位的选择策略（无组件、可单测）
-│   ├── icons.tsx               # 侧栏字形
+│   ├── settings-card.tsx       # 配置卡
+│   ├── providers-editor.tsx    # 供应商行编辑器
+│   ├── config-card-seat.ts     # 主位 + 回退座位的选择策略
 │   └── locales.ts              # 中英文字典
-├── test/                       # 单测 + 契约测试（81 例）
-└── fixtures/                   # 离线仿真在线 API 的假 provider（见 §13）
+├── test/                       # 单测、契约测试、jsdom 卡片测试；live.test.ts 为在线测试
+└── fixtures/                   # 离线仿真方舟 / MiniMax / OpenAI 兼容接口的假供应商（见 §13）
 ```
 
 `package.json` 关键字段（对齐你现有插件约定与 `docs/user/develop/basic/publish.md`）：
@@ -112,54 +124,72 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 }
 ```
 
-依赖规则（实测版）：与宿主共享实例的 dsh 包——`@deepseek-ai/dsh-tools`、`dsh-host-webserver`（**注意不是 `dsh-web-server`**）、`dsh-settings`、`dsh-credentials`、`dsh-jobs`、`dsh-system-prompt`——同时进 `peerDependencies` 与 `devDependencies`，区间写成 `^0.1.7-rc.1 || ^0.2.0-rc.1`。唯一的运行时依赖是 `@deepseek-ai/schemastery`（配置 schema）；**没有 zod、没有 mime-types**——MIME 与扩展名映射是自己写的几十行，少一个依赖。客户端半区只允许 `require` 平台模块表里的 9 个模块（`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/dsh-cordis`、`dsh-client-store`、`dsh-client-ui-slots`、`dsh-client-ui-primitives`、`dsh-client-ui-dockkit`），其余一律内联，所以对 `ui-tool` / `ui-conversation` 只能做**类型导入**（编译期擦除）。**发布优先 npm 或 `pnpm pack` 的 tarball**，GitHub 直装需要用户 `allowBuilds` 授权（等于允许装包时执行代码），不作为首选分发路径。发版走 GitHub Actions + npm trusted publishing / OIDC，不在本地 `npm publish`。
+依赖规则（实测版）：与宿主共享实例的 dsh 包——`@deepseek-ai/dsh-tools`、`dsh-host-webserver`（**注意不是 `dsh-web-server`**）、`dsh-settings`、`dsh-credentials`、`dsh-jobs`、`dsh-system-prompt`——同时进 `peerDependencies` 与 `devDependencies`，区间写成 `^0.1.7-rc.1 || ^0.2.0-rc.1`。运行时依赖只有 `@deepseek-ai/schemastery`（配置 schema）和 `yaml`（读 `video-project.yaml`，无二次依赖，§17.5 决定）；**没有 zod、没有 mime-types**——MIME 与扩展名映射是自己写的几十行，少一个依赖。客户端半区只允许 `require` 平台模块表里的 9 个模块（`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/dsh-cordis`、`dsh-client-store`、`dsh-client-ui-slots`、`dsh-client-ui-primitives`、`dsh-client-ui-dockkit`），其余一律内联，所以对 `ui-tool` / `ui-conversation` 只能做**类型导入**（编译期擦除）。**发布优先 npm 或 `pnpm pack` 的 tarball**，GitHub 直装需要用户 `allowBuilds` 授权（等于允许装包时执行代码），不作为首选分发路径。发版走 GitHub Actions + npm trusted publishing / OIDC，不在本地 `npm publish`。
 
-## 4. 能力面 A：模型工具（4 个，不多做）
+## 4. 能力面 A：模型工具（3 个）
 
-> **2026-10-15 规划修订（目标设计见 §16.3）**：工具收敛为 3 个。`video_export` 删除，因为产物直接落在工作区；`video_generate` 增加 `shot` / `from` / `characters`，素材改用工作区相对路径；`video_status` 不带参数时还返回可用模型、配置状态与花费汇总。判断与工作流交给随插件附带的 skill。本节下文仍是 M2.1 的实现状态。
+> 2026-10-16 起本节描述 M3 完成后的实现（规划见 §16.3，实施记录见 §17.6–§17.10）。判断与工作流将由随插件附带的 skill 指导（M4），工具本身只管宿主必须强制保证的事：花钱、密钥、去重、台账、盯守、产物写到哪里。**工具不依赖模型加载过 skill**：清单、风格、角色、产物位置都由工具自己处理，工具描述里写全了基本用法。
 
 | 工具 | 参数要点 | 返回 | 说明 |
 |---|---|---|---|
-| `video_generate` | `prompt`(必)、`provider?`、`model?`、`mode`(t2v/i2v/s2v)、`first_frame?`、`last_frame?`、`reference_images[]?`、`duration_seconds?`、`resolution?`、`aspect_ratio?`、`wait_seconds?`(默认 0) | `{ kind:'job', jobId, task:{ localId, providerTaskId, provider, model, status } }` 或 `{ kind:'done', artifact }` | 登记台账 → `ctx.jobs.start` 盯守 → 立即返回 jobId；`wait_seconds>0` 时有界等待（上限 600s） |
-| `video_status` | `{ task_id?, limit? }` | 最近任务列表：状态、进度、产物路径与播放 URL、失败原因 | **超时/重启后的唯一入口**；也是"只查不重提"的落地机制 |
-| `video_cancel` | `{ task_id }` | `{ cancelled, providerSupported }` | 请求 provider 取消；与 `job_kill`（只停盯守）语义**不同**，必须在描述里写清 |
-| `video_export` | `{ task_id, target_path? }` | 导出的工作区路径 | 显式把产物从 `$DSH_HOME` 复制进工作区，供 `present`/交付 |
+| `video_generate` | `prompt`（必）、`provider?`、`model?`、`mode?`（t2v/i2v/flf2v/s2v）、`first_frame?`、`last_frame?`、`reference_images[]?`、`duration_seconds?`、`resolution?`、`aspect_ratio?`、`shot?`、`from?`、`characters[]?`、`wait_seconds?`（默认 0） | `{ kind:'job'\|'done', task_id, provider, model, status, progress, job_id, artifact, message }` | 读清单 → 组装请求 → 定产物落点（拒绝在此发生，不花钱）→ 先写意图再提交 → `ctx.jobs` 盯守 → 立即返回；`wait_seconds>0` 时有界等待（上限 600 s） |
+| `video_status` | `{ task_id?, limit? }` | 任务列表（状态、进度、产物位置 `location`、播放 URL、错误、审核标记、用量）；**不带 `task_id` 时另有 `setup`** | 超时、重启之后的唯一入口，"只查不重提"的落地机制。`setup` 给出：是否启用、默认供应商与模型、每个供应商的 key 状态（已设置 / 不需要 / 缺失及原因，从不给出值）、能否续拍、模型及其能力；当前工作区的清单状态、权限档位、`renders` 目录、已登记角色、是否设了风格 |
+| `video_cancel` | `{ task_id }` | `{ cancelled, providerSupported, status, message }` | 请求供应商停止计费；与 `job_kill`（只停止盯守）语义不同。被接受的取消不会再发重启通知 |
 
-契约遵循 `docs/cookbook/adding-a-tool.md`：`output.schema` 声明**一个**规范 JSON 值、`output.render` 给人看的文案、`output.presentationMeta` 提供卡片所需的有界事实（产物 id、duration、宽高、provider），`presentCall`/`presentResult` 必须**纯函数**（回放也会跑）。`isConcurrencySafe: () => false`（生成是付费且重资源操作）。每个工具自己设 `timeoutMs`（`dsh-guard-timeout-policy` 只做协作式取消）。
+`video_export` 已在 M3.3 删除（产物直接落在工作区）。客户端仍注册它的卡片，旧对话照常显示。
 
-素材来源：**工作区绝对路径**（读成 `data:` URL，方舟文档明确接受 base64）与 **http(s) URL**（透传）；两者都带 digest，指纹因此对"用了哪张图"敏感，而不只对提示词敏感。`first_frame`/`last_frame` 与 `reference_images` 互斥；上限图 20 MB / 视频 100 MB；提示词要求模型先 `read` 确认本地文件存在。
+**请求怎么组装**（`src/compose.ts`、`src/operations.ts`，确定性，每次相同）：
 
-> **会话附件 id 本期未实现（M1 有意收窄）**：附件库读图需要完整的 `ImageAttachmentRef`（id + 已校验的媒体类型/字节数/尺寸），光是 id 推不出来，硬做等于猜。工具会明确回"暂不接受附件 id，请给绝对路径或 URL"，而不是半可用。补它需要拿到会话附件的完整 ref，列为 M2 项。
+1. 读工作区根目录的 `video-project.yaml`（经 `ctx.fs`；解析失败、节内未知键都在提交前拒绝）。
+2. `from`：任务 id 或视频路径。来源必须是已成功、由方舟生成且记录了尾帧的 take；尾帧成为首帧（`i2v`，给了 `last_frame` 就是 `flf2v`），镜头沿用来源的。
+3. `characters`：描述加进提示词；参考图（`refs`，文件名里可用 `*`/`?`，跳过隐藏文件，不分大小写）在 `s2v` 下发送，没指定模式又带参考图时自动用 `s2v`；与手动参考图合并去重后最多 9 张。
+4. 清单的 `style` 加到每次提示词后面。台账 `params.prompt` 保留用户原话，`params.sentPrompt` 存实际发送的版本。
+5. 清单的 `defaults` 补上请求没给的参数（供应商与模型成对使用）；参数不合法时，报错注明哪项来自清单。
+6. 定产物落点（§9），然后才去读素材。
 
-**重复提交拦截放在宿主层**：以 `sha256(canonical params)` 为指纹，同一指纹在 `dedupeWindowSeconds` 内直接拒绝并回既有 task 的 id。
+空提示词在拼接风格与角色之前就被拒绝。
 
-## 5. 能力面 B：Web 面板
+**素材**：工作区相对路径或绝对路径（经 `ctx.fs` 读成 `data:` URL，上限 20 MB；扩展名不认识时看文件头识别 PNG/JPEG/GIF/WebP 与 MP4/MOV/WebM，所以拖进对话的无扩展名附件路径可以直接用），或 http(s) URL（透传）。有会话的调用拿不到 `ctx.fs` 时拒绝，不退回读本机。会话附件 id 不支持（§17.5 决定只做路径）。
 
-> **2026-10-15 规划修订（目标设计见 §16.4）**：工作台页（`main` + `sidebar.panellist`）删除，面板 API 的 `generate` 一并删除；聊天卡片承担进度显示与取消；配置卡、badge、`overview` / `cancel` / `media` 路由保留。本节下文仍是 M2.1 的实现状态。
+**去重与审核**：指纹是规范化参数（实际发送的提示词、模式、几何参数、素材摘要）的 `sha256`，**不含 `shot`**——同样的输入换个镜头仍是同一次付费生成，也不能借换文件夹绕过审核拦截。去重窗口内同指纹拒绝并给出既有任务；输入侧被内容审核拒过的指纹永久拒绝（§16.7）。
 
-| slot | 用途 | 与初稿的差异 |
-|---|---|---|
-| `tool.call.toolview`（按线名 keyed） | `video_generate` / `video_status` 的结果卡片：`<video controls>` 播放器 + 任务状态 | — |
-| **`main` + `sidebar.panellist`（同一个 id）** | **工作台页**：提交生成、参数预设、任务与产物列表 | **原定 `shell.overlay`，实测改掉** |
-| `shell.overlay`（badge） | 会话内"有 N 个任务在跑"的环境提示 | 由工作台降级为提示 |
-| **`plugins.bundle.config`（主）→ `settings.plugins.tab`（回退）** | 供应商与模型配置：**从「本版本支持的供应商」里挑（可加多个）**、协议/默认供应商/默认模型都是选项、Base URL、**Key（掩码显示 + 可写入）**、模型能力矩阵 | **原定 `settings.section`**；M2.1 由 JSON 文本框改为表单 + 选项 |
-| `conversation.view` | 任务/产物 tab（可选，二期） | — |
+契约遵循 `docs/cookbook/adding-a-tool.md`：`output.schema` 声明**一个**规范 JSON 值（每个对象都声明 `additionalProperties`），`output.render` 是给模型看的文案，`output.presentationMeta` 提供卡片所需的有界事实；`presentCall`/`presentResult` 是纯函数（回放也会运行）。`video_generate` 的 `isConcurrencySafe` 为 false（付费且占资源）。
 
-三条实测理由（都会在开发手册里踩到）：
+## 5. 能力面 B：浏览器界面
 
-1. **工作台不该放浮层**。`shell.overlay` 的官方定位是「badge、toast、status pill」，10 个既有占用者是 1 个全窗面板 + 3 个 modal + 6 个 toast，**没有任何一个常驻面板**；而且该层是 `pointer-events: none` + `> * { auto }`，一个铺满的 wrapper 会挡住整个应用。真正的面板一律是 **`main`（keyed）+ `sidebar.panellist`（同一个 id）**：`main` 给面板分配空间，shell 自己管侧栏按钮/高亮/标签。`shell.overlay` 保留给环境提示（badge 在没事时 `return null`，这是官方约定）。
-2. **配置卡的家是 `plugins.bundle.config`，不是 `settings.section`**。dsh 0.1.7 起把「插件自己的配置」从 Settings 搬到侧栏 Plugins 页，`plugins.bundle.config` 以**包名**为 key 渲染在该 bundle 的详情页；`settings.plugins.tab` 是没有挂插件管理页时的唯一回退位。两个座位**同时**注册会重复，所以走 `config-card-seat.ts` 的"尝试主位 → 被拒则回退 → 主位晚到时迁移"策略（`register` 对未声明座位**抛错**，这个拒绝就是回退信号；`slots/changed` 在 `register`/dispose 内部同步触发，故必须有重入闩锁）。
-3. **配置读写走 `ctx.configForms`**（经 `ctx.get('configForms')` 取，避免插件与宿主 cordis 类型身份不一致），写用 `mutate([{op:'set', path:[...], value}])`：拒绝返回 `false`、传输失败才 reject。config 的命名空间就是 profile 行的 `id`（`video-forge`），所以卡片要等 `whileServed(['video-forge'])` 成立再注册。
+> 2026-10-16 起本节描述 M3.4 之后的实现。**没有单独的工作台页**：视频只在对话里生成（§16.4），浏览器这一侧不能提交生成，也不写文件。
 
-卡片从 `ToolCallBlock` 的 args / content / metadata 派生，不做工具调用的反向依赖，畸形输入回退通用行。媒体播放走 §9 的自建路由。
+| slot | 用途 |
+|---|---|
+| `tool.call.toolview`（按工具名 keyed） | `video_generate` 卡片是主要工作界面：实时状态与进度、播放器、产物位置、视频被移走或删除时明确提示、排队或运行中可取消。`video_status`、`video_cancel` 与旧的 `video_export` 是紧凑行 |
+| `shell.overlay`（badge） | 有任务在进行时显示数量，空闲时 `return null` |
+| `plugins.bundle.config`（主）→ `settings.plugins.tab`（回退） | 供应商与模型配置：从预设目录里挑（可加多个）、协议/默认供应商/默认模型都是选项、Base URL、Key（掩码显示 + 可写入）、模型能力矩阵（§8.1） |
 
-> **工作台的浏览器侧不能调工具**（工具调用属于 agent 回合），所以它有自己的一族宿主路由：`/video-forge/api/{overview,generate,cancel,export}`。这一族**不是**薄壳——它调用的正是 `operations.ts` 里工具用的同一批函数，浏览器提交与模型提交不可能在校验、去重、盯守上分叉。
+**实时卡片**（`src/client/live-tasks.ts`、`src/client/cards.tsx`）：工具卡片拿到的数据在结果出来后就冻结了，所以生成卡片另从插件注入的 `liveTasks` 读取实时状态——注册时 `inject: () => ({ liveTasks })`（与 `ui-deliverables` 同一做法），卡片用 `useSyncExternalStore` 订阅。
+
+- 同一任务 id 永远是同一个 source，按引用计数轮询 `GET /video-forge/api/overview?taskId=…`。
+- 轮询节奏：第一张卡片订阅时问一次；生成中每 3 秒问一次；等宿主重试的任务（孤儿、结果未知）和出错后每 30 秒问一次；结束就停；最后一张卡片卸载也停。
+- 面板 API 回答 403 或 404 时永久停止，卡片保持冻结时的结果。
+- 取消时如果正好有查询在途，在它之后再查一次。
+- 以台账为准，不依赖 job id（job id 重启后会复用）。
+
+**三条座位选择的理由**（都在开发手册里踩过）：
+
+1. **常驻面板不放浮层**。`shell.overlay` 的官方定位是 badge、toast、status pill，该层是 `pointer-events: none` + `> * { auto }`，铺满的 wrapper 会挡住整个应用。M2 的工作台放在 `main` + `sidebar.panellist`（同一个 id），M3.4 已删除。
+2. **配置卡的家是 `plugins.bundle.config`**，以包名为 key 渲染在该 bundle 的详情页；`settings.plugins.tab` 是没有插件管理页时的唯一回退位。两个座位同时注册会重复，所以 `config-card-seat.ts` 采用"先试主位 → 被拒则回退 → 主位晚到时迁移"（`register` 对未声明座位抛错，这个拒绝就是回退信号；`slots/changed` 在 `register`/dispose 内部同步触发，所以需要重入闩锁）。
+3. **配置读写走 `ctx.configForms`**（经 `ctx.get('configForms')` 取，避免插件与宿主的 cordis 类型身份不一致），写用 `mutate([{ op:'set', path, value }])`：拒绝返回 `false`，传输失败才 reject。命名空间是 profile 行的 `id`（`video-forge`），所以要等 `whileServed(['video-forge'])` 成立再注册。
+
+卡片只从 `ToolCallBlock` 的 args / content / meta 和注入的 `liveTasks` 派生，畸形输入回退为通用行。媒体播放走 §9 的自建路由。
+
+**面板 API**：`/video-forge/api/{overview,cancel}`。
+
+- `overview`：不带参数时给配置卡和 badge 用（设置、供应商与凭据状态、任务列表、用量）；带 `taskId` 时只返回该任务的行和 `artifactState`（视频是否仍在写入时的位置），不查凭据。空 `taskId` 返回 400，未知任务返回 404，先等台账读完再回答。
+- `cancel`：与 `video_cancel` 同一个函数。
+- `generate` 与 `export` 已删除。
+
+> **信任门**：harness 只认证自己的 index 与 bundle，不拦插件路由，所以这一族自带闸门：本机回环放行，已配对设备放行（`remoteWebUiPairing` 在时），未配对的局域网浏览器 403；以 socket 地址为准，`X-Forwarded-For` 永不采信，并要求浏览器的同源标记。媒体路由用 128-bit token 授权，两者策略不同，理由都已写明。
 >
-> **信任门**：harness 只认证自己的 index 与 bundle，**不**拦插件路由，所以这一族自带闸门——本机回环放行，已配对设备放行（`remoteWebUiPairing` 在时装），未配对的局域网浏览器 403；socket 地址为准，`X-Forwarded-For` 永不采信，并要求浏览器的同源标记。MEDIA 路由则用 128-bit token 授权，两者策略不同且都写明了理由。
->
-> **密钥两条通道，职责不同**：**写**走官方的 `ctx.remote.credentials.{describe,set,unset}`（客户端 `inject` 需含 `'remote','remote.credentials'`）——凭据域归宿主管，插件不自己写文件、也不经自己的路由搬密钥；**读**（"已配置 / 来源 / `sk…1234`"）由本插件自己的 `/video-forge/api/overview` 算，因为官方通道**任何读方法都不返回密钥值**，只有 `{configured, source, writable}`。密钥值**只单向流动**：进 password 输入框 → 送宿主 → 立刻从组件状态里丢掉，页面上永不回显，也不进日志。凭据行按 **config 里声明的 `authRef`** 渲染（不是按 overview 返回的 provider），这样面板 API 不可达时——也就是最需要修 key 的时候——照样能设 key。
-
-**配置界面（M2.1，2026-10-14）**：供应商列表原本是一个 JSON 文本框（"全能力、不自造控件"），实际用起来是把 schema 背给操作者。现在改为**行编辑器 + 预设目录**，细节见 §8.1。
+> **密钥两条通道，职责不同**：**写**走官方的 `ctx.remote.credentials.{describe,set,unset}`（客户端 `inject` 需含 `'remote','remote.credentials'`），凭据域归宿主管；**读**（"已配置 / 来源 / `sk…1234`"）由本插件的 `overview` 计算，因为官方通道的任何读方法都不返回密钥值。密钥值只单向流动：进 password 输入框 → 送宿主 → 立刻从组件状态里丢掉，页面上永不回显，也不进日志。凭据行按配置里声明的 `authRef` 渲染，所以面板 API 不可达时——也就是最需要修 key 的时候——照样能设 key。
 
 ## 6. 长任务、恢复与取消
 
@@ -211,6 +241,13 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 
 **取消语义（两件不同的事）**：`job_kill` = 停止盯守（不再轮询，provider 侧继续跑）；`video_cancel` = 请求 provider 取消（协议支持时）。两者都要在工具/job 描述里写明，避免模型误以为 kill 就等于停止计费。
 
+**接手的任务结束时通知会话（M3.5，§17.10）**：被开机对账或孤儿重试接手的任务没有 job，`tool-jobs` 不会替它通知。所以插件在这类任务结束时自己通知所属会话：
+
+- 在 `agents.withoutInitiator` 里调用 `sessionController.resolveAgent`；agent 空闲时用 `followup` 唤醒，正忙时用 `inject` 放进收件箱；然后 `sessions.flush`。
+- flush 成功后才写 `notifiedAt`。
+- 被杀的盯守（`job_kill`、界面上停止、会话归档）和被接受的取消都标记为 `quiet`，不通知。
+- 会话控制器在开机对账之后才就绪，所以三个宿主服务经 `ctx.inject` 等待；没就绪时通知只是等着，不算失败。
+
 ## 7. 供应商适配层（协议表）
 
 模型引用格式 `providerId::modelId`（抄 `dsh-iris`，模型只搬引用、不展开密钥）。
@@ -257,7 +294,7 @@ DELETE {base}/contents/generations/tasks/{id}   # 只能取消**排队中**的�
   | `doubao-seedance-1-0-pro-250528` | t2v / i2v / flf2v | 480p, 720p, 1080p（默认 1080p） | 2–12（另有 `frames`） | ❌ |
   | `doubao-seedance-1-0-pro-fast-251015` | t2v / i2v | 480p, 720p, 1080p（默认 1080p） | 2–12（另有 `frames`） | ❌ |
 
-  `ratio` 全部取自 `16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive`，但有两条**按任务类型**的限制无法写成按模型的列表，留给供应商报错：2.5 的首帧/首尾帧任务只收 `adaptive`；1.0 的文生视频不收 `adaptive`。`duration: -1`（2.x 智能选时长）不进列表——不传 duration 就交给供应商的默认值（2.5 的默认正是 -1；2.0 系列文档没写默认值），不必让工作台解释一个哨兵值。2.x 的参考视频/参考音频、视频编辑/延长、样片模式，适配器尚未接（`content[]` 只发文本与图片）。
+  `ratio` 全部取自 `16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive`，但有两条**按任务类型**的限制无法写成按模型的列表，留给供应商报错：2.5 的首帧/首尾帧任务只收 `adaptive`；1.0 的文生视频不收 `adaptive`。`duration: -1`（2.x 智能选时长）不进列表——不传 duration 就交给供应商的默认值（2.5 的默认正是 -1；2.0 系列文档没写默认值），不必让配置卡解释一个哨兵值。2.x 的参考视频/参考音频、视频编辑/延长、样片模式，适配器尚未接（`content[]` 只发文本与图片）。
 
 **真实通道实测（2026-10-15，M2.5；`2.0-fast` / `2.0-mini`，480p，4 秒，16:9）**：
 
@@ -377,15 +414,25 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 
 ## 9. 产物与播放
 
-> **2026-10-15 规划修订（目标设计见 §16.2）**：产物改落工作区的 `renders/<shot>/vNNN.mp4`，旁边放一份同名 `.json` 说明文件；台账仍在 `$DSH_HOME`。媒体路由继续按台账解析路径，但要处理文件被移动或删除、符号链接指向工作区之外等新情况。本节下文仍是 M2.1 的实现状态。
+> 2026-10-16 起本节描述 M3.2 之后的实现（规划见 §16.2，实施记录见 §17.7、§17.8）。
 
-- **落盘**：`$DSH_HOME/dsh-video-forge/outputs/<localId>/`，目录 `0700`、文件 `0600`（POSIX）。不写工作区，避免几十 MB 二进制污染仓库、也不让 `workspace/changes` 每轮把它算成变更。产物从 provider 的临时 URL 下载（provider 侧 URL 会过期，必须落盘）。
+- **落点**（提交前决定，记进台账 `destination`）：
+  - 工作区对话的产物落在 `<工作区>/<renders>/<shot>/vNNN.<ext>`，`renders` 目录可在 `video-project.yaml` 里映射，`shot` 默认沿用续拍来源，否则为 `untitled`。
+  - 旁边放说明文件 `vNNN.json`（提示词与实际发送的提示词、风格、角色、参数、素材——工作区内的写成相对路径，工作区外的只留文件名与摘要——、`from`、供应商任务 id、用量，不含金额），方舟的尾帧放在 `vNNN.last.jpg`。
+  - 工作区第一次产出时，再写一份带注释的 `video-project.yaml` 和只含 `*` 的 `renders/.gitignore`（已存在就不动）。
+  - 没有会话的调用落 `$DSH_HOME/dsh-video-forge/outputs/<localId>/`（目录 `0700`、文件 `0600`）。
+- **提交前拒绝，不花钱**：会话档位为 `read-only` 或 `unknown`；拿不到 `ctx.fs`；工作区不在本机（SSH，按宿主 `verifyDesktopPath` 的同一办法判断）或已被删除；`renders/<shot>` 路径上有文件、悬空链接或不可写目录挡着；`workspace-write` 下真实路径在工作区外。
+- **交付**（下载完成后；watch 与开机对账两条路径共用 `deliverArtifact`）：
+  - 先照旧下载到 `$DSH_HOME`，再重新确定档位（提交时记录的与会话当前的取更严）。
+  - 视频用 Node `fs` 写（`ctx.fs` 只能写文本）：先在目标目录里放暂存副本，再用 `link(2)` 发布成下一个空闲的版本号。版本号要大于目录里任何 `vNNN.*`，也要大于台账里记过的版本，所以不会覆盖，也不会重发已删除的号。不支持硬链接的文件系统改用独占创建占位文件。
+  - 说明文件、清单和 `.gitignore` 经 `ctx.fs.writeText(createIfAbsent)` 按会话策略写，宿主自己会拦截。
+  - 权限按用户的 umask。
+  - **交付永不抛错**：任何一步失败，视频都留在 `$DSH_HOME`，`artifact.location.reason` 写明原因。下载副本等台账记下交付结果之后才删。
 - **路由**：`ctx.webServer.register({ kind:'prefix', path:'/video-forge/media', handler })`，形态 `GET|HEAD /video-forge/media/:taskId/:token/:name`。
-  - **路径只从台账解析**，绝不接受客户端传来的绝对路径（杜绝穿越）；`:name` 仅作展示。
-  - 每个产物一个 128-bit 随机 token，只有 `taskId + token` 完全匹配才命中。
-  - **必须实现 Range / 206**：内置换行播放要靠它起步与拖拽；同时 `private, no-store`、`nosniff`、沙箱 CSP。
-- **导出**：`video_export` 把产物复制进工作区，之后可由 `present` 变成交付物。
-- **容量**：按 `retain` 给提示，清理永远显式，不自动删。
+  - 路径只从台账解析，绝不接受客户端传来的路径；`:name` 仅作展示。每个产物一个 128-bit 随机 token，`taskId + token` 完全匹配才命中。
+  - 实现了 Range / 206（内置播放器起播与拖动依赖它）；`private, no-store`、`nosniff`、沙箱 CSP。
+  - **工作区产物**先以 `O_NOFOLLOW | O_NONBLOCK` 打开，再要求真实路径仍等于写入时记录的路径、该路径上的文件就是已打开的句柄（`dev`/`ino` 相同）、并且是普通文件；否则 403，不跟随替换后的路径。文件不在了返回 410，卡片据此显示"已移走或删除"。
+- **容量**：`retention` 只统计 `$DSH_HOME` 里的产物（工作区里的视频是用户的文件）；按 `maxGiB`/`maxTasks` 给提示，清理永远显式，不自动删。
 
 ## 10. 日志与回放
 
@@ -550,7 +597,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
   - **收尾（2026-10-15）**：审核拦截单独归类并拒绝重发（`6fa2794`）；"有 key 才跑"的在线测试（`d574c94`）；核实 `1.0-pro-250528` 为官方"即将下线"，预设标注 retiring（`f888d26`）。
   - 在线测试 `free` 与 `paid` 两档都已由用户实跑通过（见 §13 末）。
   - **剩余**：审核拦截的真实样本（没有刻意触发）。
-- **M3 工作区即项目**（§16.2 / §16.4）：清单与目录映射；`renders/` 版本目录与宿主统一分配版本号；说明文件；角色登记；工具改成 3 个（`shot` / `from` / `characters`、工作区相对路径）；删除工作台页与面板 `generate`；聊天卡片显示实时进度并能取消；修掉"重启后进程内盯守不唤醒模型"；工作区写入的连带问题（`ctx.fs`、权限档位、文件被移动、符号链接）。会改工具 schema，所以放在发布之前。
+- **M3 工作区即项目（2026-10-16 完成，见 §17.6–§17.11）**（§16.2 / §16.4）：清单与目录映射；`renders/` 版本目录与宿主统一分配版本号；说明文件；角色登记；工具改成 3 个（`shot` / `from` / `characters`、工作区相对路径）；删除工作台页与面板 `generate`；聊天卡片显示实时进度并能取消；修掉"重启后进程内盯守不唤醒模型"；工作区写入的连带问题（`ctx.fs`、权限档位、文件被移动、符号链接）。会改工具 schema，所以放在发布之前。
 - **M4 skill、指导与成本可见性**（§16.3 / §16.5 / §16.6）：5 个 skill 经 `ctx.skills` 提供方注册（可选依赖）；`video-guide` 及其一致性测试；`video_status` 的花费汇总与事前估算；预设价格表；用方舟 `return_last_frame` 做模型自检。
 - **M5 发布**：仓库与目录改名为 `dsh-video-forge`、加 git remote、GitHub Actions 跑 `pnpm check`、npm trusted publishing / OIDC、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
 - **M6 内容片段重构**（§16.8）：**单独一次改造，不与 M3 合并**（2026-10-15 决定）。之后接 Seedance 2.x 的参考视频/音频、编辑/延长、样片模式，以及 MiniMax 尚未接的扩展项。
@@ -559,7 +606,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 
 ## 15. 未决与风险
 
-1. **`ctx.jobs` 的作用域围栏**：M0 已落地（§6），job 只能在有 agent 的上下文里启动。遗留问题：重启后由进程内定时器接管的任务**不会唤醒模型**。工作台删除后对话是唯一界面，这个缺口必须在 M3 修掉。
+1. **`ctx.jobs` 的作用域围栏**：M0 已落地（§6），job 只能在有 agent 的上下文里启动。~~重启后由进程内定时器接管的任务不会唤醒模型~~：M3.5 已解决（§17.10）——接手的任务结束时，插件经 `sessionController.resolveAgent` + `followup`/`inject` 通知所属会话。未在真实会话上实测唤醒（会产生付费的模型调用）。
 2. **在线通道的形态差异**：`generic-openai-videos` 假设"提交返回 id → 轮询查询 → 返回下载 URL"，但中转站普遍不保证这套形状（字段名、嵌套层级、是否同步阻塞各不相同），所以端点与字段必须 dot-path 可配。M2.5 会用真实 key 复核方舟与 MiniMax；中转站与 Sora 仍然没有 key，只有 fixture 证据。
 3. **成本与限流**：每次生成都是付费调用，且可能触发并发/配额限制。金额只是用量乘以价格表的估算，价格表会过期，真实账单只在供应商控制台。预算闸门暂不做，所以防止模型连续花钱只能靠 `maxConcurrent`、去重窗口、"只查不重提"与 DSH 自身的审批。
 4. **云供应商合规**：Veo 那条路有 ToS/封号风险；可灵官方通道更干净。方舟与 MiniMax 不涉及此风险。
@@ -569,11 +616,11 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 8. ~~**方舟 token 公式是反推的**~~：2026-10-15 用真实任务确认（864×496×97÷1024 = 40594，§7.1）。仍未被官方文字写明，换分辨率或时长时值得再抽查一次。
 9. **预设模型目录会过期**：模型 id 带日期，插件只有 API Key、拿不到在线目录。供应商报"模型不存在"时要不要在卡片上提示更新插件或改 id，尚未决定。2026-10-15 已出现第一个疑似例子：`doubao-seedance-1-0-pro-250528` 返回 `InvalidEndpointOrModel.NotFound`。现在报错会带上供应商原话，至少用户能看懂。
 10. **skill 依赖宿主组合**：默认 CLI 组合挂了 `dsh-skill` 与 `dsh-tool-skill`，但不能假设所有组合都有。`skills` 做成可选依赖，工具在没有 skill 时也必须能正确工作。
-11. **插件写工作区的接口未核实**：插件能否使用 `ctx.fs`、如何拿到会话的权限档位，需要查上游实现后再定方案（§16.2）。
-12. **拖进对话的文件会不会落到工作区，未知**：会的话，"拖素材"就等于按路径引用；不会的话，会话附件支持（§4）仍然要做。
+11. ~~**插件写工作区的接口未核实**~~：M3 调研与实施已定（§17.1、§17.7）：读与小文本写走 `ctx.fs`（写入按会话策略由宿主拦截），视频用 Node `fs` 在同样的检查之后写；SSH 远程工作区在提交前拒绝。
+12. ~~**拖进对话的文件会不会落到工作区，未知**~~：不会落到工作区（§17.1），存在 `$DSH_HOME/attachments`；模型拿到的是无扩展名的路径，插件按文件头识别格式后直接当素材读（M3.1，已用真实 agent 验证）。会话附件 id 不做（§17.5）。
 13. **网络不稳**：本机 Node 直连方舟偶发 `ETIMEDOUT`。盯守能扛住查询失败；但启动对账若刚好遇上，任务会先被标 `orphaned`，要等 5 分钟后的重试才恢复。
 14. **审查记录的已知风险（2026-10-15，暂不修）**：
-    - 插件卸载时不会中止进行中的对账与盯守。cordis 因 `tools`/`webServer` 变化重新加载插件后，新实例的 `watching` 表是空的，会给旧实例还在盯的任务再起一个盯守；两个 `Ledger` 实例各自整份写盘还会互相覆盖。
+    - ~~新实例的 `watching` 表是空的，会给旧实例还在盯的任务再起一个盯守~~：M3.1 起盯守表、台账（M3.1）和 job 表（M3.5）都按台账文件在进程内共享，已修复。插件卸载时仍不会中止进行中的对账与盯守。
     - 两个进程共用同一个 `DSH_HOME` 不安全（整份写盘）。
     - `unconfirmed` 行只在开机时尝试找回，进程运行期间不重试。
     - `orphaned` 不计入并发数：一条失联但仍在供应商那边跑的任务不占名额，突发提交可能超过供应商的并发限制（最坏是被拒，不会多扣费）。反过来计入的话，一条永远解决不了的孤儿会挡住所有提交。
@@ -582,6 +629,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
     - 过期的用量写成 `unknown` 时逐行写盘、孤儿原因按全文比较，首次升级时会多写几次盘。
     - 中转站若把产物放在**另一个需要鉴权的域名**上（如 `files.gw.example` 与 `api.gw.example`），下载不再带 key 后会一直 401，任务停在 `orphaned`。需要时再加每个供应商的 `artifactAuth: 'same-origin' | 'always' | 'never'` 配置（默认 same-origin）。
     - 在线测试只检查"至少有一个 key"，只给了一家的 key 时另一家会被静默跳过。
+15. **接受的取消之后 `tool-jobs` 是否还会唤醒会话（未决，2026-10-16 whole-M3 审查的开放问题）**：`video_cancel` 被接受后，插件把任务标 `quiet`（§17.10），本意是调用方已拿到结果、不再唤醒。但取消最终要经 job 的 `run` 返回 `{status:'killed'}`；`tool-jobs` 对这种情况是静默还是照常通报，以及插件被 cordis 重新加载时旧实例的 jobs 以 `teardown`（会通报，正确）还是 `kill`（会静默）结算，都需要 DSH 源码才能定。它决定"接受的取消后 quiet"与"teardown 不是 kill"两条规则是否端到端成立；未在真实实例实测（那会触发付费的模型调用）。
 
 ## 16. 目标设计（2026-10-15 规划讨论）
 
@@ -984,4 +1032,17 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
     - 三个宿主服务按结构类型断言，接口改名要到运行时才会以失败计数的形式暴露出来。
     - 取消被供应商接受的那一刻，若接手任务的盯守正好有一次查询在途，它可能先写下“已取消”并在结束时发出通知，`cancelTask` 随后才写 `quiet`。窗口只有一次请求那么长，接受。
   - 第二轮审查通过；剩下的 LOW 里，时钟回拨、两处过时注释、引用里的引号转义已修。
+
+### 17.11 M3.6 收尾实施记录（2026-10-16）
+
+测试 326 → 327 例（补了一条 HIGH 回归测试）。
+
+- **回写文档**：§3 包结构树、§4 工具（3 个）、§5 界面（聊天卡片）与 §9 产物按 M3 实现重写；§6、§11、§12、§15 里涉及工作台 / `video_export` / 已解决风险的条目同步更新；顶部横幅、依赖规则（`yaml` 进运行时依赖）、§7.1 措辞、§14 里程碑行一并更新。README 重写，示例清单用插件自己的解析器验证过能解析。
+- **whole-M3 独立审查**（对 `089536a..1d075fc`，24 个 src 文件 + 测试）：16 个问题——0 CRITICAL、1 HIGH、2 MEDIUM、13 LOW，全部修复。
+  - **HIGH**：开机读台账失败后，下一个 `video_generate` 会复用已有 task id、把写入落到旧的付费行。修复：`generate` 改用 `requireLedger`（`ensureLoaded`，失败则拒绝付费、不提交）；`Ledger.add` 在锁内拒绝重复 id。补回归测试。
+  - **MEDIUM 1**：开机读失败只能靠写来重试，generate 之前对账、状态、卡片都看到空台账。修复：重试 tick 先 `requireLedger`，读成功后补跑 `reconcile`；`video_status` 与 `overview` 走 `ensureLoaded`，未读时答 503（而非 404，让卡片继续重试）。
+  - **MEDIUM 2**：`deliverArtifact` 在视频已发布后仍可能抛错，变成 7 天里每 5 分钟重下载并多发布一份。修复：发布之后的一切包进 try/catch，`sidecarText` 在 promise 链内构建；`params` 读入时按字段规整（`paramsOf`）。
+  - **13 条 LOW 全修**：接受的取消不再经 job 钩子发第二次 DELETE；`from` 的尾帧被移动/删除时给 `from` 专属报错、跨工作区注释按 `lastFrame.path` 实际位置；`video_status` 的 `setup` 对会被拒绝的工作区（远程/只读/未知档位）如实说明；lost-artifacts 恢复不再重复通知；审核拦截消息在 `sentPrompt !== prompt` 时提示可能是清单的 style/角色文字；`shot`/`renders` 读入时用 `isShotName`/`isProjectPath` 再校验；卡片只对 `cancelable` 的任务显示取消；`unconfirmed` 卡片标题不再显示"生成失败"；进程内取消句柄在退出时释放；死代码（`activeCount`、`TOOL_NAMES` 等）删除；过时注释更新；`isTask` 不再丢弃 artifacts 非数组的行；`video_cancel` 对孤儿任务说明为何不盲目取消。
+- **未决（open question，记入 §15 第 15 条）**：`tool-jobs` 对 job 的 `run` 返回 `{status:'killed'}` 后如何反应、以及插件 re-apply 时旧实例 jobs 以 `teardown` 还是 `kill` 结算——这决定"接受的取消后 quiet"与"teardown 不是 kill"是否端到端成立。需要 DSH 源码才能定，未阻塞。
+- **独立审查结论**：修复后 `pnpm check` 全绿（tsc 干净、tsdown 双 bundle、vitest 全绿）。
 

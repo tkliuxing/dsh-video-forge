@@ -1,5 +1,5 @@
 /**
- * The workbench API over a real socket, plus the trust fence in front of it.
+ * The panel API over a real socket, plus the trust fence in front of it.
  *
  * The fence is the part worth testing hardest: without it, anything that can reach
  * the port can read task prompts and spend money.
@@ -103,7 +103,6 @@ beforeAll(async () => {
     watchTask: () => null,
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
   server = createServer((req, res) => { void panelHandler(runtime)(req, res) })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

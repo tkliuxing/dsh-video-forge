@@ -48,7 +48,6 @@ function runtimeFor(fake: Fixture, ledger: Ledger): VideoForgeRuntime {
     watchTask: () => null,
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
 }
 

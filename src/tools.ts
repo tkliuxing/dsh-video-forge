@@ -22,7 +22,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { cancelTask, describeSetup, generate, listTasks, type SetupStatus } from './operations.ts'
+import { cancelTask, describeSetup, generate, listTasks, requireLedger, type SetupStatus } from './operations.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
@@ -173,6 +173,7 @@ function setupText(setup: ReturnType<typeof setupValue>): string {
     lines.push(`workspace ${workspace.folder ?? ''} (${workspace.mode ?? 'unfenced'}): ${workspace.state === 'manifest' ? 'video-project.yaml' : 'no video-project.yaml yet (default layout)'}, renders in ${workspace.renders ?? 'renders'}/`
       + `${workspace.characters.length > 0 ? `, characters ${workspace.characters.join(', ')}` : ''}${workspace.style ? ', project style set' : ''}`)
     if (workspace.mode === 'read-only') lines.push('this conversation is read-only: generating is refused until the user allows writing')
+    if (workspace.mode === 'unknown') lines.push('the host could not say which permission mode this conversation runs in: generating is refused, as if it were read-only')
   }
   return lines.join('\n')
 }
@@ -187,7 +188,7 @@ function usageText(billing: { state: string; tokens: number | null; output_secon
   return 'usage reported'
 }
 
-/** Register all four tools. */
+/** Register the three tools. */
 export function registerTools(runtime: VideoForgeRuntime): void {
   const { ctx } = runtime
 
@@ -354,6 +355,8 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     presentResult: () => ({ card: 'generic', title: 'Video tasks' }),
 
     async execute(args, exec) {
+      // Never "no tasks yet" from an unread ledger: that invites a re-submission.
+      await requireLedger(runtime)
       const list = listTasks(runtime, { taskId: args.task_id, limit: args.limit ?? 10 })
       const single = args.task_id !== undefined && args.task_id !== ''
       const setup = single ? null : setupValue(await describeSetup(runtime, sessionContextOf(runtime.ctx, exec.agent), exec.signal))

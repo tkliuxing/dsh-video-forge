@@ -39,6 +39,8 @@ export interface PanelTask {
 /** One task as a chat card polls it: the row plus whether its video is still there. */
 export interface LiveTask extends PanelTask {
   artifactState: 'present' | 'missing' | null
+  /** Whether the provider can be asked to stop it; absent from an older host. */
+  cancelable?: boolean
 }
 
 export interface ProviderCapability {

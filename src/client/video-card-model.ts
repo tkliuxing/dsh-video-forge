@@ -10,11 +10,6 @@
  * never crash a replay.
  */
 
-/** Tool names whose card this plugin owns. */
-export const TOOL_NAMES = ['video_generate', 'video_status', 'video_cancel', 'video_export'] as const
-
-export type VideoToolName = typeof TOOL_NAMES[number]
-
 /** The `meta` a generate call persists, narrowed field by field. */
 export interface GenerateMeta {
   taskId: string
@@ -39,8 +34,6 @@ export interface StatusRow {
 /** Arguments worth showing while a call is still running. */
 export interface StartFacts {
   prompt: string | null
-  mode: string | null
-  taskCount: number
 }
 
 /** Parse `argsRaw` into an object, or null when it is not a JSON object. */
@@ -98,11 +91,7 @@ export function statusMeta(meta: unknown): StatusRow[] | null {
 /** Facts for a generate call that has not returned yet. */
 export function startFacts(argsRaw: string): StartFacts {
   const args = parseArgs(argsRaw)
-  return {
-    prompt: args === null ? null : stringOf(args.prompt),
-    mode: args === null ? null : stringOf(args.mode),
-    taskCount: 0,
-  }
+  return { prompt: args === null ? null : stringOf(args.prompt) }
 }
 
 /** Facts for a `video_status` call in its running phase. */

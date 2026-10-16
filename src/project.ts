@@ -18,7 +18,7 @@ import { fsErrorCode, type WorkspaceFs } from './workspace-fs.ts'
 
 export const MANIFEST_FILE = 'video-project.yaml'
 
-/** Shots without a name land here until `video_generate` takes one (M3.3). */
+/** The shot folder for a request that names none and continues nothing. */
 export const DEFAULT_SHOT = 'untitled'
 
 /** A manifest is a few lines of YAML; anything near this size is not one. */
@@ -50,7 +50,7 @@ export interface ProjectDefaults {
 }
 
 export interface ProjectCharacter {
-  /** Reference images, workspace-relative; globs are expanded when used (M3.3). */
+  /** Reference images, workspace-relative; `*`/`?` in the file name are expanded when used. */
   refs: string[]
   description: string | null
 }
@@ -58,7 +58,7 @@ export interface ProjectCharacter {
 export interface ProjectManifest {
   version: 1
   defaults: ProjectDefaults
-  /** Project-wide style text; applied by `video_generate` from M3.3 on. */
+  /** Project-wide style text, added to every prompt `video_generate` sends. */
   style: string | null
   characters: Record<string, ProjectCharacter>
   paths: ProjectPaths
@@ -202,6 +202,15 @@ export function initialManifestText(): string {
 }
 
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/** Whether a stored workspace-relative folder is one this plugin would have written (relative, no `..`). */
+export function isProjectPath(value: string): boolean {
+  try {
+    return projectPath(value, 'path') === value
+  } catch {
+    return false
+  }
+}
 
 /** Whether a string is usable as a shot (directory) name. */
 export function isShotName(value: string): boolean {

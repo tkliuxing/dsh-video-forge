@@ -84,7 +84,6 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): { runtime: Vi
     watchTask: () => null,
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
   return { runtime, publishCredentials: () => { published = true } }
 }

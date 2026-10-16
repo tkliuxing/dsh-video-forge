@@ -72,7 +72,6 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
     watchTask: () => null,
     cancels: new Map(),
     watching: new Set(),
-    activeCount: () => 0,
   }
 }
 

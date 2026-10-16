@@ -31,7 +31,8 @@ import {
 } from './types.ts'
 import { describe } from './watch.ts'
 import { compose } from './compose.ts'
-import { describeLocation, planDestination } from './destination.ts'
+import { describeLocation, planDestination, workspaceRefusal } from './destination.ts'
+import { LedgerCorruptError } from './ledger.ts'
 import { DEFAULT_SHOT, isShotName, MANIFEST_FILE, ManifestError, readProject, type ProjectState } from './project.ts'
 import type { TaskSession } from './session-context.ts'
 import { workspaceFsOf } from './workspace-fs.ts'
@@ -96,8 +97,9 @@ export async function generate(
   if (!settings.enabled) {
     throw new ConfigError('video-forge is disabled in its settings; enable it before generating')
   }
-  // Duplicate checks read the ledger, so it must have been read from disk first.
-  await runtime.ledger.ready()
+  // Duplicate checks, `from` and the task id all read the ledger, so it must
+  // have been read from disk — retried here if the boot read failed.
+  await requireLedger(runtime)
 
   const session = options.session ?? null
   const requestedShot = blankToNull(input.shot)
@@ -409,7 +411,10 @@ export async function cancelTask(
       cancelled: false,
       providerSupported: supported,
       status: task.status,
-      message: `${task.localId} is already ${task.status}; nothing to cancel`,
+      message: task.status === 'orphaned'
+        // Not "nothing to cancel": the provider may still be running and billing it.
+        ? `${task.localId} is orphaned: the plugin lost track of whether the provider is still working on it, so a cancellation is not sent blind (on a finished ARK task it would delete the record). The plugin keeps asking about it; check video_status, and cancel once it shows queued or running`
+        : `${task.localId} is already ${task.status}; nothing to cancel`,
     }
   }
   if (!supported || task.providerTaskId === null) {
@@ -493,6 +498,28 @@ export interface TaskList {
   active: number
 }
 
+/**
+ * The ledger, read from disk (a failed read is tried again). A corrupt file was
+ * already moved aside and counts as read. Anything else refuses the call before
+ * it does anything, and says that nothing was submitted.
+ */
+export async function requireLedger(runtime: VideoForgeRuntime): Promise<void> {
+  try {
+    await runtime.ledger.ensureLoaded()
+  } catch (error: unknown) {
+    if (error instanceof LedgerCorruptError) return
+    throw new LedgerUnavailableError(`the task ledger could not be read (${error instanceof Error ? error.message : String(error)}); nothing was submitted — try again in a moment`)
+  }
+}
+
+/** The ledger is not readable right now; the panel answers 503 so the cards keep asking. */
+export class LedgerUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LedgerUnavailableError'
+  }
+}
+
 /** Project the ledger into rows. */
 export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string | undefined; limit?: number | undefined } = {}): TaskList {
   const limit = Math.max(1, Math.min(options.limit ?? 10, 50))
@@ -564,6 +591,8 @@ export interface SetupStatus {
   }
 }
 
+class WorkspaceRefusal extends Error {}
+
 /** The setup as the model needs it to act: providers, keys, models, and this workspace. */
 export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSession | null, signal?: AbortSignal): Promise<SetupStatus> {
   const settings = runtime.settings()
@@ -592,6 +621,8 @@ export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSes
       workspace.problem = 'the host filesystem service is not available'
     } else {
       try {
+        const refusal = await workspaceRefusal(fs, session.cwd)
+        if (refusal !== null) throw new WorkspaceRefusal(refusal)
         const project = await readProject(fs, session.cwd, signal)
         workspace.state = project.exists ? 'manifest' : 'default-layout'
         workspace.renders = project.manifest.paths.renders
@@ -785,7 +816,7 @@ function refuseDuplicate(runtime: VideoForgeRuntime, fingerprint: string): void 
   const refused = runtime.ledger.list().find(task => task.paramsFingerprint === fingerprint && task.error?.moderation === 'input')
   if (refused !== undefined) {
     throw new ConfigError(
-      `the provider's content review refused the inputs of this exact request as ${refused.localId} on ${refused.submittedAt}: ${refused.error?.message ?? ''} — sending it again gets the same verdict; change the prompt or the materials instead`,
+      `the provider's content review refused the inputs of this exact request as ${refused.localId} on ${refused.submittedAt}: ${refused.error?.message ?? ''} — sending it again gets the same verdict; change the prompt or the materials instead${refused.params.sentPrompt === undefined ? '' : ' (the text sent also included the project style or character descriptions from video-project.yaml, which may be what was refused)'}`,
     )
   }
   const window = runtime.settings().dedupeWindowSeconds

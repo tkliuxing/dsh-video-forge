@@ -13,7 +13,7 @@
  * - `style`: the manifest's project style, added to every prompt.
  */
 
-import { realpath } from 'node:fs/promises'
+import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, normalize, posix, resolve as resolvePath } from 'node:path'
 import type { GenerateInput } from './operations.ts'
 import type { ProjectState } from './project.ts'
@@ -68,7 +68,7 @@ export async function compose(
   const fromValue = input.from?.trim() ?? ''
   if (fromValue !== '') {
     const source = await resolveSource(runtime, fromValue, session)
-    const frame = continuationFrame(source)
+    const frame = await continuationFrame(source)
     if ((input.firstFrame ?? '').trim() !== '') {
       throw new ConfigError('from already supplies the first frame (the last frame of the take it continues); do not also pass first_frame')
     }
@@ -80,7 +80,7 @@ export async function compose(
     from = source.localId
     inheritedShot = shotOf(source)
     if (source.session?.cwd !== undefined && source.session.cwd !== null && session?.cwd !== undefined && session.cwd !== null && source.session.cwd !== session.cwd) {
-      notes.push(`${source.localId} was made in another workspace (${source.session.cwd}); its last frame was read from there`)
+      notes.push(`${source.localId} was made in another workspace (${source.session.cwd}); its last frame was read from ${frame}`)
     }
   }
 
@@ -155,7 +155,7 @@ async function resolveSource(runtime: VideoForgeRuntime, value: string, session:
 }
 
 /** The last frame `from` continues from, or a refusal that says why there is none. */
-function continuationFrame(source: VideoTask): string {
+async function continuationFrame(source: VideoTask): Promise<string> {
   const artifact = source.artifacts[0]
   if (source.status !== 'succeeded' || artifact === undefined) {
     throw new ConfigError(`${source.localId} is ${source.status}${artifact === undefined ? ' with no video' : ''}; only a finished take can be continued`)
@@ -165,6 +165,10 @@ function continuationFrame(source: VideoTask): string {
   }
   if (artifact.lastFrame === undefined) {
     throw new ConfigError(`${source.localId} has no recorded last frame (made before last frames were kept, by a model that does not return one, or the frame could not be downloaded), so it cannot be continued with from; pass an image as first_frame instead`)
+  }
+  // Moved or deleted with its take: say so in `from`'s terms, not as a missing material.
+  if (!(await stat(artifact.lastFrame.path).then(info => info.isFile(), () => false))) {
+    throw new ConfigError(`the last frame of ${source.localId} is no longer at ${artifact.lastFrame.path} (moved or deleted), so it cannot be continued with from; pass an image of the moment to continue from as first_frame instead`)
   }
   return artifact.lastFrame.path
 }
