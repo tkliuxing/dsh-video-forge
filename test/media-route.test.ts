@@ -112,7 +112,8 @@ describe('media handler over a real socket', () => {
     expect(response.headers.get('accept-ranges')).toBe('bytes')
     expect(response.headers.get('cache-control')).toBe('private, no-store')
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
-    expect(response.headers.get('content-security-policy')).toBe('sandbox')
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    expect(response.headers.get('access-control-expose-headers')).toContain('content-range')
     expect(response.headers.get('content-type')).toBe('video/mp4')
     expect(Buffer.from(await response.arrayBuffer())).toEqual(body)
   })
@@ -152,6 +153,27 @@ describe('media handler over a real socket', () => {
   it('refuses a method it does not implement', async () => {
     const response = await fetch(url('v-20261013-0001', 'a'.repeat(32)), { method: 'POST' })
     expect(response.status).toBe(405)
-    expect(response.headers.get('allow')).toBe('GET, HEAD')
+    expect(response.headers.get('allow')).toBe('GET, HEAD, OPTIONS')
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+  })
+
+  it('answers the CORS preflight a seeking cross-origin video sends', async () => {
+    const response = await fetch(url('v-20261013-0001', 'a'.repeat(32)), {
+      method: 'OPTIONS',
+      headers: { 'access-control-request-method': 'GET', 'access-control-request-headers': 'range' },
+    })
+    expect(response.status).toBe(204)
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    expect(response.headers.get('access-control-allow-methods')).toContain('GET')
+    expect(response.headers.get('access-control-allow-headers')).toContain('range')
+  })
+
+  it('carries the CORS headers on a 206 range and a 404', async () => {
+    const partial = await fetch(url('v-20261013-0001', 'a'.repeat(32)), { headers: { range: 'bytes=0-1' } })
+    expect(partial.status).toBe(206)
+    expect(partial.headers.get('access-control-allow-origin')).toBe('*')
+    const missing = await fetch(url('v-20261013-0001', 'b'.repeat(32)))
+    expect(missing.status).toBe(404)
+    expect(missing.headers.get('access-control-allow-origin')).toBe('*')
   })
 })

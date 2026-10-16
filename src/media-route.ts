@@ -78,16 +78,41 @@ export function mediaSegments(pathname: string): string[] | null {
   }
 }
 
+/**
+ * CORS: the page that plays a video may not share this route's origin — the
+ * harness runs its host in a worker and the page talks through a tunnel, so the
+ * browser needs these headers to load and seek it. The artifact is already
+ * protected by its 128-bit token in the URL, so `*` grants nothing an attacker
+ * holding the URL does not already have.
+ */
+const CORS_HEADERS: Record<string, string> = {
+  'access-control-allow-origin': '*',
+  'access-control-expose-headers': 'content-range, accept-ranges, content-length, content-type, content-disposition',
+}
+
 function send(res: ServerResponse, status: number, body: string, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...headers })
+  res.writeHead(status, { ...CORS_HEADERS, 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...headers })
   res.end(body)
 }
 
 /** Build the route handler. */
 export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
+    // A cross-origin `<video>` that seeks sends a `Range` header, which turns
+    // the request into one the browser must preflight. Answer the preflight
+    // here; without it the media never loads and the page reports a CORS error.
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        ...CORS_HEADERS,
+        'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+        'access-control-allow-headers': 'range, content-type',
+        'access-control-max-age': '86400',
+      })
+      res.end()
+      return
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      send(res, 405, 'method not allowed', { allow: 'GET, HEAD' })
+      send(res, 405, 'method not allowed', { allow: 'GET, HEAD, OPTIONS' })
       return
     }
 
@@ -128,11 +153,11 @@ export function mediaHandler(ledger: Ledger): (req: IncomingMessage, res: Server
     const { handle, size } = opened
 
     const common: Record<string, string> = {
+      ...CORS_HEADERS,
       'content-type': hit.artifact.mime,
       'accept-ranges': 'bytes',
       'cache-control': 'private, no-store',
       'x-content-type-options': 'nosniff',
-      'content-security-policy': 'sandbox',
       'content-disposition': `inline; filename="${sanitizeFilename(name === '' ? 'video' : name)}"`,
     }
 
