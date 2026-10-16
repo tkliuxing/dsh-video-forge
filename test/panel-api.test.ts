@@ -17,6 +17,7 @@ import { Ledger } from '../src/ledger.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from '../src/panel-api.ts'
 import { isIPv4Loopback, isLoopbackAddress, isLoopbackHostname, isTrustedRequest } from '../src/trust.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import type { VideoTask } from '../src/types.ts'
 
@@ -64,6 +65,7 @@ function settingsFor(baseUrl: string): VideoForgeSettings {
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
+    priceTable: DEFAULT_PRICE_TABLE,
   }
 }
 

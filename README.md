@@ -5,14 +5,15 @@ used entirely from a workspace conversation: ask for a shot, and the finished
 video lands in the workspace as `renders/<shot>/vNNN.mp4`. Every generation is
 tracked in a durable ledger, so a timeout or a restart never means paying twice.
 
-> **Status: M3 complete (2026-10-16).** Three model tools, two vendor protocols
+> **Status: M4 complete (2026-10-16).** Three model tools, two vendor protocols
 > plus an OpenAI-compatible one, the workspace as a video project, live chat
-> cards, and restart recovery with a notice to the conversation. Verified
-> against an offline provider double and a live isolated DSH instance; real
-> generations with ARK Seedance and MiniMax were run in M2.5. Next: bundled
-> skills and cost visibility (M4), then the public release (M5). See
-> `DESIGN.md` §14 and §17. There is no local inference path by design — this
-> plugin is a client of online models only.
+> cards, restart recovery with a notice to the conversation, five bundled
+> `video-*` skills, and cost visibility (a price-table estimate and a "how much
+> did this cost" summary in `video_status`). Verified against an offline
+> provider double and a live isolated DSH instance; real generations with ARK
+> Seedance and MiniMax were run in M2.5. Next: the public release (M5). See
+> `DESIGN.md` §14, §17 and §18. There is no local inference path by design —
+> this plugin is a client of online models only.
 
 ## In a conversation
 
@@ -37,6 +38,26 @@ tracked in a durable ledger, so a timeout or a restart never means paying twice.
 | `video_generate` | Submit one generation (t2v / i2v / flf2v / s2v) and return at once with a task id and a background job id. `shot` names the folder under `renders/`; `from` continues an earlier take; `characters` applies characters registered in `video-project.yaml`. Refusals (read-only conversation, remote workspace, bad manifest, duplicate request) happen before anything is paid for |
 | `video_status` | The recovery entry point: recent tasks, progress, where each video is, failures, content-review refusals, provider-reported usage. Without a task id it also reports the setup — providers, whether their keys are set, models and modes, and this workspace's manifest, permission mode and characters. Check here after a timeout — never re-submit |
 | `video_cancel` | Ask the provider to stop (distinct from `job_kill`, which only stops watching while the provider keeps working and billing) |
+
+`video_status` also answers money questions: `cost: true` sums settled usage
+times an editable price table (grouped by provider/model/shot, with the
+price-table date and any task whose usage is still unknown), and an `estimate`
+parameter prices a request before it is submitted. Every figure is labelled an
+estimate — the provider bill is authoritative.
+
+## Bundled skills
+
+Five skills ship with the plugin (loaded by the model with the `skill` tool, or
+three of them as `/name` commands). They guide the workflow; the tools stay
+self-contained and never depend on a skill having been loaded.
+
+| Skill | What it covers |
+|---|---|
+| `video-project` (`/video-project`) | Workspace layout and `video-project.yaml`: paths, defaults, style, characters, version numbering |
+| `video-prompting` | Writing and revising prompts (subject, motion, camera, style), duration and aspect ratio, provider differences |
+| `video-storyboard` (`/video-storyboard`) | Breaking a script into `storyboard/shots.yaml` and generating it one shot at a time |
+| `video-iterate` | Redo vs continue (`from`), character consistency, and a last-frame self-check before delivery |
+| `video-guide` (`/video-guide`) | End-to-end usage: setup, what it can and cannot do, cost, where videos land |
 
 ## The workspace as a project
 

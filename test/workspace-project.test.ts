@@ -27,6 +27,7 @@ import { adapterFor } from '../src/providers/index.ts'
 import { artifactUrl, type VideoForgeRuntime } from '../src/runtime.ts'
 import type { SandboxMode, TaskSession } from '../src/session-context.ts'
 import { ConfigError, DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoArtifact, VideoTask } from '../src/types.ts'
 import { startInProcessWatch } from '../src/watch.ts'
 import { hostWorkspaceFs, type WorkspaceFs } from '../src/workspace-fs.ts'
@@ -67,6 +68,7 @@ function settingsFor(fake: Fixture): VideoForgeSettings {
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
+    priceTable: DEFAULT_PRICE_TABLE,
   }
 }
 

@@ -18,6 +18,7 @@ import { arkVideosAdapter } from '../src/providers/ark-seedance.ts'
 import { readMinimaxState } from '../src/providers/minimax-video.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import { startInProcessWatch } from '../src/watch.ts'
 
 const MODEL = {
@@ -36,7 +37,7 @@ function runtimeFor(fake: Fixture, ledger: Ledger): VideoForgeRuntime {
   const provider: ProviderSetting = { id: 'ark', protocol: 'ark-seedance', baseUrl: `${fake.url}/api/v3`, authRef: '', models: [MODEL], endpoints: DEFAULT_ENDPOINTS }
   const settings: VideoForgeSettings = {
     enabled: true, providers: [provider], defaultProvider: 'ark', defaultModel: '', outputDir: '',
-    pollIntervalMs: 10, waitSecondsMax: 600, dedupeWindowSeconds: 1, maxConcurrent: 4, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000,
+    pollIntervalMs: 10, waitSecondsMax: 600, dedupeWindowSeconds: 1, maxConcurrent: 4, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000, priceTable: DEFAULT_PRICE_TABLE,
   }
   return {
     ctx: { get: () => undefined } as unknown as Context,

@@ -6,6 +6,7 @@
  * Nothing here touches a DSH service, so every rule below is unit-testable.
  */
 
+import type { PriceTable } from './prices.ts'
 import type { SupportedProtocol } from './provider-presets.ts'
 import type { VideoMode } from './types.ts'
 
@@ -96,6 +97,8 @@ export interface VideoForgeSettings {
   maxTasks: number
   maxGiB: number
   requestTimeoutMs: number
+  /** Editable price table used to turn usage into an estimate (never the bill). */
+  priceTable: PriceTable
 }
 
 /** A configuration problem the model can act on: it names the exact field to fix. */

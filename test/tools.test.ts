@@ -15,6 +15,7 @@ import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
 import { registerTools } from '../src/tools.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import type { VideoTask } from '../src/types.ts'
 import { hostWorkspaceFs } from '../src/workspace-fs.ts'
@@ -52,6 +53,7 @@ function settingsWith(provider: ProviderSetting | null, over: Partial<VideoForge
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
+    priceTable: DEFAULT_PRICE_TABLE,
     ...over,
   }
 }

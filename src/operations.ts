@@ -16,6 +16,7 @@ import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
 import { moderationOf, ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, cancelSupported, returnsLastFrame, type AdapterContext } from './providers/index.ts'
+import { estimateArkTokens, estimateCost, unitPrice, type PriceUnit } from './prices.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting } from './settings.ts'
 import {
@@ -642,6 +643,136 @@ export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSes
     providers,
     workspace,
   }
+}
+
+/** One settled task group in the cost summary, keyed by provider + model + shot. */
+export interface CostGroup {
+  provider: string
+  model: string
+  shot: string | null
+  tasks: number
+  /** Summed billable tokens (ARK), 0 when nothing reported. */
+  tokens: number
+  /** Summed billed output seconds (MiniMax), 0 when nothing reported. */
+  outputSeconds: number
+  /** Estimated money for this group, or null when no price row covers it. */
+  estimatedAmount: number | null
+}
+
+/** The "how much has this cost" answer (DESIGN §16.5), usage × the editable price table. */
+export interface CostSummary {
+  currency: string
+  pricedAt: string
+  source: string
+  note: string
+  groups: CostGroup[]
+  unknownUsage: { taskId: string; provider: string; model: string }[]
+  totalTasks: number
+  totalEstimatedAmount: number | null
+}
+
+/** The shot a task belongs to, for grouping the summary; null when unknown (pre-M3 rows, kept-at-home). */
+function shotOfTask(task: VideoTask): string | null {
+  if (task.destination !== undefined && task.destination.kind === 'workspace') return task.destination.shot
+  const location = task.artifacts[0]?.location
+  if (location !== undefined && location.kind === 'workspace') return location.shot
+  return null
+}
+
+/** Summarize settled usage and its estimated cost across the ledger, grouped by provider/model/shot. */
+export function summarizeCost(runtime: VideoForgeRuntime, options: { since?: string } = {}): CostSummary {
+  const settings = runtime.settings()
+  const table = settings.priceTable
+  const groups = new Map<string, CostGroup & { _amount: number }>()
+  const unknownUsage: CostSummary['unknownUsage'] = []
+  let totalTasks = 0
+
+  for (const task of runtime.ledger.list()) {
+    if (options.since !== undefined && task.submittedAt < options.since) continue
+    const billing = task.billing
+    if (billing === undefined || billing === null) continue
+    if (billing.state === 'unknown') {
+      unknownUsage.push({ taskId: task.localId, provider: task.provider, model: task.model })
+      continue
+    }
+    if (billing.state === 'none') continue
+    const shot = shotOfTask(task)
+    const key = `${task.provider}\u0000${task.model}\u0000${shot ?? ''}`
+    let group = groups.get(key)
+    if (group === undefined) {
+      group = { provider: task.provider, model: task.model, shot, tasks: 0, tokens: 0, outputSeconds: 0, estimatedAmount: 0, _amount: 0 }
+      groups.set(key, group)
+    }
+    group.tasks++
+    totalTasks++
+    if (billing.tokens !== null) group.tokens += billing.tokens
+    if (billing.outputSeconds !== null) group.outputSeconds += billing.outputSeconds
+    const estimate = estimateCost(table, billing, task.provider, task.model)
+    if (estimate !== null) group._amount += estimate.amount
+  }
+
+  let total = 0
+  const resultGroups = [...groups.values()]
+    .map(({ _amount, ...group }) => {
+      total += _amount
+      return { ...group, estimatedAmount: group.tokens > 0 || group.outputSeconds > 0 ? _amount : null }
+    })
+    .sort((left, right) => (right.estimatedAmount ?? 0) - (left.estimatedAmount ?? 0) || left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model))
+
+  return {
+    currency: table.currency,
+    pricedAt: table.pricedAt,
+    source: table.source,
+    note: 'estimate only — the provider bill is authoritative',
+    groups: resultGroups,
+    unknownUsage,
+    totalTasks,
+    totalEstimatedAmount: total > 0 ? total : null,
+  }
+}
+
+/** A pre-submit cost estimate for a request, never a submission (DESIGN §16.5). */
+export interface GenerationEstimate {
+  amount: number | null
+  unit: PriceUnit | null
+  currency: string
+  pricedAt: string
+  note: string
+}
+
+/** Estimate what a generation would cost, without submitting anything. */
+export function estimateGeneration(
+  runtime: VideoForgeRuntime,
+  request: { providerId: string | null; modelId: string | null; durationSeconds: number | null; resolution: string | null; aspectRatio: string | null },
+): GenerationEstimate {
+  const settings = runtime.settings()
+  const table = settings.priceTable
+  const tail = `estimate only (${table.currency}, prices as of ${table.pricedAt}) — the provider bill is authoritative`
+  let target: { provider: ProviderSetting; model: ModelSetting }
+  try {
+    target = resolveTarget(settings, request.providerId, request.modelId)
+  } catch (error) {
+    return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: error instanceof Error ? error.message : String(error) }
+  }
+  const { provider, model } = target
+  if (provider.protocol === 'ark-seedance') {
+    const tokens = estimateArkTokens(request.resolution, request.aspectRatio, request.durationSeconds)
+    if (tokens === null) {
+      return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `cannot estimate ARK tokens for ${request.resolution ?? '?'}/${request.aspectRatio ?? '?'} — only 16:9, 9:16 and 1:1 at 480p/720p/1080p/4k are estimated; ${tail}` }
+    }
+    const price = unitPrice(table, provider.id, model.id, 'token')
+    if (price === null) return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `no token price row for ${provider.id}/${model.id}; ${tail}` }
+    return { amount: tokens * price, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `≈${tokens} tokens × ${price} ${table.currency}/token; ${tail}` }
+  }
+  if (provider.protocol === 'minimax-video') {
+    if (request.durationSeconds === null) {
+      return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `a duration_seconds is required to estimate MiniMax; ${tail}` }
+    }
+    const price = unitPrice(table, provider.id, model.id, 'second')
+    if (price === null) return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `no second price row for ${provider.id}/${model.id}; ${tail}` }
+    return { amount: request.durationSeconds * price, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `${request.durationSeconds}s × ${price} ${table.currency}/s; ${tail}` }
+  }
+  return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: `no estimate for protocol ${provider.protocol}; ${tail}` }
 }
 
 /** One provider as the configuration card shows it: capability plus credential state, never a secret. */

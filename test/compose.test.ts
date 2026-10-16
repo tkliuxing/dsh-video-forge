@@ -21,6 +21,7 @@ import { adapterFor } from '../src/providers/index.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import type { TaskSession } from '../src/session-context.ts'
 import { DEFAULT_ENDPOINTS, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoArtifact, VideoTask } from '../src/types.ts'
 import { startInProcessWatch } from '../src/watch.ts'
 import { hostWorkspaceFs } from '../src/workspace-fs.ts'
@@ -52,7 +53,7 @@ function settingsFor(fake: Fixture, model: ModelSetting = MODEL): VideoForgeSett
   const provider: ProviderSetting = { id: 'ark', protocol: 'ark-seedance', baseUrl: `${fake.url}/api/v3`, authRef: '', models: [model], endpoints: DEFAULT_ENDPOINTS }
   return {
     enabled: true, providers: [provider], defaultProvider: 'ark', defaultModel: '', outputDir: '', pollIntervalMs: 10,
-    waitSecondsMax: 600, dedupeWindowSeconds: 0, maxConcurrent: 8, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000,
+    waitSecondsMax: 600, dedupeWindowSeconds: 0, maxConcurrent: 8, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000, priceTable: DEFAULT_PRICE_TABLE,
   }
 }
 

@@ -22,7 +22,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { cancelTask, describeSetup, generate, listTasks, requireLedger, type SetupStatus } from './operations.ts'
+import { cancelTask, describeSetup, estimateGeneration, generate, listTasks, requireLedger, summarizeCost, type SetupStatus } from './operations.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
@@ -131,6 +131,63 @@ const SETUP_SCHEMA = {
   },
 } as const
 
+/** `video_status` with `cost: true`: settled usage and its estimate, grouped. */
+const COST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    currency: { type: 'string', required: true },
+    priced_at: { type: 'string', required: true },
+    source: { type: 'string', required: true },
+    note: { type: 'string', required: true },
+    groups: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          provider: { type: 'string', required: true },
+          model: { type: 'string', required: true },
+          shot: NULLABLE_STRING,
+          tasks: { type: 'number', required: true },
+          tokens: { type: 'number', required: true },
+          output_seconds: { type: 'number', required: true },
+          estimated_amount: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+        },
+      },
+    },
+    unknown_usage: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          task_id: { type: 'string', required: true },
+          provider: { type: 'string', required: true },
+          model: { type: 'string', required: true },
+        },
+      },
+    },
+    total_tasks: { type: 'number', required: true },
+    total_estimated_amount: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+  },
+} as const
+
+/** `video_status` with an `estimate`: what a request would cost, without submitting. */
+const ESTIMATE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    amount: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+    unit: NULLABLE_STRING,
+    currency: { type: 'string', required: true },
+    priced_at: { type: 'string', required: true },
+    note: { type: 'string', required: true },
+  },
+} as const
+
 /** The setup in the tool's snake_case vocabulary. */
 function setupValue(setup: SetupStatus) {
   return {
@@ -186,6 +243,44 @@ function usageText(billing: { state: string; tokens: number | null; output_secon
   if (billing.tokens !== null) return `usage ${billing.tokens} tokens`
   if (billing.output_seconds !== null) return `usage ${billing.output_seconds} s`
   return 'usage reported'
+}
+
+/** A money amount with its currency, never more precision than an estimate deserves. */
+function formatAmount(amount: number, currency: string): string {
+  const value = amount < 0.01 ? amount.toExponential(2) : amount.toFixed(2)
+  return `${value} ${currency}`
+}
+
+/** The cost summary in the tool's snake_case vocabulary, for the text rendering. */
+interface CostValue {
+  currency: string
+  priced_at: string
+  note: string
+  groups: { provider: string; model: string; shot: string | null; tasks: number; tokens: number; output_seconds: number; estimated_amount: number | null }[]
+  unknown_usage: { task_id: string }[]
+  total_tasks: number
+  total_estimated_amount: number | null
+}
+
+/** The cost summary as a few lines, grouped and clearly an estimate. */
+function costText(cost: CostValue): string {
+  const total = cost.total_estimated_amount === null ? 'nothing priced' : formatAmount(cost.total_estimated_amount, cost.currency)
+  const lines = [`estimated cost: ${total} across ${cost.total_tasks} settled task(s) (${cost.currency}, prices as of ${cost.priced_at}) — ${cost.note}`]
+  for (const group of cost.groups) {
+    const usage = group.tokens > 0 ? `${group.tokens} tokens` : group.output_seconds > 0 ? `${group.output_seconds} s` : 'no usage reported'
+    const money = group.estimated_amount === null ? 'not priced' : formatAmount(group.estimated_amount, cost.currency)
+    lines.push(`${group.provider}/${group.model}${group.shot === null ? '' : ` · shot ${group.shot}`}: ${group.tasks} task(s), ${usage}, ≈${money}`)
+  }
+  if (cost.unknown_usage.length > 0) {
+    lines.push(`usage still unknown (not counted) for: ${cost.unknown_usage.map(entry => entry.task_id).join(', ')}`)
+  }
+  return lines.join('\n')
+}
+
+/** A pre-submit estimate as one line, or the reason there is none. */
+function estimateText(estimate: { amount: number | null; currency: string; note: string }): string {
+  if (estimate.amount === null) return `estimate: ${estimate.note}`
+  return `estimate: ≈${formatAmount(estimate.amount, estimate.currency)} — ${estimate.note}`
 }
 
 /** Register the three tools. */
@@ -310,6 +405,19 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     parameters: {
       task_id: { type: 'string', description: 'One task id, e.g. v-20261013-0001. Omit to list recent tasks.' },
       limit: { type: 'number', description: 'How many tasks to list (default 10, maximum 50).' },
+      cost: { type: 'boolean', description: 'Instead of the recent-task list, summarize settled usage and estimated cost across every task, grouped by provider/model/shot, with the price-table date and any task whose usage is still unknown. Use for "how much did this cost".' },
+      estimate: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          provider: { type: 'string', description: 'Provider id, or providerId::modelId. Defaults to the default provider.' },
+          model: { type: 'string', description: 'Model id at that provider.' },
+          duration_seconds: { type: 'number', description: 'Requested length in seconds.' },
+          resolution: { type: 'string', description: 'e.g. 720p.' },
+          aspect_ratio: { type: 'string', description: 'e.g. 16:9, 9:16, 1:1.' },
+        },
+        description: 'Estimate what a generation would cost without submitting it (ARK by the token formula, MiniMax by seconds × price). Use when the user asks how much a generation would cost before doing it.',
+      },
     },
     output: {
       schema: {
@@ -329,12 +437,16 @@ export function registerTools(runtime: VideoForgeRuntime): void {
               over_byte_limit: { type: 'boolean', required: true },
             },
           },
+          cost: { required: true, oneOf: [{ type: 'null' }, COST_SCHEMA] },
+          estimate: { required: true, oneOf: [{ type: 'null' }, ESTIMATE_SCHEMA] },
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: [
           ...(value.setup === null ? [] : [setupText(value.setup)]),
+          ...(value.cost === null ? [] : [costText(value.cost)]),
+          ...(value.estimate === null ? [] : [estimateText(value.estimate)]),
           value.tasks.length === 0
           ? 'no video tasks yet'
           : value.tasks.map(row => [
@@ -360,6 +472,16 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       const list = listTasks(runtime, { taskId: args.task_id, limit: args.limit ?? 10 })
       const single = args.task_id !== undefined && args.task_id !== ''
       const setup = single ? null : setupValue(await describeSetup(runtime, sessionContextOf(runtime.ctx, exec.agent), exec.signal))
+      const cost = args.cost === true ? summarizeCost(runtime) : null
+      const estimate = args.estimate !== undefined && args.estimate !== null
+        ? estimateGeneration(runtime, {
+          providerId: args.estimate.provider ?? null,
+          modelId: args.estimate.model ?? null,
+          durationSeconds: args.estimate.duration_seconds ?? null,
+          resolution: args.estimate.resolution ?? null,
+          aspectRatio: args.estimate.aspect_ratio ?? null,
+        })
+        : null
       return {
         setup,
         tasks: list.tasks.map(row => ({
@@ -382,6 +504,31 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           bytes: list.usage.bytes,
           over_task_limit: list.usage.overTaskLimit,
           over_byte_limit: list.usage.overByteLimit,
+        },
+        cost: cost === null ? null : {
+          currency: cost.currency,
+          priced_at: cost.pricedAt,
+          source: cost.source,
+          note: cost.note,
+          groups: cost.groups.map(group => ({
+            provider: group.provider,
+            model: group.model,
+            shot: group.shot,
+            tasks: group.tasks,
+            tokens: group.tokens,
+            output_seconds: group.outputSeconds,
+            estimated_amount: group.estimatedAmount,
+          })),
+          unknown_usage: cost.unknownUsage.map(entry => ({ task_id: entry.taskId, provider: entry.provider, model: entry.model })),
+          total_tasks: cost.totalTasks,
+          total_estimated_amount: cost.totalEstimatedAmount,
+        },
+        estimate: estimate === null ? null : {
+          amount: estimate.amount,
+          unit: estimate.unit,
+          currency: estimate.currency,
+          priced_at: estimate.pricedAt,
+          note: estimate.note,
         },
       }
     },

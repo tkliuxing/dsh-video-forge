@@ -18,6 +18,7 @@ import { deliverNotices, MAX_NOTICE_ATTEMPTS, owesNotice, quietOnKill, setNotice
 import { reconcile, retryOrphans } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoTask } from '../src/types.ts'
 
 const MODEL = {
@@ -50,7 +51,7 @@ function runtimeFor(fake: Fixture, ledger: Ledger, host: FakeHost | null): Video
     enabled: true,
     providers: [{ id: 'ark', protocol: 'ark-seedance', baseUrl: `${fake.url}/api/v3`, authRef: '', models: [MODEL], endpoints: DEFAULT_ENDPOINTS }],
     defaultProvider: 'ark', defaultModel: '', outputDir: '', pollIntervalMs: 10, waitSecondsMax: 600, dedupeWindowSeconds: 0,
-    maxConcurrent: 8, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000,
+    maxConcurrent: 8, maxTasks: 200, maxGiB: 20, requestTimeoutMs: 30_000, priceTable: DEFAULT_PRICE_TABLE,
   }
   const agent = {
     get status() { return host?.status },

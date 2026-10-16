@@ -10,6 +10,7 @@ import { buildArkBody, readArkState } from '../src/providers/ark-seedance.ts'
 import { buildOpenAiVideosBody, endpointPath, readState } from '../src/providers/generic-openai-videos.ts'
 import { buildMinimaxBody, minimaxVideoAdapter, readMinimaxState } from '../src/providers/minimax-video.ts'
 import { ConfigError, DEFAULT_ENDPOINTS, assertGeometry, environmentFallbackName, resolveSize, resolveTarget, statusWords, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { GenerationRequest } from '../src/types.ts'
 
 const MODEL = {
@@ -225,6 +226,7 @@ describe('settings rules', () => {
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 120000,
+    priceTable: DEFAULT_PRICE_TABLE,
   }
 
   it('resolves provider::model references', () => {

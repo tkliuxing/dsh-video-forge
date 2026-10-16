@@ -13,6 +13,8 @@
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { DEFAULT_PRICE_TABLE } from './prices.ts'
+import type { PriceTable } from './prices.ts'
 import { SUPPORTED_PROTOCOLS } from './provider-presets.ts'
 import type { ProviderSetting, VideoForgeSettings } from './settings.ts'
 import { DEFAULT_ENDPOINTS } from './settings.ts'
@@ -32,6 +34,7 @@ export interface Config {
   maxTasks: Volatile<number>
   maxGiB: Volatile<number>
   requestTimeoutMs: Volatile<number>
+  priceTable: Volatile<PriceTable>
 }
 
 const model = z.object({
@@ -76,6 +79,20 @@ const provider = z.object({
   endpoints: endpoints,
 })
 
+const priceRow = z.object({
+  providerId: z.string().default('').description('Provider id; empty matches any provider'),
+  modelId: z.string().default('').description('Model id; empty matches any model'),
+  unit: z.union(['token', 'second']).description('Billing unit: token for ARK, second for MiniMax'),
+  pricePerUnit: z.number().min(0).description('Price of one unit, in the table currency'),
+})
+
+const priceTable = z.object({
+  currency: z.string().default(DEFAULT_PRICE_TABLE.currency),
+  pricedAt: z.string().default(DEFAULT_PRICE_TABLE.pricedAt),
+  source: z.string().default(DEFAULT_PRICE_TABLE.source),
+  rows: z.array(priceRow).default([...DEFAULT_PRICE_TABLE.rows]),
+})
+
 /**
  * The plugin schema. Annotated (rather than inferred) so the emitted declaration
  * names `Schema<Config>` instead of schemastery's internal object type, and cast
@@ -98,6 +115,7 @@ export const Config = z.object({
   maxTasks: z.number().min(1).default(200).volatile(),
   maxGiB: z.number().min(0).default(20).volatile(),
   requestTimeoutMs: z.number().min(1000).default(120000).volatile(),
+  priceTable: priceTable.volatile(),
 }) as unknown as z<Config>
 
 /** Read every volatile reference into one plain, stable value. */
@@ -118,5 +136,6 @@ export function snapshot(config: Config): VideoForgeSettings {
     maxTasks: config.maxTasks.get(),
     maxGiB: config.maxGiB.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
+    priceTable: config.priceTable.get(),
   }
 }

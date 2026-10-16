@@ -20,6 +20,7 @@ import { ProviderRequestError } from '../src/providers/adapter.ts'
 import { reconcile } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import { NOT_SUBMITTED_CODE, UNCONFIRMED_CODE, type VideoTask } from '../src/types.ts'
 
 const MODEL = {
@@ -71,6 +72,7 @@ function settingsWith(provider: ProviderSetting): VideoForgeSettings {
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
+    priceTable: DEFAULT_PRICE_TABLE,
   }
 }
 

@@ -27,6 +27,7 @@ import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRun
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { requireLedger } from './operations.ts'
+import { registerSkills } from './skills.ts'
 import { registerTools } from './tools.ts'
 import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
@@ -166,6 +167,10 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   }), `video-forge: ${PANEL_ROUTE_PREFIX}/<action>`)
 
   registerTools(runtime)
+  // The five `video-*` skills are an optional dependency: they mount only when
+  // the composition carries the `skills` service, and the tools never rely on
+  // one having been loaded.
+  registerSkills(ctx)
 
   // Notices travel through the session controller, which may come up after
   // boot reconciliation has already settled a task: wait for it, then deliver

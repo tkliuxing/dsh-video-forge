@@ -19,6 +19,7 @@ import { Ledger } from '../src/ledger.ts'
 import { reconcile, recoverableOrphans, retryOrphans, scheduleReconciliation, settleBilling, type ReconcileHost } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoTask } from '../src/types.ts'
 
 const KEY = 'sk-fixture-orphan'
@@ -67,6 +68,7 @@ function settingsFor(fake: Fixture): VideoForgeSettings {
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
+    priceTable: DEFAULT_PRICE_TABLE,
   }
 }
 

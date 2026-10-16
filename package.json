@@ -37,6 +37,7 @@
   },
   "files": [
     "lib",
+    "assets",
     "icon.svg",
     "locale/*.json",
     "cordis.patch.yml",
@@ -85,6 +86,7 @@
     "@deepseek-ai/dsh-host-webserver": "^0.1.7-rc.1 || ^0.2.0-rc.1",
     "@deepseek-ai/dsh-jobs": "^0.1.7-rc.1 || ^0.2.0-rc.1",
     "@deepseek-ai/dsh-settings": "^0.1.7-rc.1 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-skill": "^0.1.7-rc.1 || ^0.2.0-rc.1",
     "@deepseek-ai/dsh-system-prompt": "^0.1.7-rc.1 || ^0.2.0-rc.1",
     "@deepseek-ai/dsh-tools": "^0.1.7-rc.1 || ^0.2.0-rc.1"
   },
@@ -111,6 +113,7 @@
     "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2",
     "@deepseek-ai/dsh-jobs": "0.2.0-rc.2",
     "@deepseek-ai/dsh-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill": "0.2.0-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@testing-library/react": "^16.3.2",

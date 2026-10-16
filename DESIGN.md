@@ -598,7 +598,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
   - 在线测试 `free` 与 `paid` 两档都已由用户实跑通过（见 §13 末）。
   - **剩余**：审核拦截的真实样本（没有刻意触发）。
 - **M3 工作区即项目（2026-10-16 完成，见 §17.6–§17.11）**（§16.2 / §16.4）：清单与目录映射；`renders/` 版本目录与宿主统一分配版本号；说明文件；角色登记；工具改成 3 个（`shot` / `from` / `characters`、工作区相对路径）；删除工作台页与面板 `generate`；聊天卡片显示实时进度并能取消；修掉"重启后进程内盯守不唤醒模型"；工作区写入的连带问题（`ctx.fs`、权限档位、文件被移动、符号链接）。会改工具 schema，所以放在发布之前。
-- **M4 skill、指导与成本可见性**（§16.3 / §16.5 / §16.6）：5 个 skill 经 `ctx.skills` 提供方注册（可选依赖）；`video-guide` 及其一致性测试；`video_status` 的花费汇总与事前估算；预设价格表；用方舟 `return_last_frame` 做模型自检。
+- **M4 skill、指导与成本可见性（2026-10-16 完成，见 §18）**（§16.3 / §16.5 / §16.6）：5 个 skill 经 `ctx.skills` 提供方注册（可选依赖）；`video-guide` 及其一致性测试；`video_status` 的花费汇总与事前估算；预设价格表；模型自检（交付前读方舟尾帧对照提示词）作为 `video-iterate` 的指导。
 - **M5 发布**：仓库与目录改名为 `dsh-video-forge`、加 git remote、GitHub Actions 跑 `pnpm check`、npm trusted publishing / OIDC、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
 - **M6 内容片段重构**（§16.8）：**单独一次改造，不与 M3 合并**（2026-10-15 决定）。之后接 Seedance 2.x 的参考视频/音频、编辑/延长、样片模式，以及 MiniMax 尚未接的扩展项。
 - **之后**：可灵（AK/SK → JWT）→（可选）Veo（默认关闭）。
@@ -1045,4 +1045,16 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
   - **13 条 LOW 全修**：接受的取消不再经 job 钩子发第二次 DELETE；`from` 的尾帧被移动/删除时给 `from` 专属报错、跨工作区注释按 `lastFrame.path` 实际位置；`video_status` 的 `setup` 对会被拒绝的工作区（远程/只读/未知档位）如实说明；lost-artifacts 恢复不再重复通知；审核拦截消息在 `sentPrompt !== prompt` 时提示可能是清单的 style/角色文字；`shot`/`renders` 读入时用 `isShotName`/`isProjectPath` 再校验；卡片只对 `cancelable` 的任务显示取消；`unconfirmed` 卡片标题不再显示"生成失败"；进程内取消句柄在退出时释放；死代码（`activeCount`、`TOOL_NAMES` 等）删除；过时注释更新；`isTask` 不再丢弃 artifacts 非数组的行；`video_cancel` 对孤儿任务说明为何不盲目取消。
 - **未决（open question，记入 §15 第 15 条）**：`tool-jobs` 对 job 的 `run` 返回 `{status:'killed'}` 后如何反应、以及插件 re-apply 时旧实例 jobs 以 `teardown` 还是 `kill` 结算——这决定"接受的取消后 quiet"与"teardown 不是 kill"是否端到端成立。需要 DSH 源码才能定，未阻塞。
 - **独立审查结论**：修复后 `pnpm check` 全绿（tsc 干净、tsdown 双 bundle、vitest 全绿）。
+
+## 18. M4 实施记录（2026-10-16）
+
+测试 327 → 346 例（新增 `test/skills.test.ts`、`test/prices.test.ts`、`test/cost.test.ts`、`test/guide-consistency.test.ts`）。
+
+- **5 个 skill 注册**（`src/skills.ts` + `assets/skills/*.md`）：`video-project` / `video-prompting` / `video-storyboard` / `video-iterate` / `video-guide`。契约照官方 bundled skill 插件的形状：`ctx.skills.registerProvider`，`rank: BUNDLED_SKILL_RANK`（600）、`source: 'bundled'`、`resourceBase: { kind: 'directory', path }`，正文用 `import.meta.url` 相对定位、`readFile` 按需加载。**可选依赖**：经 `ctx.inject(['skills'], cb)` 条件挂载——组合里没挂 `dsh-skill` 时插件照常工作，工具从不依赖 skill 被加载过。三个 skill（project / storyboard / guide）`userInvocable: true`（首行 `/<name>` 触发），两个（prompting / iterate）只给模型。package.json：`files` 加 `assets`，`@deepseek-ai/dsh-skill` 进 peer + dev。
+- **价格表**（`src/prices.ts`）：`PriceTable { currency, pricedAt, source, rows[] }`，行按 (providerId, modelId, unit) 匹配，最精确者胜。`DEFAULT_PRICE_TABLE` 带第三方参考价（方舟 token ~28 元/百万、MiniMax 秒 ~0.3 元/秒，2026-10-16），明确"估算、以账单为准"，进 config schema 可改（`priceTable`）。金额 = 用量 × 单价（`estimateCost`），用量来自台账里供应商报告的 tokens / outputSeconds。
+- **花费汇总**（`summarizeCost` + `video_status` 的 `cost: true`）：按 (provider, model, shot) 分组，返回任务数、tokens/outputSeconds 合计、估算金额、价格表日期、用量未知任务列表（`unknown` 不计入、单独列出）。总额是已结算且可定价部分之和。
+- **事前估算**（`estimateGeneration` + `video_status` 的 `estimate` 参数，只读不提交）：方舟按反推的 token 公式 `宽×高×帧数÷1024`（帧数 = 秒×24+1；480p/720p/1080p/4k × 16:9/9:16/1:1），MiniMax 按秒 × 单价；其他协议或几何返回"无法估算"，从不编数字。
+- **一致性测试**（`test/guide-consistency.test.ts`，§16.6）：5 个 skill 正文里提到的每个 `video_*` 名必须真实存在于 `tools.ts` 注册的工具；`video_export`、`视频工坊`、`workbench`、`工作台` 不得出现。
+- **模型自检**：不单独做工具，作为 `video-iterate` 的"交付前读 `vNNN.last.jpg` 对照提示词"指导（§16.5 末）。
+- **未做/待办**：真实浏览器验证（skill 在隔离实例里被 `/video-project` 触发、`video_status cost` 的文本）没有跑——那是界面/付费环节，留到 M5 前的隔离实例实测；价格表数字是第三方参考，需用户自行核对替换。
 
