@@ -1,18 +1,16 @@
 /**
- * The operations behind both surfaces.
+ * The operations behind the model tools and the panel API.
  *
- * The model tools and the workbench panel must not each own a copy of "validate,
- * de-duplicate, submit, watch" — two implementations of a paid side effect drift,
- * and the one that drifts is always the quieter one. So the whole submission path
- * lives here, and `tools.ts` / `panel-api.ts` are thin adapters over it.
+ * Validate, de-duplicate, submit, watch and cancel live here once — two copies
+ * of a paid side effect drift, and the one that drifts is always the quieter
+ * one — and `tools.ts` / `panel-api.ts` are thin adapters over them. Only the
+ * tools submit (DESIGN §16.4); the panel API reads and cancels.
  *
  * Everything is expressed against {@link VideoForgeRuntime}, so an operation never
  * needs to know whether a model or a browser asked for it.
  */
 
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, stat } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
@@ -462,37 +460,6 @@ export async function cancelTask(
         ? `the provider refused to cancel ${task.localId}: it has already ${finishedAs}; the watch records the outcome`
         : `the provider refused to cancel ${task.localId} (it may be past the cancellable stage); it keeps running`,
   }
-}
-
-export interface ExportOutcome {
-  taskId: string
-  path: string
-  bytes: number
-}
-
-/** Copy a finished artifact out of the plugin's output directory. */
-export async function exportArtifact(
-  runtime: VideoForgeRuntime,
-  taskId: string,
-  targetPath: string,
-  overwrite = false,
-): Promise<ExportOutcome> {
-  const task = runtime.ledger.byId(taskId)
-  if (task === undefined) throw new ConfigError(`no video task with id "${taskId}"`)
-  const artifact = task.artifacts[0]
-  if (artifact === undefined) {
-    throw new ConfigError(`${task.localId} is ${task.status} and has no artifact to export yet; check video_status`)
-  }
-  if (!isAbsolute(targetPath)) throw new ConfigError(`target_path must be absolute, got "${targetPath}"`)
-
-  const existing = await stat(targetPath).catch(() => null)
-  if (existing !== null && !overwrite) {
-    throw new ConfigError(`${targetPath} already exists; pass overwrite to replace it`)
-  }
-  await mkdir(join(targetPath, '..'), { recursive: true })
-  await copyFile(artifact.path, targetPath)
-  const written = await stat(targetPath)
-  return { taskId: task.localId, path: targetPath, bytes: written.size }
 }
 
 /** One task row as either surface renders it. */

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Video Forge",
-    "description": "Generate video with online models: model tools plus a workbench, long-running provider tasks in a durable ledger, and inline playback of the artifacts."
+    "description": "Generate video with online models from the conversation: the model saves each take into the workspace's renders/ folder, a durable ledger tracks long-running provider tasks, and the chat card follows progress, plays the result and can cancel."
   }
 }

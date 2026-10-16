@@ -1,28 +1,30 @@
 /**
- * The workbench API: what the browser panel calls.
+ * The panel API: what the browser surfaces call — the chat cards (live state and
+ * cancel), the progress badge and the configuration card.
  *
- * The panel cannot invoke host tools — a tool call belongs to an agent turn — so
- * the workbench needs its own surface. It is deliberately thin: every endpoint
- * calls the same `operations.ts` functions the tools call, so a browser submission
- * and a model submission cannot diverge in validation, de-duplication or watching.
+ * The conversation is the only place a video is made (DESIGN §16.4): nothing
+ * here submits a generation or writes a file. Every endpoint calls the same
+ * `operations.ts` functions the tools call.
  *
  * Two rules this file exists to enforce:
  *
  * - **Never a secret, only a masked tail.** Credential state is reported as
  *   configured / source / `ab…cd`, which is enough to tell two keys apart and not
  *   enough to use one.
- * - **Never a path from the client.** Export takes a target path (the operator
- *   asked for that file), but every *read* path — the artifact bytes — comes from
- *   the ledger in `media-route.ts`, never from a request body.
+ * - **Never a path from the client.** Every path — the artifact bytes, whether a
+ *   video is still where it was written — comes from the ledger, never from a
+ *   request.
  */
 
+import { lstat, realpath, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { describeProviders, exportArtifact, generate, listTasks, cancelTask, type GenerateInput } from './operations.ts'
+import { describeProviders, listTasks, cancelTask, type TaskRow } from './operations.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
+import { ConfigError } from './settings.ts'
 import { isTrustedRequest } from './trust.ts'
-import { VIDEO_MODES, type VideoMode } from './types.ts'
+import type { VideoTask } from './types.ts'
 
-/** Route prefix for the workbench API family. */
+/** Route prefix for the panel API family. */
 export const PANEL_ROUTE_PREFIX = '/video-forge/api'
 
 /** Request bodies are small JSON documents; anything larger is not a real request. */
@@ -76,43 +78,13 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
   return value
 }
 
-function booleanField(body: Record<string, unknown>, key: string): boolean | undefined {
-  const value = body[key]
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'boolean') throw new RequestError(`${key} must be a boolean`)
-  return value
-}
-
-function numberField(body: Record<string, unknown>, key: string): number | undefined {
-  const value = body[key]
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new RequestError(`${key} must be a number`)
-  return value
-}
-
-function stringListField(body: Record<string, unknown>, key: string): string[] | undefined {
-  const value = body[key]
-  if (value === undefined || value === null) return undefined
-  if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) {
-    throw new RequestError(`${key} must be an array of strings`)
-  }
-  return value as string[]
-}
-
-function modeField(body: Record<string, unknown>, key: string): VideoMode | undefined {
-  const value = stringField(body, key)
-  if (value === undefined) return undefined
-  if (!VIDEO_MODES.includes(value as VideoMode)) throw new RequestError(`${key} must be one of ${VIDEO_MODES.join(', ')}`)
-  return value as VideoMode
-}
-
 /** Build the handler for the whole family. */
 export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     // The harness does not gate plugin routes, so this family decides for itself:
-    // loopback or a paired device, nothing else. It reads prompts and spends money.
+    // loopback or a paired device, nothing else. It reads prompts and can cancel paid tasks.
     if (!isTrustedRequest(runtime.ctx, req)) {
-      sendError(res, 403, 'video-forge refuses this request: the workbench API is loopback-only unless the browser is a paired device')
+      sendError(res, 403, 'video-forge refuses this request: its panel API is loopback-only unless the browser is a paired device')
       return
     }
 
@@ -122,6 +94,29 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
     try {
       if (action === 'overview') {
         if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'method not allowed')
+        // One task, for a chat card: just its row, whether its video is still
+        // there, and the in-flight count — no credential lookups, so a page with
+        // many cards stays cheap.
+        const taskId = url.searchParams.get('taskId')
+        if (taskId !== null) {
+          if (taskId.trim() === '') return sendError(res, 400, 'taskId must name one task')
+          // Right after a restart the ledger may still be reading: answer from
+          // it, not from an empty document that would call every task unknown.
+          await runtime.ledger.ready()
+          let list: ReturnType<typeof listTasks>
+          try {
+            list = listTasks(runtime, { taskId })
+          } catch (error: unknown) {
+            if (error instanceof ConfigError) return sendError(res, 404, `no video task ${taskId} in this host's ledger`)
+            throw error
+          }
+          sendJson(res, 200, {
+            ok: true,
+            tasks: await Promise.all(list.tasks.map(async (row: TaskRow) => ({ ...row, artifactState: await artifactState(runtime.ledger.byId(row.taskId)) }))),
+            active: list.active,
+          })
+          return
+        }
         const settings = runtime.settings()
         const list = listTasks(runtime, { limit: 50 })
         sendJson(res, 200, {
@@ -143,35 +138,6 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
         return
       }
 
-      if (action === 'generate') {
-        if (req.method !== 'POST') return sendError(res, 405, 'method not allowed')
-        const body = await readJsonBody(req)
-        const prompt = stringField(body, 'prompt')
-        if (prompt === undefined || prompt.trim() === '') throw new RequestError('prompt is required')
-        const input: GenerateInput = {
-          prompt,
-          provider: stringField(body, 'provider'),
-          model: stringField(body, 'model'),
-          mode: modeField(body, 'mode'),
-          firstFrame: stringField(body, 'firstFrame'),
-          lastFrame: stringField(body, 'lastFrame'),
-          referenceImages: stringListField(body, 'referenceImages'),
-          durationSeconds: numberField(body, 'durationSeconds') ?? null,
-          resolution: stringField(body, 'resolution'),
-          aspectRatio: stringField(body, 'aspectRatio'),
-        }
-        // No agent owns a browser submission, so the watch starts unowned; the
-        // panel is the surface that reports its progress.
-        const outcome = await generate(runtime, input, { waitSeconds: 0 })
-        sendJson(res, 200, {
-          ok: true,
-          task: outcome.task,
-          jobId: outcome.jobId,
-          message: outcome.message,
-        })
-        return
-      }
-
       if (action === 'cancel') {
         if (req.method !== 'POST') return sendError(res, 405, 'method not allowed')
         const body = await readJsonBody(req)
@@ -182,19 +148,7 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
         return
       }
 
-      if (action === 'export') {
-        if (req.method !== 'POST') return sendError(res, 405, 'method not allowed')
-        const body = await readJsonBody(req)
-        const taskId = stringField(body, 'taskId')
-        const targetPath = stringField(body, 'targetPath')
-        if (taskId === undefined || taskId === '') throw new RequestError('taskId is required')
-        if (targetPath === undefined || targetPath === '') throw new RequestError('targetPath is required')
-        const outcome = await exportArtifact(runtime, taskId, targetPath, booleanField(body, 'overwrite') === true)
-        sendJson(res, 200, { ok: true, ...outcome })
-        return
-      }
-
-      sendError(res, 404, `unknown workbench action "${action}"`)
+      sendError(res, 404, `unknown video-forge action "${action}"`)
     } catch (error: unknown) {
       if (error instanceof RequestError) {
         sendError(res, 400, error.message)
@@ -203,8 +157,30 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
       // A domain error (bad config, provider refusal) is the operator's to read,
       // so it is reported verbatim rather than flattened into "internal error".
       const message = error instanceof Error ? error.message : String(error)
-      runtime.logger.warn(`video-forge: workbench ${action} failed: ${message}`)
+      runtime.logger.warn(`video-forge: panel ${action} failed: ${message}`)
       sendError(res, 400, message)
     }
+  }
+}
+
+/**
+ * Whether a task's video is still where it was written: `present`, `missing`
+ * (moved, deleted, or replaced by something that is not that file), or null
+ * when it has none. A workspace video counts only while its real path is the
+ * recorded one, as the media route requires before it plays it.
+ */
+async function artifactState(task: VideoTask | undefined): Promise<'present' | 'missing' | null> {
+  const artifact = task?.artifacts[0]
+  if (artifact === undefined) return null
+  try {
+    if (artifact.location?.kind !== 'workspace') {
+      // The plugin's own directory: followed, exactly as the media route opens it.
+      return (await stat(artifact.path)).isFile() ? 'present' : 'missing'
+    }
+    const info = await lstat(artifact.path)
+    if (!info.isFile()) return 'missing'
+    return (await realpath(artifact.path)) === artifact.path ? 'present' : 'missing'
+  } catch {
+    return 'missing'
   }
 }

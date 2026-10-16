@@ -47,7 +47,7 @@ export interface TaskSession {
   mode: SandboxMode | 'unknown' | null
 }
 
-/** The calling session, or null for a call no session made (the workbench). */
+/** The calling session, or null for a call no session made. */
 export function sessionContextOf(ctx: Context, agent: AgentLike | undefined): TaskSession | null {
   if (agent === undefined) return null
   const header = agent.session?.header

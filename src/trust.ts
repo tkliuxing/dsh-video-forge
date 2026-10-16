@@ -1,10 +1,10 @@
 /**
- * The trust fence for the workbench API.
+ * The trust fence for the panel API.
  *
  * The harness authenticates its own index and bundle requests, but it does **not**
  * gate a plugin's routes: whatever a plugin registers is reachable by anything
- * that can reach the port. The workbench API reads task prompts and can spend
- * money, so it must decide for itself — and the shipped family fence is the right
+ * that can reach the port. The panel API reads task prompts and can cancel paid
+ * tasks, so it must decide for itself — and the shipped family fence is the right
  * answer:
  *
  * - **loopback always passes** (the desktop case, which is how this is normally
@@ -16,7 +16,7 @@
  * The socket address is authoritative here; `X-Forwarded-For` is never consulted,
  * because a header anyone can set is not a trust signal. The same-origin markers
  * are required as well, which costs the browser nothing and blocks a cross-site
- * page from driving the workbench through the operator's own browser.
+ * page from driving the panel API through the operator's own browser.
  */
 
 import type { IncomingMessage } from 'node:http'
@@ -76,7 +76,7 @@ interface PairingAccess {
 }
 
 /**
- * Whether this request may enter the workbench API.
+ * Whether this request may enter the panel API.
  *
  * `ctx.get` is read structurally rather than through `inject`, so the plugin keeps
  * working on a composition without the pairing service — the fence then stays

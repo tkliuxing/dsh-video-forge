@@ -7,7 +7,7 @@
  * opaque target that `resolve(path, { cwd })` returns; relative paths resolve
  * against the session's workspace.
  *
- * A call no session made (the workbench, tests) in a composition without a
+ * A call no session made (tests, a bare composition) in a composition without a
  * filesystem service has no workspace to respect; there the same interface is
  * served by Node's `fs` on the host. A session call never falls back that way
  * (see {@link workspaceFsOf}).

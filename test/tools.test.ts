@@ -13,7 +13,6 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
-import { exportArtifact } from '../src/operations.ts'
 import { registerTools } from '../src/tools.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
@@ -224,7 +223,7 @@ describe('video_generate', () => {
   })
 })
 
-describe('video_status / video_cancel, and the panel\'s export', () => {
+describe('video_status / video_cancel', () => {
   it('lists tasks with a play URL once an artifact exists', async () => {
     const ledger = await makeLedger()
     const artifactPath = join(ledger.home, 'out.mp4')
@@ -306,47 +305,5 @@ describe('video_status / video_cancel, and the panel\'s export', () => {
     }
     expect(value.cancelled).toBe(false)
     expect(value.status).toBe('running')
-  })
-
-  // The tool is gone (M3.3); the workbench panel still exports until M3.4 removes it.
-  it('refuses to export before an artifact exists, and requires an absolute target', async () => {
-    const ledger = await makeLedger()
-    await ledger.add(openTask('v-20261013-0003'))
-    const runtime = runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger)
-    await expect(exportArtifact(runtime, 'v-20261013-0003', '/tmp/x.mp4'))
-      .rejects.toThrowError(/has no artifact to export yet/)
-
-    const artifactPath = join(ledger.home, 'in.mp4')
-    await writeFile(artifactPath, 'bytes')
-    await ledger.update('v-20261013-0003', current => ({
-      ...current,
-      status: 'succeeded',
-      artifacts: [{
-        path: artifactPath, bytes: 5, mime: 'video/mp4', width: null, height: null, durationSec: null,
-        token: 'e'.repeat(32), createdAt: new Date().toISOString(),
-      }],
-    }))
-    await expect(exportArtifact(runtime, 'v-20261013-0003', 'relative.mp4'))
-      .rejects.toThrowError(/must be absolute/)
-  })
-
-  it('exports an existing artifact and refuses to clobber by default', async () => {
-    const ledger = await makeLedger()
-    const artifactPath = join(ledger.home, 'in.mp4')
-    await writeFile(artifactPath, 'bytes')
-    await ledger.add({
-      ...openTask('v-20261013-0004'),
-      status: 'succeeded',
-      artifacts: [{
-        path: artifactPath, bytes: 5, mime: 'video/mp4', width: null, height: null, durationSec: null,
-        token: 'd'.repeat(32), createdAt: new Date().toISOString(),
-      }],
-    })
-    const runtime = runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger)
-    const target = join(ledger.home, 'exported.mp4')
-    const value = await exportArtifact(runtime, 'v-20261013-0004', target)
-    expect(value.bytes).toBe(5)
-    await expect(exportArtifact(runtime, 'v-20261013-0004', target))
-      .rejects.toThrowError(/already exists/)
   })
 })

@@ -11,7 +11,7 @@
  *
  * - **The browser half imports it.** The configuration card has to offer real
  *   choices rather than asking an operator to type a protocol name from memory,
- *   and it must still work when the workbench API is unreachable. Nothing here
+ *   and it must still work when the panel API is unreachable. Nothing here
  *   touches a DSH service, a `node:` builtin or an adapter, so the client bundle
  *   can inline it.
  * - **A preset is a starting point, not a closed list.** The catalog below seeds
@@ -101,7 +101,7 @@ const SEEDANCE_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'
  *
  * `duration: -1` ("let the model choose", 2.x only) is not listed: leaving the
  * duration unset hands the choice to the vendor's default (which is `-1` for
- * 2.5; the 2.0 reference names none) without a sentinel the workbench would
+ * 2.5; the 2.0 reference names none) without a sentinel the configuration card would
  * have to explain.
  *
  * [创建视频生成任务]: https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh

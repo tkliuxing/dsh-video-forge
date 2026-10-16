@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { apply, BUNDLE_NAME, NS, PANEL_ID, SETTINGS_NAMESPACE, inject } from '../src/client/index.ts'
+import { apply, BUNDLE_NAME, NS, SETTINGS_NAMESPACE, inject } from '../src/client/index.ts'
 import { en, zh } from '../src/client/locales.ts'
 
 interface Registration {
@@ -105,18 +105,15 @@ describe('client apply', () => {
     expect(cards.every(entry => typeof entry.component === 'function')).toBe(true)
   })
 
-  it('puts the workbench in main and its row in the sidebar under one id', () => {
+  it('has no workbench page: nothing in main or the sidebar, and the generate card is given the live store', () => {
     const b = bench(ALL_SEATS)
     apply(b.ctx)
-
-    const main = b.registrations.find(entry => entry.options['name'] === 'main')
-    const row = b.registrations.find(entry => entry.options['name'] === 'sidebar.panellist')
-    expect(main?.options['key']).toBe(PANEL_ID)
-    // The shell addresses the panel by the row id, so the two must agree.
-    expect(row?.options['id']).toBe(PANEL_ID)
-    expect(typeof row?.options['label']).toBe('function')
-    // A thunk, so a language switch relabels without re-registering.
-    expect((row?.options['label'] as () => string)()).toBe('t:panel.launch')
+    expect(b.registrations.some(entry => entry.options['name'] === 'main' || entry.options['name'] === 'sidebar.panellist')).toBe(false)
+    const generate = b.registrations.find(entry => entry.options['name'] === 'tool.call.toolview' && entry.options['key'] === 'video_generate')
+    const injected = (generate?.options['inject'] as () => { liveTasks: { source: unknown; cancel: unknown } })()
+    expect(typeof injected.liveTasks.source).toBe('function')
+    expect(typeof injected.liveTasks.cancel).toBe('function')
+    expect(b.effects).toContain('video-forge: live task store')
   })
 
   it('keeps the floating entry to a badge with no owner props', () => {

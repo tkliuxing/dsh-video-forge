@@ -1,5 +1,7 @@
 /**
- * The workbench's transport: a thin client over `/video-forge/api`.
+ * The browser surfaces' transport: a thin client over `/video-forge/api` — one
+ * task for a chat card, cancelling it, and the overview the configuration card
+ * and the badge read.
  *
  * URLs are **document-relative** on purpose. The GUI is served with
  * `<base href="./">`, so a relative path resolves against the document's own
@@ -7,7 +9,7 @@
  * leading slash would escape to the origin root. This is the shipped convention
  * (`api/dsh-usage/overview`), and it is why nothing here builds an absolute URL.
  *
- * Every call returns a discriminated result instead of throwing: the panel is a UI,
+ * Every call returns a discriminated result instead of throwing: these are UIs,
  * and a rejected fetch must render as a message rather than as a blank crash.
  */
 
@@ -26,8 +28,17 @@ export interface PanelTask {
   updatedAt: string
   playUrl: string | null
   artifactPath: string | null
+  /** Where the video is, in words (workspace-relative, or why it is outside). */
+  artifactLocation: string | null
   artifactBytes: number | null
   error: string | null
+  /** Set when the provider's content review refused the task. */
+  moderation?: string | null
+}
+
+/** One task as a chat card polls it: the row plus whether its video is still there. */
+export interface LiveTask extends PanelTask {
+  artifactState: 'present' | 'missing' | null
 }
 
 export interface ProviderCapability {
@@ -67,21 +78,8 @@ export interface PanelOverview {
   active: number
 }
 
-export interface SubmitInput {
-  prompt: string
-  provider?: string
-  model?: string
-  mode?: VideoMode
-  firstFrame?: string
-  lastFrame?: string
-  referenceImages?: string[]
-  durationSeconds?: number | null
-  resolution?: string
-  aspectRatio?: string
-}
-
-/** Either a value or a message the panel can show verbatim. */
-export type PanelResult<T> = { ok: true; value: T } | { ok: false; error: string }
+/** Either a value or a message the UI can show verbatim (with the HTTP status, when there was an answer). */
+export type PanelResult<T> = { ok: true; value: T } | { ok: false; error: string; status?: number }
 
 const BASE = 'video-forge/api'
 
@@ -103,11 +101,11 @@ async function call<T>(action: string, init: RequestInit): Promise<PanelResult<T
     try {
       parsed = text === '' ? {} : JSON.parse(text)
     } catch {
-      return { ok: false, error: `the workbench API answered with a non-JSON body (HTTP ${response.status})` }
+      return { ok: false, error: `the video-forge panel API answered with a non-JSON body (HTTP ${response.status})`, status: response.status }
     }
     const body = parsed as { ok?: boolean; error?: string }
     if (!response.ok || body.ok === false) {
-      return { ok: false, error: body.error ?? `HTTP ${response.status}` }
+      return { ok: false, error: body.error ?? `HTTP ${response.status}`, status: response.status }
     }
     return { ok: true, value: parsed as T }
   } catch (error: unknown) {
@@ -119,12 +117,15 @@ export function fetchOverview(): Promise<PanelResult<PanelOverview>> {
   return call<PanelOverview>('overview', { method: 'GET' })
 }
 
-export function submitGeneration(input: SubmitInput): Promise<PanelResult<{ task: PanelTask; jobId: string | null; message: string }>> {
-  return call('generate', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  })
+/** One task, for a chat card; light (no credential lookups). */
+export async function fetchTask(taskId: string): Promise<PanelResult<{ task: LiveTask | null; active: number }>> {
+  const result = await call<{ tasks?: unknown; active?: unknown }>(`overview?taskId=${encodeURIComponent(taskId)}`, { method: 'GET' })
+  if (!result.ok) return result
+  const tasks = result.value.tasks
+  if (!Array.isArray(tasks)) return { ok: false, error: 'the video-forge panel API answered without a task list' }
+  // Only the row asked for: a host that ignored the filter must not put another task's video on this card.
+  const task = (tasks as LiveTask[]).find(entry => typeof entry === 'object' && entry !== null && entry.taskId === taskId) ?? null
+  return { ok: true, value: { task, active: typeof result.value.active === 'number' ? result.value.active : 0 } }
 }
 
 export function cancelGeneration(taskId: string): Promise<PanelResult<{ cancelled: boolean; message: string; status: string }>> {
@@ -132,13 +133,5 @@ export function cancelGeneration(taskId: string): Promise<PanelResult<{ cancelle
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ taskId }),
-  })
-}
-
-export function exportArtifact(taskId: string, targetPath: string, overwrite = false): Promise<PanelResult<{ path: string; bytes: number }>> {
-  return call('export', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ taskId, targetPath, overwrite }),
   })
 }

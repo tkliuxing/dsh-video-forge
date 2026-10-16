@@ -14,7 +14,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsCard, type ClientConfigShape, type ConfigPatch, type CredentialState } from '../src/client/settings-card.tsx'
-import { formatBytes, safeUrl } from '../src/client/panel.tsx'
+import { formatBytes, resolveMediaUrl as safeUrl } from '../src/client/video-card-model.ts'
 import { en } from '../src/client/locales.ts'
 import type { VideoForgeKey } from '../src/client/locales.ts'
 

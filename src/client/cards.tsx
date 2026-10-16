@@ -2,13 +2,16 @@
  * The browser cards: one row per wire tool name, rendered inside the tool-call
  * block.
  *
- * Everything here is a pure function of the props the framework hands over. In
- * particular the media URL is *resolved* from the document-relative path the
- * host produced, and it is the only place this plugin builds a `src` for
- * `<video>` — no component reaches into session state to find bytes.
+ * The frozen props the framework hands over say what the call returned; the
+ * generate card then follows its task live through the injected
+ * {@link LiveTasks} (DESIGN §16.4): progress, the finished player, where the
+ * video is, and a cancel button while the provider may still stop it. The media
+ * URL is *resolved* from the document-relative path the host produced, and it is
+ * the only place this plugin builds a `src` for `<video>`.
  */
 
-import type { CSSProperties, ReactNode } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import type { LiveSnapshot, LiveSource, LiveTasks } from './live-tasks.ts'
 import {
   blockFacts,
   formatBytes,
@@ -34,7 +37,39 @@ export interface VideoCardProps {
   phase: 'preparing' | 'start' | 'result'
   block: unknown
   t: Translate
+  /** Injected by this plugin's registration; absent where nothing is injected (tests, replays elsewhere). */
+  liveTasks?: LiveTasks | undefined
 }
+
+const STYLE_BAR_TRACK: CSSProperties = {
+  width: '100%',
+  maxWidth: '480px',
+  height: '4px',
+  borderRadius: '2px',
+  background: 'var(--dsw-alias-border-l2, #e5e5e5)',
+  overflow: 'hidden',
+}
+
+const STYLE_BUTTON: CSSProperties = {
+  alignSelf: 'flex-start',
+  padding: '2px 10px',
+  borderRadius: '6px',
+  border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  fontSize: '0.85em',
+}
+
+/** A source that never changes, for a card with no task to follow. */
+const IDLE: LiveSource = {
+  getSnapshot: () => IDLE_SNAPSHOT,
+  subscribe: () => () => undefined,
+}
+const IDLE_SNAPSHOT: LiveSnapshot = { task: null, error: null, loaded: false, stopped: false }
+
+/** Statuses the provider may still be talked out of. */
+const CANCELLABLE = new Set(['queued', 'running'])
 
 const STYLE_ROW: CSSProperties = {
   display: 'flex',
@@ -75,6 +110,17 @@ const STYLE_LIST: CSSProperties = {
 export function VideoGenerateRow(props: VideoCardProps): ReactNode {
   const { t } = props
   const facts = blockFacts(props.block)
+  const meta = facts.phase === 'result' && !facts.isError ? generateMeta(facts.meta) : null
+  // Hooks run on every render, whatever is shown: the live source is chosen
+  // from the frozen result, and a card without one follows nothing.
+  const source = meta !== null && props.liveTasks !== undefined ? props.liveTasks.source(meta.taskId) : IDLE
+  const live = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot)
+  const [cancel, setCancel] = useState<{ busy: boolean; accepted: boolean; message: string | null }>({ busy: false, accepted: false, message: null })
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   if (facts.phase !== 'result') {
     const start = startFacts(facts.argsRaw)
@@ -95,24 +141,52 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
     )
   }
 
-  const meta = generateMeta(facts.meta)
   if (meta === null) {
     // No persisted facts (a nested Code dispatch, or an older log): show the
     // model-facing text rather than inventing a player.
     return <div style={STYLE_ROW}>{resultText(facts.content) ?? null}</div>
   }
 
+  // The live row wins over the frozen one once it has arrived.
+  const row = live.task
+  const status = row?.status ?? meta.status
+  const progress = row === null ? meta.progress : row.progress
+  const playUrl = row !== null ? row.playUrl : meta.artifact?.url ?? null
+  const missing = row?.artifactState === 'missing'
   const base = typeof document === 'undefined' ? 'http://localhost/' : document.baseURI
-  const url = meta.artifact === null ? null : resolveMediaUrl(meta.artifact.url, base)
-  const percent = meta.progress === null ? null : Math.round(meta.progress * 100)
+  const url = playUrl === null || missing ? null : resolveMediaUrl(playUrl, base)
+  const percent = progress === null ? null : Math.round(progress * 100)
+  const where = row?.artifactLocation ?? meta.artifact?.path ?? null
+  const bytes = row?.artifactBytes ?? meta.artifact?.bytes ?? null
+
+  const onCancel = (): void => {
+    if (props.liveTasks === undefined || cancel.busy || cancel.accepted) return
+    setCancel({ busy: true, accepted: false, message: null })
+    void props.liveTasks.cancel(meta.taskId).then(
+      (outcome) => { if (mounted.current) setCancel({ busy: false, accepted: outcome.ok, message: outcome.message }) },
+      (error: unknown) => { if (mounted.current) setCancel({ busy: false, accepted: false, message: error instanceof Error ? error.message : String(error) }) },
+    )
+  }
+  // Offered only once the live state confirms the task can still be stopped,
+  // never on the frozen result alone, and not again after it was accepted.
+  const cancellable = props.liveTasks !== undefined && live.loaded && !live.stopped && row !== null && CANCELLABLE.has(status)
 
   return (
     <div style={STYLE_ROW}>
-      <div style={STYLE_TITLE}>{t(statusKey(meta.status))}</div>
-      <div style={STYLE_META}>
-        {t('generate.meta', { provider: meta.provider, model: meta.model, status: meta.status })}
-        {percent === null ? '' : ` · ${t('generate.progress', { percent })}`}
+      <div aria-live="polite" style={STYLE_ROW}>
+        <div style={STYLE_TITLE}>{status === 'succeeded' ? t('generate.succeeded') : t(statusKey(status))}</div>
+        <div style={STYLE_META}>
+          {t('generate.meta', { provider: meta.provider, model: meta.model, status })}
+          {percent === null || status === 'succeeded' ? '' : ` · ${t('generate.progress', { percent })}`}
+        </div>
       </div>
+      {percent !== null && CANCELLABLE.has(status)
+        ? (
+            <div style={STYLE_BAR_TRACK} role="progressbar" aria-label={t('generate.progress', { percent })} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+              <div style={{ width: `${percent}%`, height: '100%', background: 'var(--dsw-color-primary, #1677ff)' }} />
+            </div>
+          )
+        : null}
       {url === null
         ? null
         : (
@@ -124,9 +198,20 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
               style={STYLE_PLAYER}
             />
           )}
-      {url === null || meta.artifact === null
+      {missing ? <div style={STYLE_ERROR}>{t('generate.missing')}</div> : null}
+      {where === null || missing
         ? null
-        : <div style={STYLE_META}>{`${meta.artifact.path} · ${formatBytes(meta.artifact.bytes)}`}</div>}
+        : <div style={STYLE_META}>{bytes === null ? where : `${where} · ${formatBytes(bytes)}`}</div>}
+      {row?.error === null || row?.error === undefined || status === 'succeeded' ? null : <div style={STYLE_ERROR}>{row.error}</div>}
+      {live.error === null ? null : <div style={STYLE_META}>{t('generate.liveError', { error: live.error })}</div>}
+      {cancellable
+        ? (
+            <button type="button" style={STYLE_BUTTON} disabled={cancel.busy || cancel.accepted} onClick={onCancel}>
+              {cancel.busy || cancel.accepted ? t('generate.cancelling') : t('generate.cancel')}
+            </button>
+          )
+        : null}
+      {cancel.message === null ? null : <div aria-live="polite" style={STYLE_META}>{cancel.message}</div>}
     </div>
   )
 }

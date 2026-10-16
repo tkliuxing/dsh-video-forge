@@ -42,7 +42,7 @@ export interface ProtocolAdapter {
  * excerpt. When the body is the provider's own structured error, its code and
  * message are lifted into `providerCode` and into the error message itself:
  * "your account has not activated this model" is the one sentence an operator
- * needs, and every surface — tool result, workbench, ledger — shows the message.
+ * needs, and every surface — tool result, chat card, ledger — shows the message.
  */
 export class ProviderRequestError extends Error {
   readonly status: number | null

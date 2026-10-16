@@ -456,7 +456,7 @@ describe('configuration card: credential verdicts', () => {
     models: [],
   })
 
-  it('prefers the masked tail the workbench API knows about', () => {
+  it('prefers the masked tail the panel API knows about', () => {
     const summary = credentialSummary(
       t,
       'ARK_API_KEY',

@@ -4,10 +4,11 @@
  * Layout of the seams, each chosen because it is the seat the harness documents
  * for that job:
  *
- * - `tool.call.toolview` (keyed by wire tool name) — one card per tool.
- * - `main` + `sidebar.panellist`, same id — the workbench page and its sidebar
- *   row. This is the shape every shipped panel uses: `main` is the central panel
- *   and the shell owns the button, label and highlight for the row.
+ * - `tool.call.toolview` (keyed by wire tool name) — one card per tool. The
+ *   generate card is the working surface (DESIGN §16.4): it is injected the
+ *   plugin's live task store, so it follows its task after the result froze —
+ *   progress, the finished player, where the video is, and cancel. There is no
+ *   separate workbench page: the conversation is where videos are made.
  * - `shell.overlay` — a progress badge, which is what that layer is for (badges,
  *   toasts, status pills; no owner props, and its children are clickable).
  * - `plugins.bundle.config` with `settings.plugins.tab` as the fallback — the
@@ -30,17 +31,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the keyed tool-slot declaration. A value import of a client UI
 // package is forbidden by the bundle purity rule, and is unnecessary here.
 import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
-import { WorkbenchBadge } from './badge.tsx'
-import { WorkbenchIcon } from './icons.tsx'
+import { ProgressBadge } from './badge.tsx'
 import { VideoActionRow, VideoGenerateRow, VideoStatusRow } from './cards.tsx'
 import { BUNDLE_CONFIG_SEAT, SETTINGS_TAB_SEAT, installConfigCard } from './config-card-seat.ts'
+import { createLiveTasks } from './live-tasks.ts'
 import { en, zh, type VideoForgeKey } from './locales.ts'
-import { WorkbenchPage } from './panel.tsx'
 import {
   SettingsCard,
   type ClientConfigShape,
@@ -57,9 +56,6 @@ export const BUNDLE_NAME = 'dsh-video-forge'
 
 /** Profile row id the bundle patch mounts this plugin under — also its settings namespace. */
 export const SETTINGS_NAMESPACE = 'video-forge'
-
-/** Shared id of the workbench `main` page and its `sidebar.panellist` row. */
-export const PANEL_ID = 'video-forge.workbench'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -116,8 +112,12 @@ export function apply(ctx: Context): void {
   }
 
   // --- tool cards ---------------------------------------------------------
+  // One live store for every generate card in this window; polling is per task
+  // and only while a card for it is mounted.
+  const liveTasks = createLiveTasks()
+  ctx.effect(() => () => { liveTasks.dispose() }, 'video-forge: live task store')
   ctx.slots.inject('tool.call.toolview', () =>
-    ctx.slots.register({ name: 'tool.call.toolview', key: 'video_generate', locale: NS }, VideoGenerateRow))
+    ctx.slots.register({ name: 'tool.call.toolview', key: 'video_generate', locale: NS, inject: () => ({ liveTasks }) }, VideoGenerateRow))
 
   ctx.slots.inject('tool.call.toolview', () =>
     ctx.slots.register({ name: 'tool.call.toolview', key: 'video_status', locale: NS }, VideoStatusRow))
@@ -125,27 +125,13 @@ export function apply(ctx: Context): void {
   ctx.slots.inject('tool.call.toolview', () =>
     ctx.slots.register({ name: 'tool.call.toolview', key: 'video_cancel', locale: NS }, VideoActionRow))
 
+  // The tool is gone (M3.3), but conversations that called it still render.
   ctx.slots.inject('tool.call.toolview', () =>
     ctx.slots.register({ name: 'tool.call.toolview', key: 'video_export', locale: NS }, VideoActionRow))
 
-  // --- workbench: the central panel plus its sidebar row -------------------
-  ctx.slots.inject('main', () =>
-    ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, WorkbenchPage))
-
-  ctx.slots.inject('sidebar.panellist', () =>
-    ctx.slots.register({
-      name: 'sidebar.panellist',
-      id: PANEL_ID,
-      order: 40,
-      // A thunk: the shell re-reads the label per projection, so a language switch
-      // relabels the row without re-registering.
-      label: () => t('panel.launch'),
-      locale: NS,
-    }, WorkbenchIcon))
-
   // --- ambient progress badge ---------------------------------------------
   ctx.slots.inject('shell.overlay', () =>
-    ctx.slots.register({ name: 'shell.overlay', id: 'video-forge.badge', order: 90, label: () => t('panel.active', { count: 0 }), locale: NS, inject: () => ({}) }, WorkbenchBadge))
+    ctx.slots.register({ name: 'shell.overlay', id: 'video-forge.badge', order: 90, label: () => t('panel.active', { count: 0 }), locale: NS, inject: () => ({}) }, ProgressBadge))
 
   // --- configuration card, in the seat this harness renders ---------------
   const install = (): (() => void) => installConfigCard(ctx, {

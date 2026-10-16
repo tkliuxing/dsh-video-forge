@@ -6,7 +6,7 @@
  */
 
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -172,7 +172,7 @@ describe('trust fence', () => {
   })
 })
 
-describe('workbench API', () => {
+describe('panel API', () => {
   it('answers an overview with providers, tasks and a masked credential', async () => {
     const response = await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview`)
     expect(response.status).toBe(200)
@@ -211,66 +211,68 @@ describe('workbench API', () => {
     }
   })
 
-  it('submits a generation through the same path the tools use', async () => {
+  it('no longer generates or exports: the conversation is the only place a video is made', async () => {
     const before = fixture.requests.filter(entry => entry.method === 'POST').length
-    const response = await post('generate', { prompt: 'a fox in snow' })
-    expect(response.status).toBe(200)
-    const body = await response.json() as { ok: boolean; task: { localId: string; status: string }; message: string }
-    expect(body.ok).toBe(true)
-    expect(body.task.status).toBe('queued')
-    expect(body.message).toContain('do not re-submit')
-    expect(fixture.requests.filter(entry => entry.method === 'POST').length).toBe(before + 1)
-    expect(ledger.byId(body.task.localId)?.providerTaskId).toMatch(/^cgt-fixture-/)
-  })
-
-  it('rejects a malformed submission with a reason', async () => {
-    expect((await post('generate', {})).status).toBe(400)
-    expect(await (await post('generate', {})).json()).toMatchObject({ ok: false })
-    const wrongType = await post('generate', { prompt: 'x', mode: 'nope' })
-    expect(wrongType.status).toBe(400)
-    expect((await wrongType.json() as { error: string }).error).toMatch(/mode must be one of/)
-  })
-
-  it('refuses a body that is not a JSON object', async () => {
-    const response = await fetch(`${base}${PANEL_ROUTE_PREFIX}/generate`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '[]',
-    })
-    expect(response.status).toBe(400)
+    expect((await post('generate', { prompt: 'a fox in snow' })).status).toBe(404)
+    expect((await post('export', { taskId: 'v-1', targetPath: '/tmp/x.mp4' })).status).toBe(404)
+    expect(fixture.requests.filter(entry => entry.method === 'POST').length).toBe(before)
   })
 
   it('reports an unknown action as 404 and a wrong method as 405', async () => {
     expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/nope`)).status).toBe(404)
-    expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/generate`)).status).toBe(405)
+    expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/cancel`)).status).toBe(405)
   })
 
-  it('cancels through the provider and exports an artifact', async () => {
-    fixture.requests.length = 0
-    const cancel = await post('cancel', { taskId: (await ledger.list())[0]?.localId })
-    expect(cancel.status).toBe(200)
-
-    // Seed a finished task with a real artifact, then export it.
-    const artifactPath = join(ledger.home, 'clip.mp4')
+  it('answers one task for a card, with whether its video is still there', async () => {
+    const artifactPath = join(ledger.home, 'card.mp4')
     await writeFile(artifactPath, 'video-bytes')
-    const seeded = await ledger.add(taskRow('v-20261013-0500'))
-    await ledger.update(seeded.localId, current => ({
-      ...current,
+    const seeded = await ledger.add({
+      ...taskRow('v-20261013-0600'),
+      status: 'succeeded',
+      artifacts: [{ path: artifactPath, bytes: 11, mime: 'video/mp4', width: null, height: null, durationSec: null, token: 'c'.repeat(32), createdAt: new Date().toISOString() }],
+    })
+    const read = async (): Promise<{ ok: boolean; tasks: { taskId: string; artifactState: string | null; playUrl: string | null }[]; active: number; providers?: unknown }> =>
+      await (await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?taskId=${seeded.localId}`)).json() as never
+    const present = await read()
+    expect(present.tasks).toHaveLength(1)
+    expect(present.tasks[0]).toMatchObject({ taskId: seeded.localId, artifactState: 'present' })
+    expect(present.tasks[0]?.playUrl).toContain(seeded.localId)
+    // A card's poll is light: no provider or credential lookups.
+    expect(present).not.toHaveProperty('providers')
+    expect(typeof present.active).toBe('number')
+
+    await unlink(artifactPath)
+    expect((await read()).tasks[0]?.artifactState).toBe('missing')
+    const unknown = await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?taskId=v-nope`)
+    expect(unknown.status).toBe(404)
+    // An empty filter is a malformed request, not "list everything".
+    expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?taskId=`)).status).toBe(400)
+
+    // A workspace video whose real path is no longer the recorded one is missing.
+    const real = join(ledger.home, 'ws-real.mp4')
+    await writeFile(real, 'video-bytes')
+    const relinked = await ledger.add({
+      ...taskRow('v-20261013-0601'),
       status: 'succeeded',
       artifacts: [{
-        path: artifactPath, bytes: 11, mime: 'video/mp4', width: null, height: null, durationSec: null,
-        token: 'a'.repeat(32), createdAt: new Date().toISOString(),
+        path: join(ledger.home, 'not-the-real-path.mp4'), bytes: 11, mime: 'video/mp4', width: null, height: null, durationSec: null,
+        token: 'd'.repeat(32), createdAt: new Date().toISOString(),
+        location: { kind: 'workspace', root: ledger.home, relativePath: 'not-the-real-path.mp4', shot: 'x', version: 1, sidecar: null },
       }],
-    }))
-    const target = join(ledger.home, 'exported.mp4')
-    const exported = await post('export', { taskId: seeded.localId, targetPath: target })
-    expect(exported.status).toBe(200)
-    expect((await exported.json() as { bytes: number }).bytes).toBe(11)
-    expect((await stat(target)).size).toBe(11)
+    })
+    await symlink(real, join(ledger.home, 'not-the-real-path.mp4'))
+    const swapped = await (await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?taskId=${relinked.localId}`)).json() as { tasks: { artifactState: string }[] }
+    expect(swapped.tasks[0]?.artifactState).toBe('missing')
+  })
 
-    // A second export refuses to clobber, and a relative path is refused outright.
-    expect((await post('export', { taskId: seeded.localId, targetPath: target })).status).toBe(400)
-    expect((await post('export', { taskId: seeded.localId, targetPath: 'relative.mp4' })).status).toBe(400)
+  it('cancels through the provider', async () => {
+    const created = await fetch(`${fixture.url}/api/v3/contents/generations/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const providerTaskId = ((await created.json()) as { id: string }).id
+    const seeded = await ledger.add({ ...taskRow('v-20261013-0700'), providerTaskId, status: 'queued' })
+    const cancel = await post('cancel', { taskId: seeded.localId })
+    expect(cancel.status).toBe(200)
+    expect(await cancel.json()).toMatchObject({ ok: true, cancelled: true, status: 'cancelled' })
+    expect((await post('cancel', {})).status).toBe(400)
   })
 
   it('refuses a request from a remote socket with 403', async () => {

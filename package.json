@@ -1,7 +1,7 @@
 {
   "name": "dsh-video-forge",
   "version": "0.1.0",
-  "description": "Online-model video generation for DeepSeek Harness: model tools + a web workbench, long-running provider tasks tracked in a durable ledger, artifacts served over a token-gated Range-capable route.",
+  "description": "Online-model video generation for DeepSeek Harness: model tools and live chat cards, long-running provider tasks tracked in a durable ledger, artifacts served over a token-gated Range-capable route.",
   "icon": "icon.svg",
   "license": "MIT",
   "author": "tkliuxing",
@@ -105,7 +105,6 @@
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-tool": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",

@@ -8,13 +8,13 @@
  * `null` whenever there is nothing to say, and its visible surface is a small
  * fixed box in the corner.
  *
- * The workbench itself lives in `main`; this badge is only the ambient "something
- * is running" signal while the operator is looking at the conversation.
+ * It is only the ambient "something is running" signal; each video's own card in
+ * the conversation shows its progress and can cancel it.
  */
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { fetchOverview } from './panel-api.ts'
-import type { Translate } from './panel.tsx'
+import type { Translate } from './locales.ts'
 
 /** Props this badge reads; the overlay seat supplies a `t` seat via `locale`. */
 export interface BadgeProps {
@@ -42,7 +42,7 @@ const BOX: CSSProperties = {
 const POLL_MS = 5000
 
 /** The overlay badge. */
-export function WorkbenchBadge(props: BadgeProps): ReactNode {
+export function ProgressBadge(props: BadgeProps): ReactNode {
   const { t } = props
   const [active, setActive] = useState(0)
 

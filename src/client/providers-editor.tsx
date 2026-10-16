@@ -601,7 +601,7 @@ export interface CredentialSummary {
 /**
  * What to say about one provider's credential, and how loudly.
  *
- * Two sources answer different questions on purpose: the workbench API knows
+ * Two sources answer different questions on purpose: the panel API knows
  * whether the reference resolves and returns a masked tail, while the host
  * credential service knows whether the reference exists at all. An empty
  * reference is neither of those — it means the endpoint is meant to run without

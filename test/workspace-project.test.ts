@@ -307,7 +307,7 @@ describe('refused before anything is paid for', () => {
 describe('when the workspace cannot take the video after all', () => {
   it('a call no session made keeps it in $DSH_HOME', async () => {
     const { ledger, runtime } = await setup()
-    const outcome = await generate(runtime, { prompt: 'from the workbench' })
+    const outcome = await generate(runtime, { prompt: 'from no conversation' })
     const task = await settled(ledger, outcome.task.localId)
     expect(task.artifacts[0]?.path).toBe(join(ledger.home, 'outputs', task.localId, `${task.localId}.mp4`))
     expect(task.artifacts[0]?.location).toEqual({ kind: 'home', reason: 'it was not requested from a workspace conversation' })

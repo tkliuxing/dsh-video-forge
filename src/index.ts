@@ -143,9 +143,8 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     handler: mediaHandler(ledger),
   }), `video-forge: GET ${MEDIA_ROUTE_PREFIX}/<task>/<token>/<name>`)
 
-  // The workbench's own surface. The panel cannot call a host tool — a tool call
-  // belongs to an agent turn — so browser submissions go through this family and
-  // land on exactly the same operations the tools use.
+  // The browser surfaces' API: a chat card's live task state and cancel, the
+  // badge's count, the configuration card's overview. Nothing here submits.
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PANEL_ROUTE_PREFIX,

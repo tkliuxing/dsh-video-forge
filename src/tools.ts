@@ -3,7 +3,7 @@
  *
  * These are adapters: the schema, the model-facing prose and the card metadata
  * live here, while every side effect — validate, de-duplicate, submit, watch,
- * cancel — belongs to `operations.ts`, shared with the workbench panel.
+ * cancel — belongs to `operations.ts`, shared with the panel API.
  * Two implementations of a paid side effect drift, and the one that drifts is
  * always the quieter one.
  *
