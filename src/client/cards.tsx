@@ -253,6 +253,25 @@ export function VideoStatusRow(props: VideoCardProps): ReactNode {
   }
 
   const base = typeof document === 'undefined' ? 'http://localhost/' : document.baseURI
+  // A single finished take plays inline; a list stays a list (one player per
+  // row would be too heavy). This is the way the model shows a video: call
+  // `video_status` for one task and the card plays it — no markdown `<video>`
+  // (the DSH front end does not render it), no GIF, no frame sheets.
+  if (rows.length === 1) {
+    const only = rows[0]!
+    const url = only.playUrl === null ? null : resolveMediaUrl(only.playUrl, base)
+    if (url !== null) {
+      return (
+        <div style={STYLE_ROW}>
+          <div style={STYLE_TITLE}>{`${t('status.title')} · ${only.taskId}`}</div>
+          <div style={STYLE_META}>{`${only.status} · ${only.provider}/${only.model}`}</div>
+          <video controls playsInline preload="metadata" src={url} style={STYLE_PLAYER} />
+          {only.error === null ? null : <div style={STYLE_ERROR}>{only.error}</div>}
+          {only.status === 'unconfirmed' ? <div style={STYLE_ERROR}>{t('status.unconfirmedHint')}</div> : null}
+        </div>
+      )
+    }
+  }
   return (
     <div style={STYLE_ROW}>
       <div style={STYLE_TITLE}>{`${t('status.title')} · ${t('status.count', { count: rows.length })}`}</div>
