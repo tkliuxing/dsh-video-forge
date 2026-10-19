@@ -137,6 +137,44 @@ describe('rendered markup', () => {
     expect(html).toContain('boom')
   })
 
+  it('offers the file viewer on a finished video and the panel on any card', () => {
+    const openFile = vi.fn()
+    const openPanel = vi.fn()
+    const html = renderToStaticMarkup(
+      <VideoGenerateRow
+        phase="result"
+        block={resultBlock(GENERATE_META)}
+        t={t}
+        openFile={openFile}
+        openPanel={openPanel}
+      />,
+    )
+    expect(html).toContain('Open in file viewer')
+    expect(html).toContain('All videos')
+    // The path handed over is the artifact's own, not the display-only summary.
+    expect(html).not.toContain('undefined')
+  })
+
+  it('renders no entry buttons where no owner supplied them (a replay elsewhere)', () => {
+    const html = renderToStaticMarkup(<VideoGenerateRow phase="result" block={resultBlock(GENERATE_META)} t={t} />)
+    expect(html).not.toContain('Open in file viewer')
+    expect(html).not.toContain('All videos')
+  })
+
+  it('keeps the panel entry on a status card, which has no artifact path', () => {
+    const single = renderToStaticMarkup(
+      <VideoStatusRow
+        phase="result"
+        block={resultBlock({ tasks: [{ task_id: 'v-1', provider: 'ark', model: 'm', status: 'succeeded', progress: 1, play_url: 'video-forge/media/v-1/tok/out.mp4', error: null }] })}
+        t={t}
+        openPanel={() => undefined}
+      />,
+    )
+    expect(single).toContain('All videos')
+    // No path in this projection, so no viewer button that would open nothing.
+    expect(single).not.toContain('Open in file viewer')
+  })
+
   it('renders the action row for cancel and export', () => {
     const block = { phase: 'start', callId: 'c', name: 'video_export', argsRaw: '{"task_id":"v-1","target_path":"/tmp/a.mp4"}', turn: 1, step: 1, time: 1, subCalls: [] }
     expect(renderToStaticMarkup(<VideoActionRow phase="start" block={block} t={t} />)).toContain('Export video')

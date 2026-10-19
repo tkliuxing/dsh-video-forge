@@ -26,6 +26,8 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
   effects: string[]
   /** Tab types the panel contributed, in registration order. */
   tabTypes: Record<string, unknown>[]
+  /** Document renderer definitions the mp4 previewer contributed. */
+  previewDefinitions: Record<string, unknown>[]
   /** Dependency lists a `ctx.inject` asked to wait for. */
   injectRequests: string[][]
 } {
@@ -34,6 +36,7 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
   const awaits: string[] = []
   const effects: string[] = []
   const tabTypes: Record<string, unknown>[] = []
+  const previewDefinitions: Record<string, unknown>[] = []
   const injectRequests: string[][] = []
   const echo = (key: string) => `t:${key}`
 
@@ -79,6 +82,14 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
     },
   }
 
+  /** The file viewer's suffix registry, which the mp4 previewer registers into. */
+  const documentPreviews = {
+    register: (definition: Record<string, unknown>) => {
+      previewDefinitions.push(definition)
+      return () => {}
+    },
+  }
+
   const runEffect = (fn: () => (() => void) | void, label?: string): (() => void) => {
     effects.push(label ?? '')
     const dispose = fn()
@@ -91,7 +102,11 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
       injectRequests.push([...deps])
       if (!withSidebar) return
       callback({
-        get: (name: string) => (name === 'sidebarRightTabs' ? sidebarRightTabs : undefined),
+        get: (name: string) => {
+          if (name === 'sidebarRightTabs') return sidebarRightTabs
+          if (name === 'documentPreviews') return documentPreviews
+          return undefined
+        },
         effect: runEffect,
         slots,
       })
@@ -112,6 +127,7 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
     localeRegister: (ctx.locale as unknown as { register: ReturnType<typeof vi.fn> }).register,
     effects,
     tabTypes,
+    previewDefinitions,
     injectRequests,
   }
 }
@@ -124,6 +140,7 @@ const ALL_SEATS = [
   'plugins.bundle.config',
   'settings.plugins.tab',
   'sidebar.right.pane.tab',
+  'sidebar.right.tab.document',
 ]
 
 describe('client apply', () => {
@@ -224,10 +241,32 @@ describe('client apply', () => {
     expect(typeof injected.loadPanel).toBe('function')
   })
 
+  it('adds the mp4 renderer to the file viewer, binary and external on purpose', () => {
+    const b = bench(ALL_SEATS)
+    apply(b.ctx)
+
+    const definition = b.previewDefinitions[0]
+    expect(definition?.['id']).toBe('dsh-video-forge/mp4')
+    expect(definition?.['extensions']).toEqual(['mp4'])
+    // Without this the owner offers the plain-text body as a second viewer,
+    // which then fails on the first NUL byte.
+    expect(definition?.['binaryExtensions']).toEqual(['mp4'])
+    expect(definition?.['priority']).toBe('extension')
+    expect(definition?.['loading']).toBe('renderer')
+    expect((definition?.['title'] as () => string)()).toBe('t:preview.title')
+
+    const body = b.registrations.find(entry => entry.options['name'] === 'sidebar.right.tab.document')
+    // The dispatch key is the definition id, not the kind.
+    expect(body?.options['key']).toBe('dsh-video-forge/mp4')
+    expect(body?.options['locale']).toBe(NS)
+    expect(typeof body?.component).toBe('function')
+  })
+
   it('leaves the panel out when the harness has no tab registry', () => {
     const b = bench(ALL_SEATS, true, false)
     expect(() => { apply(b.ctx) }).not.toThrow()
     expect(b.tabTypes).toEqual([])
+    expect(b.previewDefinitions).toEqual([])
     expect(b.registrations.some(entry => entry.options['name'] === 'sidebar.right.pane.tab')).toBe(false)
     // Everything else still mounts.
     expect(b.registrations.some(entry => entry.options['name'] === 'tool.call.toolview')).toBe(true)

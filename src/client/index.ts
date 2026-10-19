@@ -45,6 +45,7 @@ import { createLiveTasks } from './live-tasks.ts'
 import { loadPanel, type WorkspaceFilesRemoteLike } from './panel-data.ts'
 import { en, zh, type VideoForgeKey } from './locales.ts'
 import { VideoPanel } from './video-panel.tsx'
+import { VIDEO_PREVIEW_EXTENSIONS, VIDEO_PREVIEW_ID, VideoPreview } from './video-preview.tsx'
 import {
   SettingsCard,
   type ClientConfigShape,
@@ -109,6 +110,7 @@ export function apply(ctx: Context): void {
 
   const t = ctx.locale.bind(NS)
   installVideoPanel(ctx, t)
+  installVideoPreview(ctx, t)
   const forms = ctx.get('configForms') as unknown as ConfigFormsService | undefined
 
   const credentials = (): CredentialRemote | undefined => {
@@ -130,11 +132,33 @@ export function apply(ctx: Context): void {
   // and only while a card for it is mounted.
   const liveTasks = createLiveTasks()
   ctx.effect(() => () => { liveTasks.dispose() }, 'video-forge: live task store')
+  /** Open the video panel. Absent when the deployment has no right Sidebar. */
+  const openPanel = (): void => {
+    const right = ctx.get('sidebarRight') as unknown as { openTab?: (kind: string) => void } | undefined
+    try {
+      right?.openTab?.(VIDEO_PANEL_KIND)
+    } catch (error: unknown) {
+      // `openTab` throws when nothing is on screen or no type claims the kind.
+      // A button that does nothing is better than one that takes the pane down,
+      // and the state is transient (the Session is being switched).
+      ctx.logger.debug(`video-forge: the video panel could not be opened (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
   ctx.slots.inject('tool.call.toolview', () =>
-    ctx.slots.register({ name: 'tool.call.toolview', key: 'video_generate', locale: NS, inject: () => ({ liveTasks }) }, VideoGenerateRow))
+    ctx.slots.register({
+      name: 'tool.call.toolview',
+      key: 'video_generate',
+      locale: NS,
+      inject: () => ({ liveTasks, openPanel }),
+    }, VideoGenerateRow))
 
   ctx.slots.inject('tool.call.toolview', () =>
-    ctx.slots.register({ name: 'tool.call.toolview', key: 'video_status', locale: NS }, VideoStatusRow))
+    ctx.slots.register({
+      name: 'tool.call.toolview',
+      key: 'video_status',
+      locale: NS,
+      inject: () => ({ openPanel }),
+    }, VideoStatusRow))
 
   ctx.slots.inject('tool.call.toolview', () =>
     ctx.slots.register({ name: 'tool.call.toolview', key: 'video_cancel', locale: NS }, VideoActionRow))
@@ -236,6 +260,59 @@ function installVideoPanel(ctx: Context, t: (key: VideoForgeKey, params?: Record
       },
       VideoPanel,
     )), 'video-forge: video panel body')
+  })
+}
+
+/** The document preview registry, as this plugin needs it (see `installVideoPreview`). */
+interface DocumentPreviewsLike {
+  register(definition: {
+    id: string
+    extensions: readonly string[]
+    binaryExtensions?: readonly string[]
+    priority?: 'builtin' | 'extension'
+    title: () => string
+    loading: 'text-pages' | 'bytes-complete' | 'renderer'
+    wrap?: boolean
+  }): () => void
+}
+
+/**
+ * Mount the mp4 renderer into the harness's file viewer (M5).
+ *
+ * Two registrations, both keyed by the same id: the definition tells the suffix
+ * registry which files this implementation claims, and the keyed body draws one.
+ * `binaryExtensions` is not optional in spirit — without it the owner appends its
+ * plain-text body as a *second* viewer for the same file, which then fails on the
+ * first NUL byte.
+ *
+ * The registry service is optional: a deployment without the document preview has
+ * no file viewer to add to, and an mp4 opens there as "not previewable" exactly as
+ * before. `ctx.inject` waits for the service instead of probing once at apply
+ * time, which would lose the race against a plugin that loads after this one.
+ *
+ * @param ctx - the client context.
+ * @param t - the plugin's translate, read when the viewer's menu is drawn.
+ */
+function installVideoPreview(ctx: Context, t: (key: VideoForgeKey, params?: Record<string, unknown>) => string): void {
+  ctx.inject(['documentPreviews'], (scope) => {
+    const previews = scope.get('documentPreviews') as unknown as DocumentPreviewsLike | undefined
+    if (previews === undefined || typeof previews.register !== 'function') return
+    scope.effect(() => previews.register({
+      id: VIDEO_PREVIEW_ID,
+      extensions: [...VIDEO_PREVIEW_EXTENSIONS],
+      binaryExtensions: [...VIDEO_PREVIEW_EXTENSIONS],
+      // The band that outranks a builtin for the same suffix; `extension` is also
+      // what the registry documents as the default for a type from outside.
+      priority: 'extension',
+      title: () => t('preview.title'),
+      loading: 'renderer',
+      wrap: false,
+    }), 'video-forge: mp4 document renderer')
+    scope.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({
+      name: 'sidebar.right.tab.document',
+      key: VIDEO_PREVIEW_ID,
+      locale: NS,
+    }, VideoPreview)), 'video-forge: mp4 document body')
   })
 }
 

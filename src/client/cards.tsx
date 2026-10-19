@@ -39,6 +39,13 @@ export interface VideoCardProps {
   t: Translate
   /** Injected by this plugin's registration; absent where nothing is injected (tests, replays elsewhere). */
   liveTasks?: LiveTasks | undefined
+  /**
+   * Owner props every tool card receives: open a path in the right Sidebar's file
+   * viewer. The mp4 renderer (M5) is what makes a video actually play there.
+   */
+  openFile?: ((path: string) => void) | undefined
+  /** Injected by this plugin's registration: open the video panel. */
+  openPanel?: (() => void) | undefined
 }
 
 const STYLE_BAR_TRACK: CSSProperties = {
@@ -48,6 +55,12 @@ const STYLE_BAR_TRACK: CSSProperties = {
   borderRadius: '2px',
   background: 'var(--dsw-alias-border-l2, #e5e5e5)',
   overflow: 'hidden',
+}
+
+const STYLE_ACTIONS: CSSProperties = {
+  display: 'flex',
+  gap: '6px',
+  flexWrap: 'wrap',
 }
 
 const STYLE_BUTTON: CSSProperties = {
@@ -206,6 +219,12 @@ export function VideoGenerateRow(props: VideoCardProps): ReactNode {
       {where === null || missing
         ? null
         : <div style={STYLE_META}>{bytes === null ? where : `${where} · ${formatBytes(bytes)}`}</div>}
+      <CardActions
+        t={t}
+        path={missing ? null : row?.artifactPath ?? meta.artifact?.path ?? null}
+        openFile={props.openFile}
+        openPanel={props.openPanel}
+      />
       {row?.error === null || row?.error === undefined || status === 'succeeded' ? null : <div style={STYLE_ERROR}>{row.error}</div>}
       {live.error === null ? null : <div style={STYLE_META}>{t('generate.liveError', { error: live.error })}</div>}
       {cancellable
@@ -268,6 +287,7 @@ export function VideoStatusRow(props: VideoCardProps): ReactNode {
           <video controls playsInline preload="metadata" src={url} style={STYLE_PLAYER} />
           {only.error === null ? null : <div style={STYLE_ERROR}>{only.error}</div>}
           {only.status === 'unconfirmed' ? <div style={STYLE_ERROR}>{t('status.unconfirmedHint')}</div> : null}
+          <CardActions t={t} path={null} openFile={props.openFile} openPanel={props.openPanel} />
         </div>
       )
     }
@@ -278,6 +298,41 @@ export function VideoStatusRow(props: VideoCardProps): ReactNode {
       <div style={STYLE_LIST}>
         {rows.map(row => <StatusLine key={row.taskId} row={row} base={base} t={t} />)}
       </div>
+      <CardActions t={t} path={null} openFile={props.openFile} openPanel={props.openPanel} />
+    </div>
+  )
+}
+
+/**
+ * The two ways out of a card (M5): the file viewer, on this one video, and the
+ * panel, which lists them all. Both are one click, because a card is folded away
+ * as soon as its turn passes — that is the whole reason they exist.
+ */
+function CardActions(props: {
+  t: Translate
+  /** Absolute path of the video, when the card knows it and the file is still there. */
+  path: string | null
+  openFile: ((path: string) => void) | undefined
+  openPanel: (() => void) | undefined
+}): ReactNode {
+  const viewer = props.path !== null && props.openFile !== undefined
+  if (!viewer && props.openPanel === undefined) return null
+  return (
+    <div style={STYLE_ACTIONS}>
+      {viewer
+        ? (
+            <button type="button" style={STYLE_BUTTON} onClick={() => { props.openFile?.(props.path ?? '') }}>
+              {props.t('panel.openInViewer')}
+            </button>
+          )
+        : null}
+      {props.openPanel === undefined
+        ? null
+        : (
+            <button type="button" style={STYLE_BUTTON} onClick={props.openPanel}>
+              {props.t('panel.openPanel')}
+            </button>
+          )}
     </div>
   )
 }
