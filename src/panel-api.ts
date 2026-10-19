@@ -79,8 +79,33 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
   return value
 }
 
+/** A positive whole number from a query parameter, or undefined when absent. */
+function numberParam(raw: string | null): number | undefined {
+  if (raw === null || raw.trim() === '') return undefined
+  // Digits only: `Number()` would also accept `1e2`, `0x10`, `+5` and `5.0`.
+  if (!/^\d+$/.test(raw.trim())) throw new RequestError('limit must be a positive whole number')
+  const value = Number.parseInt(raw.trim(), 10)
+  if (value < 1) throw new RequestError('limit must be a positive whole number')
+  return value
+}
+
+/**
+ * What the browser half may rely on from this host (M5).
+ *
+ * `stream` says the Range-capable media route is registered — the video panel
+ * and the file viewer's mp4 renderer use it for anything the ledger does not
+ * already serve, and fall back to the harness's `/api/file` (bounded, no ranges)
+ * when this host could not register it.
+ */
+export interface PanelFeatures {
+  stream: boolean
+}
+
 /** Build the handler for the whole family. */
-export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function panelHandler(
+  runtime: VideoForgeRuntime,
+  features: () => PanelFeatures = () => ({ stream: false }),
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     // The harness does not gate plugin routes, so this family decides for itself:
     // loopback or a paired device, nothing else. It reads prompts and can cancel paid tasks.
@@ -123,9 +148,13 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
           })
           return
         }
+        // The video panel asks for a longer list than a chat card ever needs; the
+        // projection still clamps anything past its own cap. Validate the query
+        // before touching the ledger, as the `taskId` branch does.
+        const limit = numberParam(url.searchParams.get('limit')) ?? 50
         await requireLedger(runtime)
         const settings = runtime.settings()
-        const list = listTasks(runtime, { limit: 50 })
+        const list = listTasks(runtime, { limit })
         sendJson(res, 200, {
           ok: true,
           enabled: settings.enabled,
@@ -141,6 +170,8 @@ export function panelHandler(runtime: VideoForgeRuntime): (req: IncomingMessage,
           tasks: list.tasks,
           usage: list.usage,
           active: list.active,
+          /** What this host can do for the browser half (M5): the Range-capable stream route. */
+          features: features(),
         })
         return
       }

@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from '../src/panel-api.ts'
+import { MAX_TASK_ROWS, listTasks } from '../src/operations.ts'
 import { isIPv4Loopback, isLoopbackAddress, isLoopbackHostname, isTrustedRequest } from '../src/trust.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
@@ -295,5 +296,113 @@ describe('panel API', () => {
     })
     expect(response.status).toBe(403)
     expect(response.body).toContain('loopback-only')
+  })
+})
+
+describe('overview projection for the video panel (M5)', () => {
+  /**
+   * A ledger row as a workspace artifact: the fields the panel groups and labels
+   * with come from the session, the artifact's location and the video's own
+   * geometry, so a fixture that omits them would pass while the panel showed
+   * nothing useful.
+   */
+  function workspaceTask(localId: string): VideoTask {
+    return {
+      ...taskRow(localId),
+      status: 'succeeded',
+      progress: 1,
+      session: { id: 'session-a', cwd: '/work/project', mode: 'workspace-write' },
+      params: {
+        prompt: 'a rainy street',
+        mode: 'i2v',
+        durationSeconds: 10,
+        resolution: '1080p',
+        aspectRatio: '16:9',
+        firstFrame: null,
+        lastFrame: null,
+        referenceImages: [],
+      },
+      artifacts: [{
+        path: '/work/project/renders/hero/v003.mp4',
+        bytes: 24,
+        mime: 'video/mp4',
+        width: 1344,
+        height: 768,
+        durationSec: 5.17,
+        token: 'c'.repeat(32),
+        createdAt: new Date().toISOString(),
+        location: {
+          kind: 'workspace',
+          root: '/work/project',
+          relativePath: 'renders/hero/v003.mp4',
+          shot: 'hero',
+          version: 3,
+          sidecar: 'renders/hero/v003.json',
+        },
+      }],
+    }
+  }
+
+  it('projects the session, workspace path, shot and real geometry', async () => {
+    const scopedLedger = new Ledger({ path: join(await mkdtemp(join(tmpdir(), 'video-forge-proj-')), 'tasks.json'), maxTasks: 10, maxGiB: 1 })
+    await scopedLedger.load()
+    const added = await scopedLedger.add(workspaceTask('v-20261019-0100'))
+    const scoped: VideoForgeRuntime = { ...runtime, ledger: scopedLedger }
+    const scopedServer = createServer((req, res) => { void panelHandler(scoped)(req, res) })
+    await new Promise<void>(resolve => scopedServer.listen(0, '127.0.0.1', resolve))
+    try {
+      const scopedBase = `http://127.0.0.1:${(scopedServer.address() as AddressInfo).port}`
+      const body = await (await fetch(`${scopedBase}${PANEL_ROUTE_PREFIX}/overview`)).json() as {
+        tasks: Record<string, unknown>[]
+        features: { stream: boolean }
+      }
+      const row = body.tasks.find(task => task['taskId'] === added.localId)
+      expect(row).toMatchObject({
+        sessionId: 'session-a',
+        workspacePath: 'renders/hero/v003.mp4',
+        shot: 'hero',
+        // What came back wins over what was asked for.
+        durationSeconds: 5.17,
+        width: 1344,
+        height: 768,
+        resolution: '1080p',
+        aspectRatio: '16:9',
+      })
+      // Without a connection service the default handler reports no stream route.
+      expect(body.features).toEqual({ stream: false })
+    } finally {
+      await new Promise<void>(resolve => { scopedServer.close(() => resolve()) })
+    }
+  })
+
+  it('honours limit and refuses a malformed one', async () => {
+    const response = await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?limit=1`)
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as { tasks: unknown[] }).tasks).toHaveLength(1)
+    expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?limit=0`)).status).toBe(400)
+    expect((await fetch(`${base}${PANEL_ROUTE_PREFIX}/overview?limit=many`)).status).toBe(400)
+  })
+
+  it('clamps a limit past the projection cap instead of refusing it', () => {
+    const rows = Array.from({ length: MAX_TASK_ROWS + 5 }, (_, index) => taskRow(`v-20261019-${String(index).padStart(4, '0')}`))
+    const stub = {
+      list: () => rows,
+      retention: () => ({ tasks: rows.length, bytes: 0, overTaskLimit: false, overByteLimit: false }),
+    }
+    const projected = listTasks({ ...runtime, ledger: stub } as unknown as VideoForgeRuntime, { limit: 1000 })
+    expect(projected.tasks).toHaveLength(MAX_TASK_ROWS)
+    expect(projected.tasks.length).toBeLessThan(rows.length)
+  })
+
+  it('reports the stream feature when the host registered the route', async () => {
+    const scopedServer = createServer((req, res) => { void panelHandler(runtime, () => ({ stream: true }))(req, res) })
+    await new Promise<void>(resolve => scopedServer.listen(0, '127.0.0.1', resolve))
+    try {
+      const scopedBase = `http://127.0.0.1:${(scopedServer.address() as AddressInfo).port}`
+      const body = await (await fetch(`${scopedBase}${PANEL_ROUTE_PREFIX}/overview`)).json() as { features: { stream: boolean } }
+      expect(body.features).toEqual({ stream: true })
+    } finally {
+      await new Promise<void>(resolve => { scopedServer.close(() => resolve()) })
+    }
   })
 })

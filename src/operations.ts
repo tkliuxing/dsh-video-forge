@@ -486,6 +486,28 @@ export interface TaskRow {
   /** Where the artifact is, for a reader: workspace-relative, or the path and why it is outside. */
   artifactLocation: string | null
   artifactBytes: number | null
+  /**
+   * The Session that submitted the task (M5). Null for a call no session made
+   * and for rows written before the field existed; the video panel groups by it
+   * because the tab it renders in belongs to one Session.
+   */
+  sessionId: string | null
+  /**
+   * The artifact's workspace-relative path (`renders/<shot>/vNNN.mp4`, POSIX
+   * separators), or null when the video is not in the workspace. This — not the
+   * absolute path — is what the panel matches a directory listing against.
+   */
+  workspacePath: string | null
+  /** The `renders/` shot the artifact belongs to, when it landed in a workspace. */
+  shot: string | null
+  /** The video's own duration and pixel size, when the provider reported them. */
+  durationSeconds: number | null
+  width: number | null
+  height: number | null
+  /** What was requested (`1080p`), which can differ from what came back. */
+  resolution: string | null
+  /** Requested aspect ratio, when one was chosen. */
+  aspectRatio: string | null
   error: string | null
   /** Provider-reported usage once settled; null while the task runs or before anyone asked. */
   billing: TaskBilling | null
@@ -521,9 +543,15 @@ export class LedgerUnavailableError extends Error {
   }
 }
 
+/** Cap on one task list; the panel's `limit` is clamped to it. */
+export const MAX_TASK_ROWS = 200
+
+/** Rows `video_status` will list in one call: enough for a session's work, small enough to read into a context. */
+export const TOOL_TASK_ROWS = 50
+
 /** Project the ledger into rows. */
 export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string | undefined; limit?: number | undefined } = {}): TaskList {
-  const limit = Math.max(1, Math.min(options.limit ?? 10, 50))
+  const limit = Math.max(1, Math.min(options.limit ?? 10, MAX_TASK_ROWS))
   const all = runtime.ledger.list()
   const selected = options.taskId === undefined || options.taskId === ''
     ? all.slice(0, limit)
@@ -535,6 +563,8 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
   return {
     tasks: selected.map(task => {
       const artifact = task.artifacts[0]
+      const located = artifact?.location
+      const inWorkspace = located?.kind === 'workspace' ? located : null
       return {
         taskId: task.localId,
         provider: task.provider,
@@ -549,6 +579,16 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
         artifactPath: artifact?.path ?? null,
         artifactLocation: artifact === undefined ? null : describeLocation(artifact),
         artifactBytes: artifact?.bytes ?? null,
+        sessionId: task.session?.id ?? null,
+        workspacePath: inWorkspace?.relativePath ?? null,
+        shot: inWorkspace?.shot ?? null,
+        // What came back wins over what was asked: a 1080p request may return
+        // 1344×768, and the panel shows the video, not the request.
+        durationSeconds: artifact?.durationSec ?? task.params.durationSeconds ?? null,
+        width: artifact?.width ?? null,
+        height: artifact?.height ?? null,
+        resolution: task.params.resolution,
+        aspectRatio: task.params.aspectRatio,
         error: task.error === null ? null : task.error.message,
         billing: task.billing ?? null,
         moderation: task.error?.moderation ?? null,

@@ -22,7 +22,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { cancelTask, describeSetup, estimateGeneration, generate, listTasks, requireLedger, summarizeCost, type SetupStatus } from './operations.ts'
+import { TOOL_TASK_ROWS, cancelTask, describeSetup, estimateGeneration, generate, listTasks, requireLedger, summarizeCost, type SetupStatus } from './operations.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
@@ -404,7 +404,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     ].join(' '),
     parameters: {
       task_id: { type: 'string', description: 'One task id, e.g. v-20261013-0001. Omit to list recent tasks.' },
-      limit: { type: 'number', description: 'How many tasks to list (default 10, maximum 50).' },
+      limit: { type: 'number', description: `How many tasks to list (default 10, maximum ${TOOL_TASK_ROWS}).` },
       cost: { type: 'boolean', description: 'Instead of the recent-task list, summarize settled usage and estimated cost across every task, grouped by provider/model/shot, with the price-table date and any task whose usage is still unknown. Use for "how much did this cost".' },
       estimate: {
         type: 'object',
@@ -469,7 +469,10 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     async execute(args, exec) {
       // Never "no tasks yet" from an unread ledger: that invites a re-submission.
       await requireLedger(runtime)
-      const list = listTasks(runtime, { taskId: args.task_id, limit: args.limit ?? 10 })
+      // The tool keeps its documented ceiling even though the ledger projection
+      // allows more: the panel needs the longer list, a model reading task rows
+      // into its context does not.
+      const list = listTasks(runtime, { taskId: args.task_id, limit: Math.min(args.limit ?? 10, TOOL_TASK_ROWS) })
       const single = args.task_id !== undefined && args.task_id !== ''
       const setup = single ? null : setupValue(await describeSetup(runtime, sessionContextOf(runtime.ctx, exec.agent), exec.signal))
       const cost = args.cost === true ? summarizeCost(runtime) : null

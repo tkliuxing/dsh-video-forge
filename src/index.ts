@@ -2,10 +2,11 @@
  * Host half of dsh-video-forge.
  *
  * Wiring, in order: read the config snapshot, open the ledger, register the
- * three tools, the media route and the panel API, then reconcile whatever the
- * previous process left open and tell sessions about tasks that finished
- * meanwhile. The last step is why the ledger exists at all — a generation is paid
- * work owned by a vendor, and a restart must reattach to it rather than lose it.
+ * three tools, the media route, the panel API and the Range-capable stream
+ * route, then reconcile whatever the previous process left open and tell
+ * sessions about tasks that finished meanwhile. The last step is why the ledger
+ * exists at all — a generation is paid work owned by a vendor, and a restart must
+ * reattach to it rather than lose it.
  */
 
 import { homedir } from 'node:os'
@@ -22,6 +23,7 @@ import { LedgerCorruptError, sharedLedger } from './ledger.ts'
 import { deliverNotices, quietOnKill, setNoticeHost, type NoticeHost } from './notify.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
+import { registerStreamRoute, type StreamScope, type StreamSessions } from './stream-route.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
@@ -31,6 +33,7 @@ import { registerSkills } from './skills.ts'
 import { registerTools } from './tools.ts'
 import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
+import { workspaceFsOf } from './workspace-fs.ts'
 
 export const name = 'dsh-video-forge'
 
@@ -149,6 +152,13 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     watching: watchTableFor(ledger.path),
   }
 
+  /**
+   * Whether the Range-capable stream route is mounted (M5). The panel API
+   * reports it so the browser half knows what it may rely on; it is written only
+   * here, and only from the connection effect below.
+   */
+  let streamRegistered = false
+
   // The media route is registered through an effect because (unlike
   // `tools.register`) `webServer.register` returns a bare disposer that the
   // plugin fiber does not own.
@@ -163,8 +173,32 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PANEL_ROUTE_PREFIX,
-    handler: panelHandler(runtime),
+    handler: panelHandler(runtime, () => ({ stream: streamRegistered })),
   }), `video-forge: ${PANEL_ROUTE_PREFIX}/<action>`)
+
+  // The Range-capable stream route (M5) hangs off the harness's own
+  // authenticated `/api` channel instead of this plugin's trust-gated prefix:
+  // the connection is the seam that carries a browser session's credentials,
+  // answers 403 to every peer that is not the owner, and can stream a 206 body.
+  // The service may arrive after us, and its absence (a reduced composition) is
+  // an off state rather than an error — the browser half falls back to the
+  // harness's `/api/file`, which is bounded and not seekable.
+  //
+  // The reader of a service owns its effects (cordis rebinds a service's `ctx`
+  // to the context that read it), so the route lives exactly as long as this
+  // inject scope — see `registerStreamRoute`.
+  ctx.inject(['connection'], (scope) => {
+    registerStreamRoute(scope as unknown as StreamScope, {
+      // Never the host-local stand-in: an absolute path the browser holds came
+      // from a `stat` in this workspace's execution world, which an SSH
+      // workspace does not share with this machine. A missing service is a 503,
+      // not a wrong file.
+      fs: () => workspaceFsOf(ctx, true),
+      sessions: () => scope.get('sessions') as unknown as StreamSessions | undefined,
+      setRegistered: (registered) => { streamRegistered = registered },
+      warn: message => { logger.warn(`video-forge: ${message}`) },
+    })
+  })
 
   registerTools(runtime)
   // The five `video-*` skills are an optional dependency: they mount only when
