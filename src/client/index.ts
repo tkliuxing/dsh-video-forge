@@ -35,11 +35,16 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the keyed tool-slot declaration. A value import of a client UI
 // package is forbidden by the bundle purity rule, and is unnecessary here.
 import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
+// The right Sidebar's tab-type registry and its pane seats are declared by this
+// package; the type import is what makes `register` calls below typecheck.
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { ProgressBadge } from './badge.tsx'
 import { VideoActionRow, VideoGenerateRow, VideoStatusRow } from './cards.tsx'
 import { BUNDLE_CONFIG_SEAT, SETTINGS_TAB_SEAT, installConfigCard } from './config-card-seat.ts'
 import { createLiveTasks } from './live-tasks.ts'
+import { loadPanel, type WorkspaceFilesRemoteLike } from './panel-data.ts'
 import { en, zh, type VideoForgeKey } from './locales.ts'
+import { VideoPanel } from './video-panel.tsx'
 import {
   SettingsCard,
   type ClientConfigShape,
@@ -56,6 +61,14 @@ export const BUNDLE_NAME = 'dsh-video-forge'
 
 /** Profile row id the bundle patch mounts this plugin under — also its settings namespace. */
 export const SETTINGS_NAMESPACE = 'video-forge'
+
+/**
+ * The video panel's identity in the tab system (M5): its `kind` is a new one, so
+ * nothing shipped is taken over, and the same string is the key its body
+ * registers under — the Sidebar dispatches on the definition id.
+ */
+export const VIDEO_PANEL_KIND = 'video-forge-videos'
+export const VIDEO_PANEL_ID = 'dsh-video-forge'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -95,6 +108,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'video-forge: dictionaries')
 
   const t = ctx.locale.bind(NS)
+  installVideoPanel(ctx, t)
   const forms = ctx.get('configForms') as unknown as ConfigFormsService | undefined
 
   const credentials = (): CredentialRemote | undefined => {
@@ -155,6 +169,74 @@ export function apply(ctx: Context): void {
   } else {
     ctx.effect(() => install(), 'video-forge: configuration card seat')
   }
+}
+
+/**
+ * The tab-type registry, as this plugin needs it.
+ *
+ * Structural on purpose: another package's Context augmentation only applies when
+ * cordis resolves to the same module identity, which an installed plugin cannot
+ * assume — the same reason the host form and credential services are read through
+ * `ctx.get` here.
+ */
+interface SidebarRightTabsLike {
+  register(definition: {
+    id: string
+    kind: string
+    keepMounted?: boolean
+    title: () => string
+    guide?: readonly { id: string; order: number; title: () => string; description?: () => string }[]
+  }): () => void
+}
+
+/**
+ * Mount the video panel (M5): a right-Sidebar page type plus its body.
+ *
+ * The whole thing hangs off `sidebarRightTabs`, so it is registered through
+ * `ctx.inject` rather than the module's `inject` array: a deployment without the
+ * right Sidebar keeps the tool cards and the configuration card and simply has no
+ * panel, while a hard dependency would leave the browser half's entry audit
+ * pending and fail the whole web boot. The type is discovered in the pane's own
+ * guide page — that is the only zero-code entry the Sidebar offers, because its
+ * "+" opens the guide and there is no plugin-extensible tab menu.
+ *
+ * @param ctx - the client context.
+ * @param t - the plugin's namespace-bound translate, read on every projection.
+ */
+function installVideoPanel(ctx: Context, t: (key: VideoForgeKey, params?: Record<string, unknown>) => string): void {
+  const remote = (): WorkspaceFilesRemoteLike | undefined => {
+    const aggregate = ctx.get('remote') as unknown as { workspaceFiles?: WorkspaceFilesRemoteLike } | undefined
+    return aggregate?.workspaceFiles
+  }
+  ctx.inject(['sidebarRightTabs'], (scope) => {
+    const tabs = scope.get('sidebarRightTabs') as unknown as SidebarRightTabsLike | undefined
+    if (tabs === undefined || typeof tabs.register !== 'function') return
+    scope.effect(() => tabs.register({
+      id: VIDEO_PANEL_ID,
+      kind: VIDEO_PANEL_KIND,
+      // A hidden panel keeps its selection, and the video it was playing; the
+      // poll stops by itself because the body reads `tab.visible`.
+      keepMounted: true,
+      title: () => t('panel.title'),
+      guide: [{
+        id: 'videos',
+        order: 40,
+        title: () => t('panel.guideTitle'),
+        description: () => t('panel.guideDescription'),
+      }],
+    }), 'video-forge: video panel tab type')
+    scope.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
+      {
+        name: 'sidebar.right.pane.tab',
+        key: VIDEO_PANEL_ID,
+        locale: NS,
+        inject: (sessionId: string) => ({
+          loadPanel: (signal: AbortSignal) => loadPanel({ sessionId, remote: remote() }, signal),
+        }),
+      },
+      VideoPanel,
+    )), 'video-forge: video panel body')
+  })
 }
 
 /**

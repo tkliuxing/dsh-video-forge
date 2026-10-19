@@ -15,7 +15,12 @@
 
 import type { VideoMode } from '../types.ts'
 
-/** One task row as the host projects it. */
+/**
+ * One task row as the host projects it: a mirror of `TaskRow` in
+ * `src/operations.ts`, which is the single projection both halves read. Keep the
+ * two in step; the panel's optional fields are optional here only because a host
+ * older than M5 omits them.
+ */
 export interface PanelTask {
   taskId: string
   provider: string
@@ -31,6 +36,20 @@ export interface PanelTask {
   /** Where the video is, in words (workspace-relative, or why it is outside). */
   artifactLocation: string | null
   artifactBytes: number | null
+  /**
+   * The video panel's fields (added in M5). Optional because the browser half
+   * must keep working against a host that predates them: the panel then groups
+   * by what it can see instead of failing to render.
+   */
+  sessionId?: string | null
+  /** Workspace-relative artifact path; the key the panel dedupes a directory listing against. */
+  workspacePath?: string | null
+  shot?: string | null
+  durationSeconds?: number | null
+  width?: number | null
+  height?: number | null
+  resolution?: string | null
+  aspectRatio?: string | null
   error: string | null
   /** Set when the provider's content review refused the task. */
   moderation?: string | null
@@ -78,6 +97,8 @@ export interface PanelOverview {
   tasks: PanelTask[]
   usage: { tasks: number; bytes: number; overTaskLimit: boolean; overByteLimit: boolean }
   active: number
+  /** Host capabilities, absent on a host that predates M5. */
+  features?: { stream?: boolean }
 }
 
 /** Either a value or a message the UI can show verbatim (with the HTTP status, when there was an answer). */
@@ -115,8 +136,15 @@ async function call<T>(action: string, init: RequestInit): Promise<PanelResult<T
   }
 }
 
-export function fetchOverview(): Promise<PanelResult<PanelOverview>> {
-  return call<PanelOverview>('overview', { method: 'GET' })
+/**
+ * The whole ledger, newest first.
+ * @param limit - rows to ask for; the host caps it. The panel asks for the full
+ * retention window because a project's history is the point of the list.
+ * @returns the overview, or the message to show.
+ */
+export function fetchOverview(limit?: number): Promise<PanelResult<PanelOverview>> {
+  const query = limit === undefined ? '' : `?limit=${String(limit)}`
+  return call<PanelOverview>(`overview${query}`, { method: 'GET' })
 }
 
 /** One task, for a chat card; light (no credential lookups). */

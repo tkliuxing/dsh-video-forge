@@ -17,18 +17,24 @@ interface Registration {
   component: unknown
 }
 
-function bench(declared: readonly string[], withConfigForms = true): {
+function bench(declared: readonly string[], withConfigForms = true, withSidebar = true): {
   ctx: Context
   registrations: Registration[]
   injections: Map<string, unknown>
   awaits: string[]
   localeRegister: ReturnType<typeof vi.fn>
   effects: string[]
+  /** Tab types the panel contributed, in registration order. */
+  tabTypes: Record<string, unknown>[]
+  /** Dependency lists a `ctx.inject` asked to wait for. */
+  injectRequests: string[][]
 } {
   const registrations: Registration[] = []
   const injections = new Map<string, unknown>()
   const awaits: string[] = []
   const effects: string[] = []
+  const tabTypes: Record<string, unknown>[] = []
+  const injectRequests: string[][] = []
   const echo = (key: string) => `t:${key}`
 
   const configForms = {
@@ -43,37 +49,71 @@ function bench(declared: readonly string[], withConfigForms = true): {
     },
   }
 
+  const slots = {
+    inject: (slot: string, callback: () => unknown) => {
+      if (!declared.includes(slot)) return () => {}
+      const dispose = callback()
+      injections.set(slot, dispose)
+      return typeof dispose === 'function' ? dispose : () => {}
+    },
+    register: (options: Record<string, unknown>, component: unknown) => {
+      // The real registry refuses an undeclared seat, and that refusal is the
+      // signal the card's seat policy falls back on — so the stub must refuse too.
+      if (!declared.includes(String(options['name']))) {
+        throw new Error(`slot "${String(options['name'])}" is not declared`)
+      }
+      registrations.push({ options, component })
+      return () => {}
+    },
+  }
+
+  /**
+   * The right Sidebar's tab registry, as the panel's `ctx.inject` reads it.
+   * Its absence is a real deployment shape (no right column), so the bench can
+   * take it away.
+   */
+  const sidebarRightTabs = {
+    register: (definition: Record<string, unknown>) => {
+      tabTypes.push(definition)
+      return () => {}
+    },
+  }
+
+  const runEffect = (fn: () => (() => void) | void, label?: string): (() => void) => {
+    effects.push(label ?? '')
+    const dispose = fn()
+    return typeof dispose === 'function' ? dispose : () => {}
+  }
+
   const ctx = {
     get: (name: string) => (withConfigForms && name === 'configForms' ? configForms : undefined),
+    inject: (deps: readonly string[], callback: (scope: unknown) => void) => {
+      injectRequests.push([...deps])
+      if (!withSidebar) return
+      callback({
+        get: (name: string) => (name === 'sidebarRightTabs' ? sidebarRightTabs : undefined),
+        effect: runEffect,
+        slots,
+      })
+    },
     remote: { credentials: { describe: async () => ({ ok: true, value: {} }), set: async () => ({ ok: true }), unset: async () => ({ ok: true }) } },
     on: () => () => {},
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-    effect: (fn: () => (() => void) | void, label?: string) => {
-      effects.push(label ?? '')
-      const dispose = fn()
-      return typeof dispose === 'function' ? dispose : () => {}
-    },
+    effect: runEffect,
     locale: { register: vi.fn(() => () => {}), bind: () => echo },
-    slots: {
-      inject: (slot: string, callback: () => unknown) => {
-        if (!declared.includes(slot)) return () => {}
-        const dispose = callback()
-        injections.set(slot, dispose)
-        return typeof dispose === 'function' ? dispose : () => {}
-      },
-      register: (options: Record<string, unknown>, component: unknown) => {
-        // The real registry refuses an undeclared seat, and that refusal is the
-        // signal the card's seat policy falls back on — so the stub must refuse too.
-        if (!declared.includes(String(options['name']))) {
-          throw new Error(`slot "${String(options['name'])}" is not declared`)
-        }
-        registrations.push({ options, component })
-        return () => {}
-      },
-    },
+    slots,
   } as unknown as Context
 
-  return { ctx, registrations, injections, awaits, localeRegister: (ctx.locale as unknown as { register: ReturnType<typeof vi.fn> }).register, effects }
+  return {
+    ctx,
+    registrations,
+    injections,
+    awaits,
+    localeRegister: (ctx.locale as unknown as { register: ReturnType<typeof vi.fn> }).register,
+    effects,
+    tabTypes,
+    injectRequests,
+  }
 }
 
 const ALL_SEATS = [
@@ -83,6 +123,7 @@ const ALL_SEATS = [
   'shell.overlay',
   'plugins.bundle.config',
   'settings.plugins.tab',
+  'sidebar.right.pane.tab',
 ]
 
 describe('client apply', () => {
@@ -154,6 +195,42 @@ describe('client apply', () => {
     // No whileServed gate to wait on, so the card is offered directly rather than
     // silently never appearing.
     expect(b.registrations.some(entry => entry.options['name'] === 'plugins.bundle.config')).toBe(true)
+  })
+
+  it('contributes the video panel as a right-Sidebar page type, with a guide capsule', () => {
+    const b = bench(ALL_SEATS)
+    apply(b.ctx)
+
+    // The registry is optional: a deployment without a right column simply has no
+    // panel, rather than leaving the whole browser half pending.
+    expect(b.injectRequests).toContainEqual(['sidebarRightTabs'])
+    const type = b.tabTypes[0]
+    expect(type?.['id']).toBe('dsh-video-forge')
+    // A fresh kind: reusing a shipped one would take that tab over.
+    expect(type?.['kind']).toBe('video-forge-videos')
+    expect(type?.['keepMounted']).toBe(true)
+    expect((type?.['title'] as () => string)()).toBe('t:panel.title')
+    const guide = type?.['guide'] as { id: string; title: () => string; description: () => string }[]
+    expect(guide).toHaveLength(1)
+    expect((guide[0]?.title())).toBe('t:panel.guideTitle')
+    expect((guide[0]?.description())).toBe('t:panel.guideDescription')
+
+    // The body registers under the definition id, which is what the pane
+    // dispatches on — not under the kind.
+    const body = b.registrations.find(entry => entry.options['name'] === 'sidebar.right.pane.tab')
+    expect(body?.options['key']).toBe('dsh-video-forge')
+    expect(body?.options['locale']).toBe(NS)
+    const injected = (body?.options['inject'] as (sessionId: string) => { loadPanel: unknown })('session-a')
+    expect(typeof injected.loadPanel).toBe('function')
+  })
+
+  it('leaves the panel out when the harness has no tab registry', () => {
+    const b = bench(ALL_SEATS, true, false)
+    expect(() => { apply(b.ctx) }).not.toThrow()
+    expect(b.tabTypes).toEqual([])
+    expect(b.registrations.some(entry => entry.options['name'] === 'sidebar.right.pane.tab')).toBe(false)
+    // Everything else still mounts.
+    expect(b.registrations.some(entry => entry.options['name'] === 'tool.call.toolview')).toBe(true)
   })
 
   it('survives a harness that declares none of the optional seats', () => {
