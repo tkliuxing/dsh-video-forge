@@ -4,7 +4,7 @@
 > 原占位名 `dsh-video-studio` **在 npm 上已被他人占用**（`dsh-video-studio@0.4.3`，作者 litao36253，是一个仅 Windows、自装 ffmpeg 的本地剪辑工作台，功能面正好落在本文 §1 的非目标里）。
 > 本地目录仍是 `~/Code/github.com/tkliuxing/dsh-video-studio`（本文所有路径按此写）。**仓库与目录将一并改名为 `dsh-video-forge`**（2026-10-15 决定，随 M5 发布链路一起做；本地目录由用户自己改，因为会话就在这个目录里运行）。
 > 本文是设计决策记录，不是最终 API 契约；实施中出现的新事实回写到这里。
-> **2026-10-15 规划讨论改变了方向**：插件以模型工具为主，整个视频工作流在工作区的对话里完成，工作区就是项目，工作台页面删除，工具收敛为 3 个，另配 5 个 skill。M3（2026-10-16 完成）之后，§3、§4、§5、§9 已回写为当前实现；§16 仍是目标设计，§17 是 M3 的计划与实施记录。
+> **2026-10-15 规划讨论改变了方向**：插件以模型工具为主，整个视频工作流在工作区的对话里完成，工作区就是项目，工作台页面删除，工具收敛为 3 个，另配 5 个 skill。M3（2026-10-16 完成）之后，§3、§4、§5、§9 已回写为当前实现；§16 仍是目标设计，§17 是 M3 的计划与实施记录，§18 是 M4，§19 是 M5（右侧栏视频面板与文件查看器的 mp4 预览）。
 
 ## 1. 目标与非目标
 
@@ -88,6 +88,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 │   ├── tools.ts                # 三个工具的 schema/文案/卡片元数据（薄适配层）
 │   ├── trust.ts                # 面板 API 的信任门（回环 / 已配对设备）
 │   ├── media-route.ts          # token 化媒体路由（GET/HEAD + Range/206，工作区文件的句柄校验）
+│   ├── stream-route.ts         # 同源 Range 流路由（/api/video-forge/stream，M5；§9、§19）
 │   └── panel-api.ts            # 面板 API /video-forge/api/{overview,cancel}
 ├── src/client/                 # Client 半区
 │   ├── index.ts                # 座位注册：toolview 卡片 / overlay badge / 配置卡；实时任务 store
@@ -95,6 +96,10 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 │   ├── live-tasks.ts           # 按任务 id 的实时快照与引用计数轮询
 │   ├── video-card-model.ts     # 卡片的纯推导（无 React）
 │   ├── panel-api.ts            # 面板 API 的 HTTP 客户端（文档相对 URL）
+│   ├── panel-data.ts           # 面板一次加载：overview + 扫 renders/（M5）
+│   ├── video-panel-model.ts    # 面板的纯推导：合并、范围、分组、排序、两种播放 URL（M5）
+│   ├── video-panel.tsx         # 「视频」面板（右侧栏 page tab，V3 手风琴，M5）
+│   ├── video-preview.tsx       # 文件查看器的 mp4 渲染器（M5）
 │   ├── badge.tsx               # shell.overlay 的进度 badge（无事时 return null）
 │   ├── settings-card.tsx       # 配置卡
 │   ├── providers-editor.tsx    # 供应商行编辑器
@@ -164,6 +169,8 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 | `tool.call.toolview`（按工具名 keyed） | `video_generate` 卡片是主要工作界面：实时状态与进度、播放器、产物位置、视频被移走或删除时明确提示、排队或运行中可取消。`video_status`、`video_cancel` 与旧的 `video_export` 是紧凑行 |
 | `shell.overlay`（badge） | 有任务在进行时显示数量，空闲时 `return null` |
 | `plugins.bundle.config`（主）→ `settings.plugins.tab`（回退） | 供应商与模型配置：从预设目录里挑（可加多个）、协议/默认供应商/默认模型都是选项、Base URL、Key（掩码显示 + 可写入）、模型能力矩阵（§8.1） |
+| `sidebar.right.pane.tab`（M5） | 「视频」面板：右侧栏的 page tab，按镜头分组列出本工作区的成片、进行中与失败的片子，展开即播（§19） |
+| `sidebar.right.tab.document`（M5） | 文件查看器的 mp4 渲染器：`renders/` 里的片子直接在同一个 tab 里播，工具栏仍是宿主那一套 |
 
 **实时卡片**（`src/client/live-tasks.ts`、`src/client/cards.tsx`）：工具卡片拿到的数据在结果出来后就冻结了，所以生成卡片另从插件注入的 `liveTasks` 读取实时状态——注册时 `inject: () => ({ liveTasks })`（与 `ui-deliverables` 同一做法），卡片用 `useSyncExternalStore` 订阅。
 
@@ -172,6 +179,8 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 - 面板 API 回答 403 或 404 时永久停止，卡片保持冻结时的结果。
 - 取消时如果正好有查询在途，在它之后再查一次。
 - 以台账为准，不依赖 job id（job id 重启后会复用）。
+
+**视频面板的座位（M5）**：右侧栏 page tab，两段式注册（`ctx.sidebarRightTabs.register` + `sidebar.right.pane.tab` 用同一个 id）。理由与细节见 §19——关键点是浏览器没有"新建 tab"菜单（侧栏「+」写死打开引导页），所以零代码入口只有在 `guide[]` 里放胶囊，其余入口靠 `ctx.sidebarRight.openTab(kind)`。它是**只读**的：不提交生成、不写文件，所以不构成工作台的回归。
 
 **三条座位选择的理由**（都在开发手册里踩过）：
 
@@ -432,6 +441,11 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
   - 路径只从台账解析，绝不接受客户端传来的路径；`:name` 仅作展示。每个产物一个 128-bit 随机 token，`taskId + token` 完全匹配才命中。
   - 实现了 Range / 206（内置播放器起播与拖动依赖它）；`private, no-store`、`nosniff`、沙箱 CSP。
   - **工作区产物**先以 `O_NOFOLLOW | O_NONBLOCK` 打开，再要求真实路径仍等于写入时记录的路径、该路径上的文件就是已打开的句柄（`dev`/`ino` 相同）、并且是普通文件；否则 403，不跟随替换后的路径。文件不在了返回 410，卡片据此显示"已移走或删除"。
+- **Range 流路由（M5）**：`ctx.connection.fetch.register` 注册的 `GET|HEAD /api/video-forge/stream?path=…[&sessionId=…]`，挂在页面同源的 `/api` 下。它是**"路径只从台账解析"这条不变量的唯一例外**，理由是两条路由的门不同：媒体路由走插件自己的信任门，所以只能认台账里的 token；流路由走 harness 自己的连接通道（浏览器凭据 + **只有 owner peer 能到**），读的是这个用户本来就能用 `/api/file` 取的普通文件，加 Range 不增加可达范围。
+  - 只服务 mp4；`path` 是绝对路径（文件查看器从 `stat` 拿到）或会话相对路径（面板从目录列表拿到，按该会话的 `cwd` 解析，会话不在时 409）。
+  - 用 `ctx.fs.readByteRange` 一次读 1 MiB 窗口、用 `ReadableStream` 连续吐；所以 `bytes=0-` 不会把整片读进内存，SSH 工作区也只搬窗口。窗口读为空（文件在读的过程中变短）直接让 body 报错，避免一个"成功"的截断响应。
+  - 后端拒绝只回 `FS_*` 代码、不回消息（与 `/api/file` 一致），非 FS 错误按宿主故障 500；`private, no-store`、`nosniff`、沙箱 CSP。
+  - 路由与"可用"标志在同一个 effect 里注册和撤销；重复注册只记一条 warning 并让浏览器半区回退到 `/api/file`（20 MiB 封顶、无 Range），`overview` 的 `features.stream` 告诉面板该指望哪条路。
 - **容量**：`retention` 只统计 `$DSH_HOME` 里的产物（工作区里的视频是用户的文件）；按 `maxGiB`/`maxTasks` 给提示，清理永远显式，不自动删。
 
 ## 10. 日志与回放
@@ -443,6 +457,7 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 - **市场能力声明**：会用到 `network`、`fs-write`、`credentials`（**不再涉及 `shell`**：没有 ffmpeg 探测，也不 spawn 任何命令）。声明与实际行为必须一致。
 - **审批**：模型工具调用走 DSH 既有审批与权限档位，插件不自行放宽。
 - **密钥**：只留宿主进程，浏览器只看到掩码与 token 化媒体 URL。
+- **流路由的认证（M5）**：`/api/video-forge/stream` 挂在 harness 的 `/api` 连接通道上——宿主/来源校验、浏览器凭据、以及"非 owner principal 一律 403"都由连接服务做，插件这一侧不再重复写信任门（写了反而会与 harness 的策略分叉）。媒体路由 `/video-forge/media` 的信任门不能丢：它不在那条通道上。
 - **合规**：`gemini-veo`（浏览器 cookie 逆向通道）默认关闭并显式警告；优先可灵官方 API/MCP 等有授权的通道。
 - **上游预稳定**：声明 `dsh.engines.dsh` + 锁步 peer，并用既有的四级证据链做定期兼容性巡检。
 
@@ -463,11 +478,15 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 
 **已落地（120 例，`pnpm check`）**：台账 11（损坏隔离、并发写、id 序列、token 成对校验）、协议 19（dot-path、方舟角色/状态映射、中转站路径与 state 归一化、几何与能力校验）、媒体路由 14（真 socket：200/206/416/HEAD/404/405）、工具面 17（互斥、几何、去重、并发上限、取消、导出）、fixture 端到端 9（两种协议的成功/失败/取消/放弃/进程内驱动）、**面板 API + 信任门 13**（真 socket + 伪造 socket：403、掩码不泄漏、提交/取消/导出、错误映射）、**座位策略 5**（主位/回退/晚到迁移/重入/释放）、**客户端注册 7**、**卡片推导与渲染 11**、**配置卡写路径 14**（jsdom + testing-library：path op 形状、非法 JSON 拒写、拒绝态、密钥写入/清空/只读/空值拒发/拒绝信息原样显示/**值不回显也不残留在 DOM**）。绝大多数用例不依赖 DOM；只有配置卡那 14 例用 jsdom，卡片渲染用 `react-dom/server`。
 
+**2026-10-19（M5）后为 420 例**：新增 Range 流路由 21（200/206/416/HEAD、窗口化读取、`bytes=-N`、两种路径形态、拒绝映射只回代码、文件变短、请求中止）、真实 `HostConnectionService` 装配 2（owner 可达、dispose 撤销、重复注册只 warning）、面板投影与上限 5、面板纯模型 23（合并去重、三种范围、分组排序、两种播放 URL、地址编码、格式化）、面板渲染 7（默认展开最新、互斥收起、查看器地址、流路由 vs token 源、分组、范围 chip、加载/空/失败/扫描失败）、客户端注册 3（page tab、mp4 定义、无服务时不挂）、卡片入口 4（交给查看器的路径、面板按钮、无 owner props、产物缺失）、mp4 渲染器 5（URL、loaded 上报、回退链、失败/加载态、后缀声明）。
+
 **2026-10-15（M2.5）后为 229 例**：新增先写意图再提交、凭据晚到与孤儿重试、用量解析与结算、供应商错误体、取消被拒后报告真实状态、等凭据期间提交的行不被重复盯守、下载失败与失联转孤儿再取回、被 kill 的盯守由重试接管。fixture 改为回放当天录下的真实响应形状，并新增 MiniMax 模式与"产物下载失败"选项。
 
 ## 13. 验证纪律（隔离实例，硬性）
 
 **验证一律另起实例，绝不使用正在运行的 dsh。**
+
+> 2026-10-19（M5）起，隔离实例的 CLI 用 npm 实包 **`@deepseek-ai/dsh@0.2.1-rc.2`**（0.2.1-rc.2 已是 npm `latest`，也是日常在跑的那个 checkout 的版本），插件的 devDependencies 同步钉在 0.2.1-rc.2；`peerDependencies` 区间不变。M2–M4 的记录用的是 0.2.0-rc.2。
 
 - 正在运行的实例是 `http://127.0.0.1:3080/`（`DSH_HOME=~/.dsh`、profile `web`），它是用户的工作环境：往里装插件、改设置、跑付费生成都会污染真实配置与会话。
 - 验证实例固定参数：
@@ -715,6 +734,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 - 聊天卡片要能**实时显示进度**并**直接取消**。面板 API 保留 `overview`、`cancel`、`media`，信任门不变。
 - 配置卡保留（填 key 需要它）；右下角 badge 保留。
 - **修掉重启后不唤醒模型的缺口**（§15 第 1 条）：现在对话是唯一的界面，任务在重启后完成却没人知道，等于丢了。
+- **M5 补一个只读的看片面板**（§19）：卡片会被折叠进过程，"看片"需要一个常驻位置。面板不提交、不写也不删文件，所以"工作界面是对话"这条不变。
 
 ### 16.5 成本可见性
 
@@ -1058,3 +1078,53 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
 - **模型自检**：不单独做工具，作为 `video-iterate` 的"交付前读 `vNNN.last.jpg` 对照提示词"指导（§16.5 末）。
 - **未做/待办**：真实浏览器验证（skill 在隔离实例里被 `/video-project` 触发、`video_status cost` 的文本）没有跑——那是界面/付费环节，留到 M5 前的隔离实例实测；价格表数字是第三方参考，需用户自行核对替换。
 
+
+## 19. M5 实施记录：视频面板与 mp4 预览（2026-10-19）
+
+**动因**：视频卡片会被 DSH 折叠进"过程"，用户想看片子得先展开过程、再定位到那张卡。这一节记录的是**看片的地方**，不是工作台的回归——面板只读：不提交生成、不写也不删文件（§16.4 第 1 条仍然成立）。
+
+### 19.1 两个功能与落点
+
+- **面板**：右侧栏 **page tab**，两段式注册——`ctx.sidebarRightTabs.register({ id, kind, title, keepMounted, guide })` 声明类型，`sidebar.right.pane.tab` 用**同一个 id**（不是 kind）注册 body。kind 取新值 `video-forge-videos`：复用 shipped kind（files / terminal / text）会接管那个座位。浏览器**没有"新建 tab"菜单**（侧栏「+」写死打开引导页），所以唯一零代码入口是在 `guide[]` 里放一个胶囊；其余入口靠 `ctx.sidebarRight.openTab(kind)`（卡片上的「在侧栏看全部」就是这么来的）。
+- **mp4 预览**：不新增 tab 类型，走文件查看器的扩展名注册表——`ctx.documentPreviews.register({ extensions:['mp4'], binaryExtensions:['mp4'], priority:'extension', loading:'renderer' })`，body 按定义 id 注册进 `sidebar.right.tab.document`。mp4 今天在 `unviewable.ts` 的黑名单里，但黑名单只在"没有任何渲染器匹配"时才查，所以注册即生效。**`binaryExtensions` 必须声明**：否则宿主的"纯文本"body 会作为第二视图追加，并在第一个 NUL 字节上失败。
+- **取流**：新增 §9 那条同源 Range 路由。不用 `/api/file`（20 MiB 封顶、无 Range），也不用整文件 blob（32 MiB、占内存）——模型支持 4–30 秒、最高 4k，1080p 长片几十 MB，那两条路会**恰好在这个插件自己的产物上失败**。
+- **入口**：引导页胶囊、卡片「在文件查看器打开」（用宿主给的 `openFile`，路径取产物的绝对路径）、卡片「在侧栏看全部」。**没有**会话头按钮（用户 2026-10-19 决定）。
+
+### 19.2 面板长什么样（用户定的）
+
+V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但不自动播**（自动播要么被浏览器拦、要么得静音，两个都别扭）；互斥——同时只展开一条，点已展开的收起。台账外的文件标「仅文件」。进行中与失败沉到底部两组。**不做**筛选 chip、不把提示词放进列表行、面板里没有取消按钮（取消留在卡片，面板只管看）。行的信息：文件名、状态点与状态词、分辨率/时长/大小；展开后多出播放器、提示词两行、「在文件查看器打开」。
+
+数据是两个来源合并：`/video-forge/api/overview?limit=`（台账）与客户端 `remote.workspaceFiles.list` 扫 `renders/` 两次深度（工作区作用域、SSH 也对、无需新端点）。目录列表**没有 mtime**，所以台账外的行按 `vNNN` 倒序（版本号单调 = 该镜头的生成顺序）；去重靠 `TaskRow.workspacePath`（工作区相对路径），不是绝对路径前缀比较。台账行播放用既有的 token URL；台账外的行走流路由——这也是流路由要同时吃"绝对路径"和"会话 + 相对路径"两种形态的原因。
+
+轮询只在"有任务在进行"且"tab 可见"时发生；`keepMounted` 让切换 tab 时保留选中与正在播的片子。
+
+### 19.3 宿主侧的增量
+
+- `TaskRow` 增加 `sessionId`、`workspacePath`、`shot`、`durationSeconds`、`width`、`height`、`resolution`、`aspectRatio`。纯增量：卡片自己的解析器忽略多余字段。实际几何优先于请求参数（请求 1080p 可能回来 1344×768）。
+- `overview` 接受 `?limit=`（1..200 = `MAX_TASK_ROWS`，非法值 400）并回报 `features: { stream }`；`video_status` 用自己的 `TOOL_TASK_ROWS = 50` 在调用点夹住，**模型看到的最大行数不变**。
+- 新 `src/stream-route.ts`（§9）：注册走 `ctx.connection.fetch`，服务用 `ctx.inject(['connection'])` 读——cordis 把服务的 `ctx` 绑到**读它的**上下文，所以路由随这个 inject 作用域一起撤销（`test/stream-route-wiring.test.ts` 用真实 `HostConnectionService` 钉住了这一点）。
+- 客户端新增三个 type-only 依赖（`.../ui-sidebar-right/client`、`.../ui-sidebar-documentpreview/client`、`.../ui-session`、`.../ui-workspace`、`.../client-resources` 的声明）+ `dsh.client.inject` 加一行 `@deepseek-ai/dsh-client-ui-sidebar-right`（模块到达顺序）。devDependencies 整体升到 0.2.1-rc.2（§13）。
+
+### 19.4 实测（隔离实例 0.2.1-rc.2，2026-10-19）
+
+方法照 §13：`DSH_HOME=/tmp/dsh-video-studio-verify/home`、端口 34781、npm 实包 `@deepseek-ai/dsh@0.2.1-rc.2`、插件用 `pnpm pack` 的 tarball 装进隔离 profile。台账用两条 `succeeded` 行（指向真实产物 `renders/hero/v00{1,2}.mp4`）加一条台账外的 `v004.mp4` 播种，**一次付费生成都没跑**。
+
+| 检查 | 结果 |
+|---|---|
+| 引导页胶囊 | ✅ 右侧栏「+」→「视频 / 播放本项目生成的片子」，点开就是面板 |
+| 面板 | ✅ 本工作区 3 / 本会话 2 / 全部 3；`renders/hero` 一组 3 行；`v004` 标「File only」；最新成片默认展开，播放器 `readyState 4`、5.167s、1344×768，源是台账 token URL |
+| 台账外的行 | ✅ 走流路由（相对路径 + `sessionId`），面板内播放正常 |
+| 文件查看器 | ✅ 「在文件查看器打开」开出 `v002.mp4` tab，同一个 mp4 渲染器用绝对路径走流路由播放；工具栏带「Read the file again」与「Open in QuickTime Player.app」 |
+| 流路由 | ✅ 带浏览器 cookie：`Range: bytes=0-99` → 206 + `content-range: bytes 0-99/1585936`；开放 range → 206 全量；HEAD → 200；越界 → 416；无 cookie → 401 |
+| 卡片入口 | ⚠️ **没在浏览器里点过**：卡片只出现在真实 `video_generate` 工具卡里，而隔离实例没有模型 key。由 jsdom 测试覆盖（交给查看器的路径取自产物、面板按钮回调、无 owner props 时不出现） |
+
+**实测发现并修掉的两个缺陷**（提交 `ae85152`）：
+1. `ctx.get('remote')` 之后读 `.workspaceFiles` 被 cordis 直接拒绝（`cannot get property "remote.workspaceFiles" without inject`）——面板首帧就崩，DOM 里只剩一个空的 `data-slot-error`。改成在自己的 `ctx.inject(['remote.workspaceFiles'])` 里取服务、存进闭包；服务缺失时面板仍列台账，扫描那一行说明原因。
+2. 成片行把 `progress: 1` 画成 100% 进度条，视觉上像行底一条蓝色选中带。改成只有进行中的行才画进度条。
+
+### 19.5 没做 / 留到以后
+
+- **缩略图**：每行一张首帧＝每行一次媒体请求（窗口 1 MiB），列表长了不值得；现在用矢量占位方块，展开才有播放器。以后要真封面，先看 `vNNN.last.jpg`（有尾帧时），或给流路由开一个只回首帧的小窗口端点。
+- **面板不动工作区**：不删、不重命名、不导出。
+- **只认 mp4**：`mov/webm/m4v` 继续显示"无法预览"，放开要同时改渲染器的后缀声明与 `STREAM_MEDIA_TYPES`。
+- **卡片入口的浏览器实测**：需要一次真实（付费）生成，留到有 key 的隔离实例里补。

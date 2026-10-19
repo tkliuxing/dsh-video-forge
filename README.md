@@ -5,15 +5,15 @@ used entirely from a workspace conversation: ask for a shot, and the finished
 video lands in the workspace as `renders/<shot>/vNNN.mp4`. Every generation is
 tracked in a durable ledger, so a timeout or a restart never means paying twice.
 
-> **Status: M4 complete (2026-10-16).** Three model tools, two vendor protocols
+> **Status: M5 complete (2026-10-19).** Three model tools, two vendor protocols
 > plus an OpenAI-compatible one, the workspace as a video project, live chat
 > cards, restart recovery with a notice to the conversation, five bundled
-> `video-*` skills, and cost visibility (a price-table estimate and a "how much
-> did this cost" summary in `video_status`). Verified against an offline
-> provider double and a live isolated DSH instance; real generations with ARK
-> Seedance and MiniMax were run in M2.5. Next: the public release (M5). See
-> `DESIGN.md` §14, §17 and §18. There is no local inference path by design —
-> this plugin is a client of online models only.
+> `video-*` skills, cost visibility, and two places to watch the result: a
+> **Videos panel** in the right sidebar and **mp4 playback in the file viewer**.
+> Verified against an offline provider double and a live isolated DSH instance
+> (0.2.1-rc.2); real generations with ARK Seedance and MiniMax were run in M2.5.
+> Next: the public release. See `DESIGN.md` §14, §17–§19. There is no local
+> inference path by design — this plugin is a client of online models only.
 
 ## In a conversation
 
@@ -138,12 +138,15 @@ several. The same config can be written by hand:
 
 | Where | What |
 |---|---|
-| Chat | One card per `video_generate` call that follows its task live: status and progress, a real `<video>` player once it finishes, where the file is (or that it was moved or deleted), and a cancel button while the provider may still stop it |
+| Chat | One card per `video_generate` call that follows its task live: status and progress, a real `<video>` player once it finishes, where the file is (or that it was moved or deleted), a cancel button while the provider may still stop it, and two ways out — **Open in file viewer** on that video, **All videos** in the panel |
+| Right sidebar → **Videos** | Every video this project has, newest shot first: a row per take with its status, size and duration, the newest one open and playable. Work in flight and failures sit at the bottom; a clip found in `renders/` that the ledger does not know is listed as "file only". Read-only — it never submits or deletes anything |
+| Right sidebar → file viewer | Opening an `.mp4` (from the panel, the files tree, or a path in the conversation) plays it in the same tab as text and images, with the harness's own toolbar above it (reload, open in your video player) |
+| Guide page (the "+" in the right sidebar) | Picks the Videos panel |
 | Bottom-right badge | How many tasks are in flight (hidden when none are) |
 | Sidebar → Plugins → Video Forge | Providers and models as a form; the API key is stored through the harness credential service and only a masked tail is ever shown |
 
-There is no separate workbench page: nothing in the browser can submit a paid
-generation. The browser side talks to `/video-forge/api/{overview,cancel}`,
+There is no separate workbench page, and the Videos panel is not one: nothing in
+the browser can submit a paid generation or write a file. The browser side talks to `/video-forge/api/{overview,cancel}`,
 which is loopback-only unless the browser is a paired device — the harness does
 not gate plugin routes, so this plugin does.
 
@@ -156,6 +159,12 @@ not gate plugin routes, so this plugin does.
 - Media: `GET|HEAD /video-forge/media/<taskId>/<token>/<name>`. The path comes
   from the ledger, never from the request; a 128-bit token authorizes it, and a
   workspace video is served only while it is still the file that was written.
+- Streaming: `GET|HEAD /api/video-forge/stream?path=…[&sessionId=…]` serves an mp4
+  with HTTP ranges, so a long clip seeks without being read whole. It hangs off
+  the harness's own authenticated `/api` channel (owner-only, same origin) and
+  reads a file the same user could already open through `/api/file` — adding
+  ranges grants no new reach. The plugin's own trust-gated route above cannot do
+  this: it only knows files the ledger recorded.
 
 ## Development
 
