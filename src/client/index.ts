@@ -228,10 +228,15 @@ interface SidebarRightTabsLike {
  * @param t - the plugin's namespace-bound translate, read on every projection.
  */
 function installVideoPanel(ctx: Context, t: (key: VideoForgeKey, params?: Record<string, unknown>) => string): void {
-  const remote = (): WorkspaceFilesRemoteLike | undefined => {
-    const aggregate = ctx.get('remote') as unknown as { workspaceFiles?: WorkspaceFilesRemoteLike } | undefined
-    return aggregate?.workspaceFiles
-  }
+  // The workspace-files Remote is a service key of its own (`remote.<namespace>`),
+  // and reading it off the context without declaring the dependency is refused by
+  // cordis outright. It is also optional: a reduced composition still gets a panel
+  // that lists the ledger, with the scan reporting why it is empty.
+  let workspaceFiles: WorkspaceFilesRemoteLike | undefined
+  ctx.inject(['remote.workspaceFiles'], (remoteScope) => {
+    workspaceFiles = remoteScope.get('remote.workspaceFiles') as unknown as WorkspaceFilesRemoteLike | undefined
+    remoteScope.effect(() => () => { workspaceFiles = undefined }, 'video-forge: workspace files remote')
+  })
   ctx.inject(['sidebarRightTabs'], (scope) => {
     const tabs = scope.get('sidebarRightTabs') as unknown as SidebarRightTabsLike | undefined
     if (tabs === undefined || typeof tabs.register !== 'function') return
@@ -255,7 +260,7 @@ function installVideoPanel(ctx: Context, t: (key: VideoForgeKey, params?: Record
         key: VIDEO_PANEL_ID,
         locale: NS,
         inject: (sessionId: string) => ({
-          loadPanel: (signal: AbortSignal) => loadPanel({ sessionId, remote: remote() }, signal),
+          loadPanel: (signal: AbortSignal) => loadPanel({ sessionId, remote: workspaceFiles }, signal),
         }),
       },
       VideoPanel,

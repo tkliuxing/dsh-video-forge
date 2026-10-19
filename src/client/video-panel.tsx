@@ -275,7 +275,9 @@ function Row(props: {
   // The GUI is served with `<base href="./">`, so every URL is document-relative.
   const base = typeof document === 'undefined' ? 'http://localhost/' : document.baseURI
   const url = rowVideoUrl(row, base, sessionId, stream)
-  const percent = rowProgress(row)
+  // Only work in flight has progress to show; a finished row's `progress: 1` is
+  // not a bar, it is just "done", which the status chip already says.
+  const percent = row.tone === 'active' ? rowProgress(row) : null
   const facts = rowFacts(row, formatBytes)
   const viewer = row.workspacePath !== ''
 
@@ -328,7 +330,6 @@ function Row(props: {
                     />
                   )}
               {row.prompt === '' ? null : <p className="vf-prompt">{row.prompt}</p>}
-              {facts === '' ? null : <p className="vf-hint">{facts}</p>}
               {row.error === null ? null : <p className="vf-error" role="alert">{row.error}</p>}
               {viewer
                 ? (
