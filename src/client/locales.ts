@@ -40,6 +40,7 @@ export const en = {
   // Video panel (right Sidebar)
   'panel.title': 'Videos',
   'panel.refresh': 'Refresh',
+  'panel.filter': 'Which videos to list',
   'panel.scope.workspace': 'This workspace',
   'panel.scope.session': 'This session',
   'panel.scope.all': 'All',
@@ -210,6 +211,7 @@ export const zh: Record<VideoForgeKey, string> = {
   // Video panel (right Sidebar)
   'panel.title': '视频',
   'panel.refresh': '刷新',
+  'panel.filter': '列出哪些视频',
   'panel.scope.workspace': '本工作区',
   'panel.scope.session': '本会话',
   'panel.scope.all': '全部',

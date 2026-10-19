@@ -13,7 +13,7 @@
  * that started the task.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // The composed props are assembled from every declaring package's augmentation:
 // the tab seats come from the Sidebar, `sessionId`/`useSessions` from the Session
@@ -87,7 +87,6 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
   // closed rather than falling back to that default.
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const [generation, setGeneration] = useState(0)
-  const loading = useRef(false)
 
   // The Sessions this workspace accounts for: the harness's own accounting, so a
   // project is recognised however its paths are spelled, and "another Session of
@@ -97,25 +96,20 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
     return item === undefined ? NO_SESSIONS : item.sessionIds
   })
 
-  const run = useCallback((signal: AbortSignal) => {
-    if (loadPanel === undefined || loading.current) return
-    loading.current = true
-    loadPanel(signal).then(
-      (load) => { if (!signal.aborted) setState({ status: 'ready', load, error: null }) },
-      (error: unknown) => {
-        if (!signal.aborted) setState(previous => ({ status: 'failed', load: previous.load, error: messageOf(error) }))
-      },
-    ).finally(() => { loading.current = false })
-  }, [loadPanel])
-
-  // One read per generation, aborted with the tab; the refresh button and the
-  // poll below only bump the generation.
+  // One read per generation. The cleanup aborts it, so a refresh or a poll tick
+  // while a read is still in flight replaces that read instead of racing it —
+  // and a click can never be silently dropped by a "busy" guard.
   useEffect(() => {
     if (loadPanel === undefined) return undefined
     const controller = new AbortController()
-    run(controller.signal)
+    loadPanel(controller.signal).then(
+      (load) => { if (!controller.signal.aborted) setState({ status: 'ready', load, error: null }) },
+      (error: unknown) => {
+        if (!controller.signal.aborted) setState(previous => ({ status: 'failed', load: previous.load, error: messageOf(error) }))
+      },
+    )
     return () => { controller.abort() }
-  }, [run, generation, loadPanel])
+  }, [generation, loadPanel])
 
   const scanError = state.load?.scanError ?? null
   const view = useMemo(() => {
@@ -155,13 +149,14 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
           <RefreshGlyph />
         </button>
       </div>
-      <div className="vf-scopes" role="tablist" aria-label={t('panel.title')}>
+      {/* Toggle buttons, not tabs: these filter one list rather than switch
+          panels, so the honest role is a pressed button in a labelled group. */}
+      <div className="vf-scopes" role="group" aria-label={t('panel.filter')}>
         {SCOPES.map((candidate) => (
           <button
             key={candidate}
             type="button"
-            role="tab"
-            aria-selected={scope === candidate}
+            aria-pressed={scope === candidate}
             className="vf-scope"
             data-on={scope === candidate ? 'true' : 'false'}
             onClick={() => { setScope(candidate) }}
