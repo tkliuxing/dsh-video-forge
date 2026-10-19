@@ -2,7 +2,7 @@
  * The video panel: a right-Sidebar page that lists the videos this project has,
  * so a finished video does not have to be dug out of a folded tool card.
  *
- * The layout is an accordion (DESIGN §16.9): every row is one line, the newest
+ * The layout is an accordion (DESIGN §19.2): every row is one line, the newest
  * finished video opens expanded on first render, one row is open at a time, and
  * closing it gives the whole pane back to the list. A row plays in place; the
  * file viewer is one click away for watching in a wider pane, and that is also
@@ -11,9 +11,14 @@
  * What the panel does NOT do: it never submits a generation, never writes or
  * deletes a file, and holds no cancel button — those belong to the chat card
  * that started the task.
+ *
+ * This is the one client file that ships a stylesheet instead of `CSSProperties`
+ * constants: the panel needs `:hover`, `:focus-visible` and a scroll container,
+ * none of which an inline style can express. Everything else in this half stays
+ * on style objects.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // The composed props are assembled from every declaring package's augmentation:
 // the tab seats come from the Sidebar, `sessionId`/`useSessions` from the Session
@@ -21,8 +26,8 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
-import type { PanelLoad } from './panel-data.ts'
-import type { Translate } from './locales.ts'
+import type { PanelLoad, ScanProblem } from './panel-data.ts'
+import { NS, type Translate } from './locales.ts'
 import { formatBytes } from './video-card-model.ts'
 import {
   buildPanelView,
@@ -36,9 +41,6 @@ import {
   type PanelScope,
   type PanelView,
 } from './video-panel-model.ts'
-
-/** The copy namespace this panel is registered under. */
-export const NS = 'tool.videoForge'
 
 /** What the tab's inject factory hands over: data loading, resolved per render. */
 export interface VideoPanelInjected {
@@ -82,11 +84,17 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
   const { tab } = useTabInfo()
   const [state, setState] = useState<LoadState>({ status: 'loading', load: null, error: null })
   const [scope, setScope] = useState<PanelScope>('workspace')
-  // `undefined` means "the user has not chosen yet", which is when the newest
-  // finished video opens by itself; `null` is an explicit close and must stay
-  // closed rather than falling back to that default.
+  // `undefined` means "nothing chosen yet": the first view that has a finished
+  // video opens it once (below), and from then on this is the user's choice —
+  // `null` is an explicit close. A later poll must not re-open or move the row
+  // the user is watching, which is why the default is not read on every render.
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const [generation, setGeneration] = useState(0)
+  // A poll tick must not restart a read that is still running: on a slow host
+  // (up to 80 sequential directory listings over SSH) it would abort every read
+  // before it could settle, and the list would never refresh at all. A manual
+  // refresh still supersedes — that is a deliberate new request.
+  const inFlight = useRef(false)
 
   // The Sessions this workspace accounts for: the harness's own accounting, so a
   // project is recognised however its paths are spelled, and "another Session of
@@ -102,16 +110,25 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
   useEffect(() => {
     if (loadPanel === undefined) return undefined
     const controller = new AbortController()
+    inFlight.current = true
     loadPanel(controller.signal).then(
-      (load) => { if (!controller.signal.aborted) setState({ status: 'ready', load, error: null }) },
+      (load) => {
+        if (controller.signal.aborted) return
+        inFlight.current = false
+        setState({ status: 'ready', load, error: null })
+      },
       (error: unknown) => {
-        if (!controller.signal.aborted) setState(previous => ({ status: 'failed', load: previous.load, error: messageOf(error) }))
+        if (controller.signal.aborted) return
+        inFlight.current = false
+        // The rows already on screen are kept: they are the last thing the host
+        // said, and they are still worth reading. The error sits above them.
+        setState(previous => ({ status: 'failed', load: previous.load, error: messageOf(error) }))
       },
     )
     return () => { controller.abort() }
   }, [generation, loadPanel])
 
-  const scanError = state.load?.scanError ?? null
+  const scanProblem = state.load?.scan ?? null
   const view = useMemo(() => {
     const load = state.load
     if (load === null) return null
@@ -123,11 +140,18 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
   const activeCount = view?.active.length ?? 0
   useEffect(() => {
     if (!tab.visible || activeCount === 0) return undefined
-    const timer = setInterval(() => { setGeneration(value => value + 1) }, POLL_MS)
+    const timer = setInterval(() => {
+      if (inFlight.current) return
+      setGeneration(value => value + 1)
+    }, POLL_MS)
     return () => { clearInterval(timer) }
   }, [tab.visible, activeCount])
 
-  const open = expanded === undefined ? (view?.defaultKey ?? null) : expanded
+  const open = expanded ?? null
+  useEffect(() => {
+    if (expanded !== undefined || view === null) return
+    setExpanded(view.defaultKey)
+  }, [expanded, view])
   const toggle = useCallback((key: string) => {
     setExpanded(() => (open === key ? null : key))
   }, [open])
@@ -136,7 +160,7 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
 
   const openInViewer = useCallback((row: PanelRow) => {
     if (row.workspacePath === '') return
-    tab.actions.openResource(fileAddress(sessionId, row.workspacePath))
+    tab.actions.openResource(fileAddress(row.sessionId ?? sessionId, row.workspacePath))
   }, [tab.actions, sessionId])
 
   return (
@@ -152,7 +176,7 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
       {/* Toggle buttons, not tabs: these filter one list rather than switch
           panels, so the honest role is a pressed button in a labelled group. */}
       <div className="vf-scopes" role="group" aria-label={t('panel.filter')}>
-        {SCOPES.map((candidate) => (
+        {SCOPES.filter(candidate => candidate !== 'session' || view === null || view.attributable).map((candidate) => (
           <button
             key={candidate}
             type="button"
@@ -167,12 +191,12 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
         ))}
       </div>
 
-      <div className="vf-list">
+      <div className="vf-list" tabIndex={0} role="region" aria-label={t('panel.title')}>
         {state.status === 'loading' && view === null ? <p className="vf-hint">{t('panel.loading')}</p> : null}
-        {state.status === 'failed' && state.load === null
-          ? <p className="vf-error" role="alert">{t('panel.error', { error: state.error ?? '' })}</p>
-          : null}
-        {scanError === null ? null : <p className="vf-hint">{t('panel.scanError', { error: scanError })}</p>}
+        {/* A failure keeps the rows it already has, and says so above them: silently
+            showing yesterday's list is the one thing a stale panel must not do. */}
+        {state.error === null ? null : <p className="vf-error" role="alert">{t('panel.error', { error: state.error })}</p>}
+        {scanProblem === null ? null : <p className="vf-hint">{scanProblemText(scanProblem, t)}</p>}
         {view !== null && isEmpty(view)
           ? (
               <div className="vf-empty">
@@ -185,9 +209,9 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
         {view === null ? null : (
           <>
             {view.ready.map(group => (
-              <section key={`shot:${group.shot}`} className="vf-group">
+              <div key={`dir:${group.directory}`} className="vf-group" role="group" aria-label={group.directory === '' ? t('panel.group.elsewhere') : group.directory}>
                 <div className="vf-group-head">
-                  <span className="vf-group-path">{group.shot === '' ? t('panel.group.elsewhere') : `renders/${group.shot}`}</span>
+                  <span className="vf-group-path">{group.directory === '' ? t('panel.group.elsewhere') : group.directory}</span>
                   <span className="vf-group-count">{t('panel.count', { count: group.rows.length })}</span>
                 </div>
                 {group.rows.map(row => (
@@ -202,10 +226,10 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
                     onOpenInViewer={openInViewer}
                   />
                 ))}
-              </section>
+              </div>
             ))}
             {view.active.length === 0 ? null : (
-              <section className="vf-group">
+              <div className="vf-group">
                 <div className="vf-group-head">
                   <span className="vf-group-path">{t('panel.group.active')}</span>
                   <span className="vf-group-count">{t('panel.count', { count: view.active.length })}</span>
@@ -222,10 +246,10 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
                     onOpenInViewer={openInViewer}
                   />
                 ))}
-              </section>
+              </div>
             )}
             {view.failed.length === 0 ? null : (
-              <section className="vf-group">
+              <div className="vf-group">
                 <div className="vf-group-head">
                   <span className="vf-group-path">{t('panel.group.failed')}</span>
                   <span className="vf-group-count">{t('panel.count', { count: view.failed.length })}</span>
@@ -242,7 +266,7 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
                     onOpenInViewer={openInViewer}
                   />
                 ))}
-              </section>
+              </div>
             )}
           </>
         )}
@@ -269,7 +293,11 @@ function Row(props: {
   const { row, t, open, stream, sessionId, onToggle, onOpenInViewer } = props
   // The GUI is served with `<base href="./">`, so every URL is document-relative.
   const base = typeof document === 'undefined' ? 'http://localhost/' : document.baseURI
+  // A row's own Session resolves its paths; under "all" that may not be the
+  // Session on screen.
+  const owner = row.sessionId ?? sessionId
   const url = rowVideoUrl(row, base, sessionId, stream)
+  const [broken, setBroken] = useState(false)
   // Only work in flight has progress to show; a finished row's `progress: 1` is
   // not a bar, it is just "done", which the status chip already says.
   const percent = row.tone === 'active' ? rowProgress(row) : null
@@ -293,11 +321,12 @@ function Row(props: {
             <span className="vf-status">{t(panelStatusKey(row))}</span>
             {percent === null ? null : <span className="vf-status">{t('panel.progress', { percent: Math.round(percent * 100) })}</span>}
           </span>
-          <span className="vf-row-facts">
-            {[row.shot === '' ? '' : row.shot, facts].filter(part => part !== '').join(' · ')}
-          </span>
+          <span className="vf-row-facts">{facts}</span>
           {percent === null ? null : (
-            <span className="vf-track" role="progressbar" aria-valuenow={Math.round(percent * 100)} aria-valuemin={0} aria-valuemax={100}>
+            // Presentational: the same number is already the row's text, and this
+            // element lives inside the row's button, whose children are hidden
+            // from assistive tech.
+            <span className="vf-track" aria-hidden="true">
               <span className="vf-track-fill" style={{ width: `${Math.round(percent * 100)}%` }} />
             </span>
           )}
@@ -307,11 +336,11 @@ function Row(props: {
       {open
         ? (
             <div className="vf-row-open">
-              {url === null
+              {url === null || broken
                 ? (
                     <div className="vf-nosource">
-                      <p>{t('panel.noSource')}</p>
-                      <p className="vf-hint">{t('panel.noSourceHint')}</p>
+                      <p>{url === null ? t('panel.noSource') : t('panel.cannotPlay')}</p>
+                      <p className="vf-hint">{url === null ? t('panel.noSourceHint') : t('panel.cannotPlayHint')}</p>
                     </div>
                   )
                 : (
@@ -322,6 +351,9 @@ function Row(props: {
                       controls
                       playsInline
                       preload="metadata"
+                      // A deleted file or a stale token would otherwise be a silent
+                      // black box.
+                      onError={() => { setBroken(true) }}
                     />
                   )}
               {row.prompt === '' ? null : <p className="vf-prompt">{row.prompt}</p>}
@@ -359,6 +391,23 @@ const RefreshGlyph = (): ReactNode => (
     <path d="M13 2.8v3.4H9.6" />
   </svg>
 )
+
+/**
+ * What to say about a scan that did not produce a full list.
+ * @param problem - the structured reason from the loader.
+ * @param t - the panel's translate.
+ * @returns one line, or '' when there is nothing to say.
+ */
+function scanProblemText(problem: ScanProblem, t: Translate): string {
+  switch (problem.kind) {
+    case 'none': return ''
+    case 'unavailable': return t('panel.scanUnavailable')
+    case 'not-directory': return t('panel.scanNotDirectory')
+    case 'outside': return t('panel.scanOutside')
+    case 'truncated': return t('panel.scanTruncated')
+    case 'refused': return t('panel.scanError', { error: problem.detail ?? '' })
+  }
+}
 
 function messageOf(error: unknown): string {
   if (typeof error === 'string') return error
@@ -459,7 +508,7 @@ const PANEL_CSS = `
 .vf-player { width: 100%; border-radius: var(--dsw-radius-md, 12px); background: #000; display: block; }
 .vf-prompt { margin: 0; font-size: 12px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .vf-hint { margin: 0; font-size: 11px; color: var(--dsw-alias-label-secondary, #6b7280); }
-.vf-error { margin: 0; font-size: 12px; color: var(--dsw-color-danger, #d4380d); }
+.vf-error { margin: 0; font-size: 12px; color: var(--dsw-alias-state-error-primary, #d4380d); }
 .vf-nosource { padding: 10px; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-3, rgba(0,0,0,.05)); display: flex; flex-direction: column; gap: 4px; }
 .vf-nosource p { margin: 0; font-size: 12px; }
 .vf-action {

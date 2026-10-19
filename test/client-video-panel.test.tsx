@@ -57,7 +57,7 @@ const load = (overrides: Partial<PanelLoad> = {}): PanelLoad => ({
   tasks: [task()],
   files: [],
   stream: true,
-  scanError: null,
+  scan: { kind: 'none' },
   ...overrides,
 })
 
@@ -179,21 +179,108 @@ describe('VideoPanel', () => {
     await waitFor(() => { expect(screen.getByText('v005.mp4')).toBeTruthy() })
   })
 
+  it('keeps the last rows and says so when a later read fails', async () => {
+    let attempt = 0
+    const flaky = (): Promise<PanelLoad> => {
+      attempt += 1
+      return attempt === 1 ? Promise.resolve(load()) : Promise.reject(new Error('the ledger is unreadable'))
+    }
+    render(<VideoPanel {...props({ loadPanel: flaky })} />)
+    await waitFor(() => { expect(screen.getByText('v001.mp4')).toBeTruthy() })
+    fireEvent.click(screen.getByTitle('Refresh'))
+    await waitFor(() => { expect(screen.getByText(/the ledger is unreadable/)).toBeTruthy() })
+    // The rows the host last sent are still readable.
+    expect(screen.getByText('v001.mp4')).toBeTruthy()
+  })
+
+  it('does not move the open row when a poll brings a newer video', async () => {
+    const older = task()
+    const newer = task({ taskId: 'v-9', workspacePath: 'renders/hero/v009.mp4', submittedAt: '2026-10-19T12:00:00.000Z' })
+    const { rerender } = render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [older] })) })} />)
+    await waitFor(() => { expect(document.querySelectorAll('video')).toHaveLength(1) })
+    // The user's own choice: collapse and re-open nothing, then a poll arrives.
+    rerender(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [older, newer] })) })} />)
+    await waitFor(() => { expect(screen.getByText('v009.mp4')).toBeTruthy() })
+    // The default was latched on first render; the newer row did not steal it.
+    const players = document.querySelectorAll('video')
+    expect(players).toHaveLength(1)
+    expect(players[0]?.getAttribute('src')).toContain('v001.mp4')
+  })
+
+  it("addresses a row's file in that row's own session", async () => {
+    const openResource = vi.fn()
+    const other = task({ taskId: 'v-5', sessionId: 'session-other', workspacePath: 'renders/hero/v005.mp4' })
+    render(<VideoPanel {...props({
+      openResource,
+      loadPanel: () => Promise.resolve(load({ tasks: [task(), other] })),
+      workspaceSessions: ['session-a', 'session-other'],
+    })} />)
+    await waitFor(() => { expect(screen.getByText('v005.mp4')).toBeTruthy() })
+    // Both rows carry the same timestamp, so the tie-break (version) opens v005.
+    const target = Array.from(document.querySelectorAll('.vf-row')).find(row => row.textContent?.includes('v005.mp4'))!
+    const action = await waitFor(() => {
+      const found = target.querySelector('.vf-action')
+      expect(found).not.toBeNull()
+      return found as HTMLElement
+    })
+    fireEvent.click(action)
+    expect(openResource).toHaveBeenCalledWith('dsh-resource://file/session/session-other/renders/hero/v005.mp4')
+  })
+
+  it('says so when the scanned list was cut short', async () => {
+    render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ scan: { kind: 'truncated', detail: null } })) })} />)
+    await waitFor(() => { expect(screen.getByText(/cut short/)).toBeTruthy() })
+  })
+
+  it('explains a player that fails after the row was drawn', async () => {
+    render(<VideoPanel {...props()} />)
+    await waitFor(() => { expect(document.querySelector('.vf-player')).not.toBeNull() })
+    fireEvent.error(document.querySelector('.vf-player')!)
+    await waitFor(() => { expect(screen.getByText(/cannot play/)).toBeTruthy() })
+  })
+
+  it('reads once, re-reads on refresh, and polls only while something is in flight', async () => {
+    vi.useFakeTimers()
+    try {
+      const loader = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null })] })))
+      const { unmount } = render(<VideoPanel {...props({ loadPanel: loader })} />)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(loader).toHaveBeenCalledTimes(1)
+      // Work in flight + a visible tab: one more read per interval.
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(loader).toHaveBeenCalledTimes(2)
+      fireEvent.click(screen.getByTitle('Refresh'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(loader).toHaveBeenCalledTimes(3)
+      unmount()
+
+      // A hidden tab never polls.
+      const quiet = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null })] })))
+      render(<VideoPanel {...props({ loadPanel: quiet, visible: false })} />)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(quiet).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(12000)
+      expect(quiet).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('says it is loading, empty, failed, or partly scanned', async () => {
     const { unmount } = render(<VideoPanel {...props({ loadPanel: () => new Promise<PanelLoad>(() => undefined) })} />)
     expect(screen.getByText('Reading the video list…')).toBeTruthy()
     unmount()
 
     render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [], files: [] })) })} />)
-    await waitFor(() => { expect(screen.getByText('No videos in this workspace yet.')).toBeTruthy() })
+    await waitFor(() => { expect(screen.getByText('No videos yet.')).toBeTruthy() })
     cleanup()
 
     render(<VideoPanel {...props({ loadPanel: () => Promise.reject(new Error('the ledger is unreadable')) })} />)
     await waitFor(() => { expect(screen.getByText(/the ledger is unreadable/)).toBeTruthy() })
     cleanup()
 
-    render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ scanError: 'not a directory' })) })} />)
-    await waitFor(() => { expect(screen.getByText(/not a directory/)).toBeTruthy() })
+    render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ scan: { kind: 'not-directory' } })) })} />)
+    await waitFor(() => { expect(screen.getByText(/is a file, not a directory/)).toBeTruthy() })
     // The ledger rows are still there.
     expect(screen.getByText('v001.mp4')).toBeTruthy()
   })

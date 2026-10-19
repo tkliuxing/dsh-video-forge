@@ -33,10 +33,11 @@ function props(overrides: {
   status?: 'live' | 'failed' | 'loading'
   message?: string
   absolutePath?: string
+  address?: string
 } = {}): VideoPreviewProps {
   const fake = {
     t,
-    resourceAddress: ADDRESS,
+    resourceAddress: overrides.address ?? ADDRESS,
     wrap: false,
     addResource: () => undefined,
     setResources: () => undefined,
@@ -71,8 +72,9 @@ describe('mp4 preview body', () => {
     expect(loaded).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to the harness file URL when the stream route refuses, then says so', async () => {
-    render(<VideoPreview {...props()} />)
+  it('falls back to the harness file URL when the stream route refuses, then reports the failure', async () => {
+    const failed = vi.fn()
+    render(<VideoPreview {...props({ failed })} />)
     const first = document.querySelector('video')
     expect(first?.getAttribute('src')).toContain('/api/video-forge/stream')
     fireEvent.error(first!)
@@ -83,6 +85,27 @@ describe('mp4 preview body', () => {
     fireEvent.error(document.querySelector('video')!)
     await waitFor(() => { expect(screen.getByText(/cannot play here/)).toBeTruthy() })
     expect(document.querySelector('video')).toBeNull()
+    // The owner gets its own failure state (failure line + Retry), once.
+    await waitFor(() => { expect(failed).toHaveBeenCalledTimes(1) })
+  })
+
+  it('forgets the previous file when the same body is pointed at another one', async () => {
+    const loaded = vi.fn()
+    const { rerender } = render(<VideoPreview {...props({ loaded })} />)
+    // One file that both routes fail.
+    fireEvent.error(document.querySelector('video')!)
+    fireEvent.error(document.querySelector('video')!)
+    await waitFor(() => { expect(screen.getByText(/cannot play here/)).toBeTruthy() })
+    rerender(<VideoPreview {...props({
+      loaded,
+      absolutePath: '/w/renders/hero/v002.mp4',
+      address: 'dsh-resource://file/session/session-a/renders/hero/v002.mp4',
+    })} />)
+    // The next file starts over: stream route first, and it reports its version.
+    await waitFor(() => {
+      expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/video-forge/stream')
+    })
+    expect(loaded).toHaveBeenLastCalledWith('v1')
   })
 
   it('reports a failed resource read instead of drawing a player', () => {

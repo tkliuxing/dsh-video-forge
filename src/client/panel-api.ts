@@ -142,9 +142,9 @@ async function call<T>(action: string, init: RequestInit): Promise<PanelResult<T
  * retention window because a project's history is the point of the list.
  * @returns the overview, or the message to show.
  */
-export function fetchOverview(limit?: number): Promise<PanelResult<PanelOverview>> {
+export function fetchOverview(limit?: number, signal?: AbortSignal): Promise<PanelResult<PanelOverview>> {
   const query = limit === undefined ? '' : `?limit=${String(limit)}`
-  return call<PanelOverview>(`overview${query}`, { method: 'GET' })
+  return call<PanelOverview>(`overview${query}`, { method: 'GET', ...(signal === undefined ? {} : { signal }) })
 }
 
 /** One task, for a chat card; light (no credential lookups). */

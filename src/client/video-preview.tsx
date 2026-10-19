@@ -91,6 +91,7 @@ export function VideoPreview(props: VideoPreviewProps): ReactNode {
   const [source, setSource] = useState<'stream' | 'harness'>('stream')
   const [broken, setBroken] = useState(false)
   const reported = useRef<string | null>(null)
+  const reportedFailure = useRef<number | null>(null)
   const base = typeof document === 'undefined' ? 'http://localhost/' : document.baseURI
   const url = absolutePath === undefined
     ? null
@@ -108,6 +109,27 @@ export function VideoPreview(props: VideoPreviewProps): ReactNode {
     reported.current = mark
     request.loaded(version)
   }, [request, version, url, source, broken])
+
+  // The body is drawn un-keyed inside the tab, so the same component can be
+  // asked to show a different file. Nothing from the previous one may survive:
+  // `broken` would make the next file unplayable, `source` would skip the stream
+  // route, and a repeated version token would suppress the `loaded` report.
+  useEffect(() => {
+    setSource('stream')
+    setBroken(false)
+    reported.current = null
+    reportedFailure.current = null
+  }, [resourceAddress])
+
+  // When neither route could play it, hand the failure back to the owner: that is
+  // what draws the harness's own failure line and its Retry, which is better copy
+  // than this component could invent.
+  useEffect(() => {
+    if (!broken || request === undefined) return
+    if (reportedFailure.current === revision) return
+    reportedFailure.current = revision
+    request.failed()
+  }, [broken, request, revision])
 
   if (meta.status === 'failed') {
     return <p style={STYLE_STATUS} role="alert">{meta.failure?.message ?? t('preview.unavailable')}</p>

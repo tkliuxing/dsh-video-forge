@@ -30,6 +30,8 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
   previewDefinitions: Record<string, unknown>[]
   /** Dependency lists a `ctx.inject` asked to wait for. */
   injectRequests: string[][]
+  /** What the panel's scan actually asked the Remote for. */
+  workspaceFilesCalls: string[]
 } {
   const registrations: Registration[] = []
   const injections = new Map<string, unknown>()
@@ -82,6 +84,15 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
     },
   }
 
+  /** The workspace-files Remote the panel's scan goes through (service key `remote.workspaceFiles`). */
+  const workspaceFilesCalls: string[] = []
+  const workspaceFiles = {
+    list: async (sessionId: string, path: string) => {
+      workspaceFilesCalls.push(`${sessionId}:${path}`)
+      return { ok: true, value: { path, entries: [] as { name: string; type: string }[], truncated: false } }
+    },
+  }
+
   /** The file viewer's suffix registry, which the mp4 previewer registers into. */
   const documentPreviews = {
     register: (definition: Record<string, unknown>) => {
@@ -105,6 +116,7 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
         get: (name: string) => {
           if (name === 'sidebarRightTabs') return sidebarRightTabs
           if (name === 'documentPreviews') return documentPreviews
+          if (name === 'remote.workspaceFiles') return workspaceFiles
           return undefined
         },
         effect: runEffect,
@@ -129,6 +141,7 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
     tabTypes,
     previewDefinitions,
     injectRequests,
+    workspaceFilesCalls,
   }
 }
 
@@ -260,6 +273,29 @@ describe('client apply', () => {
     expect(body?.options['key']).toBe('dsh-video-forge/mp4')
     expect(body?.options['locale']).toBe(NS)
     expect(typeof body?.component).toBe('function')
+  })
+
+  it('hands the panel a loader that scans through the workspace-files Remote', async () => {
+    const b = bench(ALL_SEATS)
+    apply(b.ctx)
+    const body = b.registrations.find(entry => entry.options['name'] === 'sidebar.right.pane.tab')
+    const injected = (body?.options['inject'] as (sessionId: string) => { loadPanel: (signal: AbortSignal) => Promise<unknown> })('session-a')
+    // The Remote is read inside its own `ctx.inject` — reading it off `ctx.get('remote')`
+    // is what crashed the panel in the browser (fixed in ae85152), and this is the
+    // regression test for it.
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      ok: true, enabled: true, settings: {}, providers: [], tasks: [],
+      usage: { tasks: 0, bytes: 0, overTaskLimit: false, overByteLimit: false },
+      active: 0, features: { stream: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    try {
+      const load = await injected.loadPanel(new AbortController().signal) as { files: unknown[]; stream: boolean }
+      expect(load.stream).toBe(true)
+      expect(load.files).toEqual([])
+      expect(b.workspaceFilesCalls).toEqual(['session-a:renders'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('leaves the panel out when the harness has no tab registry', () => {

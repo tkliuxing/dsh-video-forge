@@ -33,8 +33,12 @@ export interface PanelRow {
   workspacePath: string
   /** Where the video is, in words, when it is not in the workspace (`$DSH_HOME`, why it landed there). */
   location: string | null
-  /** The `renders/` shot directory, or the parent directory's name for a stray file. */
-  shot: string
+  /**
+   * The row's directory, workspace-relative with `/` separators and empty when
+   * the video is outside the workspace. Rows group by this, so the header states
+   * where the file actually is instead of guessing `renders/<shot>`.
+   */
+  directory: string
   /** `vNNN` from the filename when it parses, for display and ordering. */
   version: number | null
   /** Task status, or `file` for a row the ledger does not know. */
@@ -58,16 +62,16 @@ export interface PanelRow {
   sessionId: string | null
 }
 
-/** One shot's finished videos. */
-export interface PanelShotGroup {
-  shot: string
+/** One directory's finished videos. */
+export interface PanelGroup {
+  directory: string
   rows: PanelRow[]
 }
 
 /** Everything one render needs. */
 export interface PanelView {
-  /** Finished videos, grouped by shot, newest group first. */
-  ready: PanelShotGroup[]
+  /** Finished videos, grouped by directory, newest group first. */
+  ready: PanelGroup[]
   /** Still in flight, newest first. */
   active: PanelRow[]
   /** Failed or cancelled, newest first. */
@@ -78,6 +82,12 @@ export interface PanelView {
   defaultKey: string | null
   /** Rows hidden only because the host does not list them (see {@link buildPanelView}). */
   scanned: boolean
+  /**
+   * Whether any row could be attributed to a Session. A host that predates the
+   * projection fields sends none, and then the per-session filter can only ever
+   * be empty — the panel hides that chip instead of offering a dead control.
+   */
+  attributable: boolean
 }
 
 /** Statuses whose task has no video to play yet. */
@@ -129,17 +139,15 @@ export function panelStatusKey(row: PanelRow): PanelStatusKey {
 }
 
 /**
- * The `renders/` shot a workspace path belongs to.
+ * The directory a workspace path sits in.
  * @param workspacePath - workspace-relative path with `/` separators.
- * @param rendersDirectory - the directory the scan is rooted at.
- * @returns the shot name, the directory name for a stray file, or '' when the path is not under `renders/`.
+ * @returns the parent directory ('' for a file at the workspace root), which is
+ * what the panel groups by: it is where the file *is*, not where the plugin
+ * usually writes it.
  */
-export function shotOf(workspacePath: string, rendersDirectory = 'renders'): string {
-  const segments = workspacePath.split('/').filter(segment => segment !== '')
-  const root = segments[0]
-  if (root !== rendersDirectory) return segments.length > 1 ? segments[segments.length - 2] ?? '' : ''
-  // `renders/<shot>/vNNN.mp4` → the shot; a file directly in `renders/` has none.
-  return segments.length >= 3 ? segments[1] ?? '' : ''
+export function directoryOf(workspacePath: string): string {
+  const cut = workspacePath.lastIndexOf('/')
+  return cut <= 0 ? '' : workspacePath.slice(0, cut)
 }
 
 /**
@@ -173,7 +181,7 @@ export function taskRow(task: PanelTask): PanelRow {
     taskId: task.taskId,
     workspacePath,
     location: typeof task.artifactLocation === 'string' ? task.artifactLocation : null,
-    shot: workspacePath === '' ? '' : shotOf(workspacePath),
+    directory: directoryOf(workspacePath),
     version: workspacePath === '' ? null : versionOf(workspacePath),
     status: task.status,
     tone: toneOf(task.status),
@@ -205,7 +213,7 @@ export function fileRow(file: PanelFile): PanelRow {
     taskId: null,
     workspacePath: file.path,
     location: null,
-    shot: shotOf(file.path),
+    directory: directoryOf(file.path),
     version: versionOf(file.path),
     status: 'file',
     tone: 'ready',
@@ -309,13 +317,13 @@ export function buildPanelView(input: {
 
   const groups = new Map<string, PanelRow[]>()
   for (const row of ready) {
-    const shot = row.shot
-    const bucket = groups.get(shot)
-    if (bucket === undefined) groups.set(shot, [row])
+    const directory = row.directory
+    const bucket = groups.get(directory)
+    if (bucket === undefined) groups.set(directory, [row])
     else bucket.push(row)
   }
   const readyGroups = [...groups.entries()]
-    .map(([shot, groupRows]) => ({ shot, rows: [...groupRows].sort(byVersion) }))
+    .map(([directory, groupRows]) => ({ directory, rows: [...groupRows].sort(byVersion) }))
     .sort(byGroupRecency)
 
   const newestFirst = [...ready].sort((left, right) => byRecency(left, right) || byVersion(left, right))
@@ -326,6 +334,7 @@ export function buildPanelView(input: {
     counts,
     defaultKey: newestFirst[0]?.key ?? null,
     scanned,
+    attributable,
   }
 }
 
@@ -346,10 +355,10 @@ function byVersion(left: PanelRow, right: PanelRow): number {
  * no timestamp at all and therefore sorts by version alone — which is the
  * generation order, because this plugin hands versions out in that order.
  */
-function byGroupRecency(left: PanelShotGroup, right: PanelShotGroup): number {
-  const newest = (group: PanelShotGroup): string => group.rows.map(row => row.submittedAt ?? '').sort().reverse()[0] ?? ''
-  const version = (group: PanelShotGroup): number => Math.max(0, ...group.rows.map(row => row.version ?? 0))
-  return newest(right).localeCompare(newest(left)) || version(right) - version(left) || left.shot.localeCompare(right.shot)
+function byGroupRecency(left: PanelGroup, right: PanelGroup): number {
+  const newest = (group: PanelGroup): string => group.rows.map(row => row.submittedAt ?? '').sort().reverse()[0] ?? ''
+  const version = (group: PanelGroup): number => Math.max(0, ...group.rows.map(row => row.version ?? 0))
+  return newest(right).localeCompare(newest(left)) || version(right) - version(left) || left.directory.localeCompare(right.directory)
 }
 
 /**
@@ -368,7 +377,10 @@ function byGroupRecency(left: PanelShotGroup, right: PanelShotGroup): number {
 export function rowVideoUrl(row: PanelRow, base: string, sessionId: string, streamAvailable: boolean): string | null {
   if (row.playUrl !== null && row.playUrl.trim() !== '') return resolveUrl(row.playUrl, base)
   if (!streamAvailable || row.workspacePath === '') return null
-  const relative = `api/video-forge/stream?path=${encodeURIComponent(row.workspacePath)}&sessionId=${encodeURIComponent(sessionId)}`
+  // The row's own Session resolves the relative path: under "all" it may not be
+  // the one on screen, and a Session address reads from *that* session's root.
+  const session = row.sessionId ?? sessionId
+  const relative = `api/video-forge/stream?path=${encodeURIComponent(row.workspacePath)}&sessionId=${encodeURIComponent(session)}`
   return resolveUrl(relative, base)
 }
 
@@ -391,8 +403,9 @@ export function streamUrl(base: string, absolutePath: string, version?: string):
  * @param absolutePath - the file in the execution world.
  * @returns the URL, or null when it cannot be encoded.
  */
-export function harnessFileUrl(base: string, absolutePath: string): string | null {
-  return resolveUrl(`api/file?path=${encodeURIComponent(absolutePath)}`, base)
+export function harnessFileUrl(base: string, absolutePath: string, version?: string): string | null {
+  const query = `path=${encodeURIComponent(absolutePath)}${version === undefined ? '' : `&v=${encodeURIComponent(version)}`}`
+  return resolveUrl(`api/file?${query}`, base)
 }
 
 /**

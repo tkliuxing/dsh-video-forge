@@ -3,6 +3,9 @@
  * because the locale service requires both shipped dictionaries.
  */
 
+/** Locale namespace owned by this plugin; one definition, imported everywhere. */
+export const NS = 'tool.videoForge'
+
 /** The translate function every surface is composed with. */
 export type Translate = (key: VideoForgeKey, params?: Record<string, unknown>) => string
 
@@ -47,8 +50,14 @@ export const en = {
   'panel.loading': 'Reading the video list…',
   'panel.error': 'Could not read the video list: {error}',
   'panel.scanError': 'Could not scan renders/: showing the ledger only ({error})',
-  'panel.empty': 'No videos in this workspace yet.',
+  'panel.scanUnavailable': 'The workspace file service is not loaded, so only ledger videos are listed.',
+  'panel.scanNotDirectory': 'renders/ is a file, not a directory, so nothing was scanned.',
+  'panel.scanOutside': 'renders/ points outside this workspace, so it was not scanned.',
+  'panel.scanTruncated': 'The list was cut short: more videos exist than one panel loads.',
+  'panel.empty': 'No videos yet.',
   'panel.emptyHint': 'Ask for one in the conversation; the finished video shows up here.',
+  'panel.cannotPlay': 'This video cannot play: the file may have been moved, deleted, or replaced.',
+  'panel.cannotPlayHint': 'Open it in the file viewer, or check the card for where it went.',
   'panel.group.elsewhere': 'Outside the workspace',
   'panel.group.active': 'In progress',
   'panel.group.failed': 'Not finished',
@@ -218,8 +227,14 @@ export const zh: Record<VideoForgeKey, string> = {
   'panel.loading': '正在读取视频列表…',
   'panel.error': '无法读取视频列表：{error}',
   'panel.scanError': '目录扫描失败，只显示台账里的视频（{error}）',
-  'panel.empty': '这个工作区还没有视频。',
+  'panel.scanUnavailable': '工作区文件服务没有加载，这里只列台账里的视频。',
+  'panel.scanNotDirectory': 'renders/ 是一个文件而不是目录，所以没有扫描。',
+  'panel.scanOutside': 'renders/ 指向工作区之外，所以没有扫描。',
+  'panel.scanTruncated': '列表被截断了：视频比一次加载能列出的更多。',
+  'panel.empty': '还没有视频。',
   'panel.emptyHint': '在对话里让模型生成一个，成片会出现在这里。',
+  'panel.cannotPlay': '这个视频播放不了：文件可能已被移动、删除或替换。',
+  'panel.cannotPlayHint': '可以在文件查看器里打开，或到卡片上看它去了哪里。',
   'panel.group.elsewhere': '不在工作区',
   'panel.group.active': '进行中',
   'panel.group.failed': '未完成',

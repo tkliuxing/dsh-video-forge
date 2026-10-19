@@ -43,7 +43,7 @@ import { VideoActionRow, VideoGenerateRow, VideoStatusRow } from './cards.tsx'
 import { BUNDLE_CONFIG_SEAT, SETTINGS_TAB_SEAT, installConfigCard } from './config-card-seat.ts'
 import { createLiveTasks } from './live-tasks.ts'
 import { loadPanel, type WorkspaceFilesRemoteLike } from './panel-data.ts'
-import { en, zh, type VideoForgeKey } from './locales.ts'
+import { NS, en, zh, type VideoForgeKey } from './locales.ts'
 import { VideoPanel } from './video-panel.tsx'
 import { VIDEO_PREVIEW_EXTENSIONS, VIDEO_PREVIEW_ID, VideoPreview } from './video-preview.tsx'
 import {
@@ -54,8 +54,8 @@ import {
   type CredentialState,
 } from './settings-card.tsx'
 
-/** Locale namespace owned by this plugin. */
-export const NS = 'tool.videoForge'
+/** Locale namespace owned by this plugin (defined beside the dictionaries). */
+export { NS } from './locales.ts'
 
 /** Package name: the key the plugin-configuration seat dispatches on. */
 export const BUNDLE_NAME = 'dsh-video-forge'

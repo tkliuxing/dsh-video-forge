@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import type { PanelTask } from '../src/client/panel-api.ts'
 import {
   buildPanelView,
+  directoryOf,
   fileAddress,
   formatDuration,
   harnessFileUrl,
@@ -21,7 +22,6 @@ import {
   rowName,
   rowProgress,
   rowVideoUrl,
-  shotOf,
   streamUrl,
   taskRow,
   toneOf,
@@ -61,11 +61,13 @@ function task(overrides: Partial<PanelTask> = {}): PanelTask {
 const file = (path: string, bytes: number | null = null): PanelFile => ({ path, bytes })
 
 describe('paths and names', () => {
-  it('reads the shot out of a renders path, and only there', () => {
-    expect(shotOf('renders/hero/v003.mp4')).toBe('hero')
-    expect(shotOf('renders/v003.mp4')).toBe('')
-    expect(shotOf('elsewhere/hero/v003.mp4')).toBe('hero')
-    expect(shotOf('renders/hero/v003.mp4', 'renders')).toBe('hero')
+  it('reads the directory a row sits in, without assuming where it lives', () => {
+    expect(directoryOf('renders/hero/v003.mp4')).toBe('renders/hero')
+    expect(directoryOf('renders/v003.mp4')).toBe('renders')
+    // A file outside renders/ states its real directory: the group header must
+    // not claim a path the file is not under.
+    expect(directoryOf('media/exported.mp4')).toBe('media')
+    expect(directoryOf('clip.mp4')).toBe('')
   })
 
   it('reads vNNN, and refuses names this plugin did not choose', () => {
@@ -179,17 +181,17 @@ describe('scoping, grouping and ordering', () => {
     expect(workspace.ready.flatMap(group => group.rows.map(row => row.taskId))).not.toContain('v-5')
   })
 
-  it('groups by shot, newest group first, and keeps versions descending inside a group', () => {
-    const shots = view('workspace').ready
+  it('groups by directory, newest group first, and keeps versions descending inside a group', () => {
+    const groups = view('workspace').ready
     // A group whose rows came only from the scan carries no timestamp at all, so
     // it sorts after the groups the ledger can date.
-    expect(shots.map(group => group.shot)).toEqual(['hero', 'ending', 'scan-only'])
-    // The scanned v000 sits in the same shot group as the ledger's rows.
-    expect(shots[0]?.rows.map(row => row.taskId)).toEqual(['v-2', 'v-1', null])
+    expect(groups.map(group => group.directory)).toEqual(['renders/hero', 'renders/ending', 'renders/scan-only'])
+    // The scanned v000 sits in the same directory group as the ledger's rows.
+    expect(groups[0]?.rows.map(row => row.taskId)).toEqual(['v-2', 'v-1', null])
   })
 
   it('keeps the file-only rows in the scan group they came from', () => {
-    const hero = view('workspace').ready.find(group => group.shot === 'hero')!
+    const hero = view('workspace').ready.find(group => group.directory === 'renders/hero')!
     expect(hero.rows.map(row => row.kind)).toContain('file')
   })
 
@@ -207,7 +209,7 @@ describe('scoping, grouping and ordering', () => {
     const unscoped = buildPanelView({ tasks: legacy, files, scope: 'workspace', sessionId: 'session-a', workspaceSessionIds: ['session-a'] })
     expect(unscoped.counts.workspace).toBe(8)
     expect(unscoped.active.map(row => row.taskId)).toEqual(['v-5'])
-    const elsewhere = unscoped.ready.find(group => group.shot === '')!
+    const elsewhere = unscoped.ready.find(group => group.directory === '')!
     expect(elsewhere.rows.map(row => row.taskId)).toEqual(['v-4', 'v-2', 'v-1', 'v-3'])
     expect(elsewhere.rows.every(row => row.playUrl !== null)).toBe(true)
   })
@@ -226,6 +228,12 @@ describe('playback URLs', () => {
     expect(url).toBe('http://127.0.0.1:3080/app/api/video-forge/stream?path=renders%2Fhero%2Fv009.mp4&sessionId=session-a')
   })
 
+  it("resolves a row's path in that row's own session, not the one on screen", () => {
+    const row = taskRow(task({ sessionId: 'session-other', playUrl: null }))
+    const url = rowVideoUrl(row, 'http://127.0.0.1:3080/', 'session-a', true)
+    expect(url).toContain('sessionId=session-other')
+  })
+
   it('has nothing to play when the host has no stream route', () => {
     const scanned = mergeRows([], [file('renders/hero/v009.mp4')]).rows[0]!
     expect(rowVideoUrl(scanned, 'http://127.0.0.1:3080/', 'session-a', false)).toBeNull()
@@ -239,6 +247,9 @@ describe('playback URLs', () => {
     expect(streamUrl('file:///tmp/', '/w/clip.mp4')).toBeNull()
     expect(harnessFileUrl('http://127.0.0.1:3080/', '/w/clip.mp4'))
       .toBe('http://127.0.0.1:3080/api/file?path=%2Fw%2Fclip.mp4')
+    // The fallback carries the version too, so the harness's own reload refetches.
+    expect(harnessFileUrl('http://127.0.0.1:3080/', '/w/clip.mp4', 'v9'))
+      .toBe('http://127.0.0.1:3080/api/file?path=%2Fw%2Fclip.mp4&v=v9')
   })
 
   it('addresses a workspace file through its session, encoding every segment', () => {
