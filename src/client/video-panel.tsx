@@ -197,6 +197,18 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
             showing yesterday's list is the one thing a stale panel must not do. */}
         {state.error === null ? null : <p className="vf-error" role="alert">{t('panel.error', { error: state.error })}</p>}
         {scanProblem === null ? null : <p className="vf-hint">{scanProblemText(scanProblem, t)}</p>}
+        {/* The list is this project's videos only, so a film made somewhere else
+            is not in it. Saying how many were held back beats an empty panel that
+            looks like nothing was ever generated. */}
+        {view === null || view.hidden.count === 0
+          ? null
+          : (
+              <p className="vf-hint">
+                {view.hidden.unmapped
+                  ? t('panel.hiddenUnmapped', { count: view.hidden.count })
+                  : t('panel.hidden', { count: view.hidden.count })}
+              </p>
+            )}
         {view !== null && isEmpty(view)
           ? (
               <div className="vf-empty">
@@ -209,9 +221,9 @@ export function VideoPanel(props: VideoPanelProps): ReactNode {
         {view === null ? null : (
           <>
             {view.ready.map(group => (
-              <div key={`dir:${group.directory}`} className="vf-group" role="group" aria-label={group.directory === '' ? t('panel.group.elsewhere') : group.directory}>
+              <div key={`dir:${group.directory}`} className="vf-group" role="group" aria-label={group.directory === '' ? t('panel.group.root') : group.directory}>
                 <div className="vf-group-head">
-                  <span className="vf-group-path">{group.directory === '' ? t('panel.group.elsewhere') : group.directory}</span>
+                  <span className="vf-group-path">{group.directory === '' ? t('panel.group.root') : group.directory}</span>
                   <span className="vf-group-count">{t('panel.count', { count: group.rows.length })}</span>
                 </div>
                 {group.rows.map(row => (

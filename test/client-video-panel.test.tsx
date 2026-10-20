@@ -153,8 +153,8 @@ describe('VideoPanel', () => {
   })
 
   it('sinks work in flight and failures into their own sections', async () => {
-    const running = task({ taskId: 'v-3', status: 'running', progress: 0.62, playUrl: null, workspacePath: null, submittedAt: '2026-10-19T10:00:00.000Z' })
-    const failed = task({ taskId: 'v-4', status: 'failed', playUrl: null, workspacePath: null, error: 'the provider refused', submittedAt: '2026-10-19T07:00:00.000Z' })
+    const running = task({ taskId: 'v-3', status: 'running', progress: 0.62, playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null, submittedAt: '2026-10-19T10:00:00.000Z' })
+    const failed = task({ taskId: 'v-4', status: 'failed', playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null, error: 'the provider refused', submittedAt: '2026-10-19T07:00:00.000Z' })
     render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [task(), running, failed] })) })} />)
     await waitFor(() => { expect(screen.getByText('62%')).toBeTruthy() })
     expect(screen.getAllByText('Generating').length).toBeGreaterThan(0)
@@ -242,7 +242,7 @@ describe('VideoPanel', () => {
   it('reads once, re-reads on refresh, and polls only while something is in flight', async () => {
     vi.useFakeTimers()
     try {
-      const loader = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null })] })))
+      const loader = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null })] })))
       const { unmount } = render(<VideoPanel {...props({ loadPanel: loader })} />)
       await vi.advanceTimersByTimeAsync(0)
       expect(loader).toHaveBeenCalledTimes(1)
@@ -255,7 +255,7 @@ describe('VideoPanel', () => {
       unmount()
 
       // A hidden tab never polls.
-      const quiet = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null })] })))
+      const quiet = vi.fn(() => Promise.resolve(load({ tasks: [task({ status: 'running', progress: 0.5, playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null })] })))
       render(<VideoPanel {...props({ loadPanel: quiet, visible: false })} />)
       await vi.advanceTimersByTimeAsync(0)
       expect(quiet).toHaveBeenCalledTimes(1)
@@ -283,5 +283,30 @@ describe('VideoPanel', () => {
     await waitFor(() => { expect(screen.getByText(/is a file, not a directory/)).toBeTruthy() })
     // The ledger rows are still there.
     expect(screen.getByText('v001.mp4')).toBeTruthy()
+  })
+
+  it('leaves out a video the host placed outside the workspace, and counts it', async () => {
+    const outside = task({
+      taskId: 'v-8',
+      workspacePath: null,
+      artifactPath: '/Users/me/.dsh/dsh-video-forge/outputs/untitled/v001.mp4',
+      artifactLocation: '/Users/me/.dsh/dsh-video-forge/outputs/untitled/v001.mp4 (kept outside the workspace: no workspace conversation)',
+    })
+    render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [task(), outside] })) })} />)
+    await waitFor(() => { expect(screen.getByText('v001.mp4')).toBeTruthy() })
+    // Neither a row nor a group for it: the panel is this project's videos.
+    expect(screen.queryByText('Outside the workspace')).toBeNull()
+    expect(document.querySelectorAll('.vf-row')).toHaveLength(1)
+    expect(screen.getByText(/in no workspace/)).toBeTruthy()
+  })
+
+  it('says the host half is stale instead of guessing where a video is', async () => {
+    // An older host half omits the path: the panel cannot place the row, so it
+    // holds it back and names the real cause (a restart), not a location.
+    const { workspacePath: _path, ...unknown } = task()
+    render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [unknown] })) })} />)
+    await waitFor(() => { expect(screen.getByText(/restart DSH/)).toBeTruthy() })
+    expect(screen.getByText('No videos yet.')).toBeTruthy()
+    expect(document.querySelectorAll('.vf-row')).toHaveLength(0)
   })
 })

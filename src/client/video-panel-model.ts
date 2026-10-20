@@ -23,20 +23,42 @@ export interface PanelFile {
 /** A row's visual tone: what the status dot and the row's emphasis are. */
 export type PanelTone = 'ready' | 'active' | 'failed' | 'other'
 
+/**
+ * Where a row's video is, as far as the host said.
+ *
+ * The panel is this project's video list, so only `workspace` rows belong in it
+ * (see {@link isListed}); the other two exist so that "not listed" can be said
+ * for the right reason, and told apart from "not knowable".
+ */
+export type PanelPlacement =
+  /** A known workspace-relative path: the video is in this project. */
+  | 'workspace'
+  /** The host projected `workspacePath: null`: the video is not in any workspace (`$DSH_HOME`, a read-only or remote Session). */
+  | 'outside'
+  /** The host sent no `workspacePath` field at all: an older host half, so where the video is cannot be known. */
+  | 'unmapped'
+
 /** One video in the list, from the ledger, the scan, or both. */
 export interface PanelRow {
   /** Stable identity: the task id, or the workspace path for a file-only row. */
   key: string
   kind: 'task' | 'file'
   taskId: string | null
-  /** Workspace-relative path with `/` separators; empty only for a task whose artifact is not in the workspace. */
+  /** Workspace-relative path with `/` separators; empty unless {@link placement} is `workspace`. */
   workspacePath: string
-  /** Where the video is, in words, when it is not in the workspace (`$DSH_HOME`, why it landed there). */
+  /** Where the video is, as far as the host said; see {@link PanelPlacement}. */
+  placement: PanelPlacement
+  /**
+   * The ledger's own description of where the artifact is, in words (`renders/hero/v001.mp4
+   * in the workspace`, or a path plus why it was kept outside). Null when the
+   * task has no artifact at all — which is how a row still in flight is told
+   * apart from a video that landed somewhere the panel does not list.
+   */
   location: string | null
   /**
-   * The row's directory, workspace-relative with `/` separators and empty when
-   * the video is outside the workspace. Rows group by this, so the header states
-   * where the file actually is instead of guessing `renders/<shot>`.
+   * The row's directory, workspace-relative with `/` separators. Rows group by
+   * this, so the header states where the file actually is instead of guessing
+   * `renders/<shot>`; empty only for a row with no video on disk.
    */
   directory: string
   /** `vNNN` from the filename when it parses, for display and ordering. */
@@ -82,6 +104,13 @@ export interface PanelView {
   defaultKey: string | null
   /** Rows hidden only because the host does not list them (see {@link buildPanelView}). */
   scanned: boolean
+  /**
+   * What the panel holds back, so an empty list can still be explained: `count`
+   * rows whose video is not in this workspace (or could not be placed), and
+   * `unmapped` when at least one of them came from a host half that sends no
+   * path at all — that is a plugin whose two halves disagree, and worth saying.
+   */
+  hidden: { count: number; unmapped: boolean }
   /**
    * Whether any row could be attributed to a Session. A host that predates the
    * projection fields sends none, and then the per-session filter can only ever
@@ -180,6 +209,7 @@ export function taskRow(task: PanelTask): PanelRow {
     kind: 'task',
     taskId: task.taskId,
     workspacePath,
+    placement: placementOf(task),
     location: typeof task.artifactLocation === 'string' ? task.artifactLocation : null,
     directory: directoryOf(workspacePath),
     version: workspacePath === '' ? null : versionOf(workspacePath),
@@ -202,6 +232,39 @@ export function taskRow(task: PanelTask): PanelRow {
 }
 
 /**
+ * Read where a row's video is out of the three shapes the field can arrive in.
+ *
+ * A host half that predates the panel's projection omits `workspacePath`
+ * entirely rather than sending null — and that is the case worth keeping apart
+ * from a video the plugin deliberately delivered outside the workspace, because
+ * it is a plugin bug (two halves from different builds), not a place.
+ *
+ * @param task - the row as the panel API projected it.
+ * @returns the placement the panel filters and groups by.
+ */
+export function placementOf(task: PanelTask): PanelPlacement {
+  if (typeof task.workspacePath === 'string' && task.workspacePath !== '') return 'workspace'
+  return task.workspacePath === null ? 'outside' : 'unmapped'
+}
+
+/**
+ * Whether the panel lists a row.
+ *
+ * The panel is this project's video list, so a video the plugin made somewhere
+ * else does not appear in it at all: another workspace's film belongs to that
+ * project's panel, and one parked in `$DSH_HOME` has no project to belong to
+ * (its chat card still says where it went). Work that has produced no video yet
+ * is kept — a failure or a generation in flight is this project's work, and the
+ * reason the panel exists.
+ *
+ * @param row - the row to test.
+ * @returns true for a video in this workspace and for a task with no artifact yet.
+ */
+export function isListed(row: PanelRow): boolean {
+  return row.placement === 'workspace' || row.location === null
+}
+
+/**
  * Project one scanned file as a row.
  * @param file - the workspace-relative path and size, if the listing reported one.
  * @returns the row a file-only entry renders as.
@@ -212,6 +275,7 @@ export function fileRow(file: PanelFile): PanelRow {
     kind: 'file',
     taskId: null,
     workspacePath: file.path,
+    placement: 'workspace',
     location: null,
     directory: directoryOf(file.path),
     version: versionOf(file.path),
@@ -280,12 +344,14 @@ function inWorkspace(row: PanelRow, workspaceSessionIds: ReadonlySet<string>): b
  * `session` keeps what the current Session submitted (a scanned file has no
  * attribution, so it is left out); `workspace` keeps what any Session of this
  * workspace submitted plus everything the scan found; `all` keeps everything the
- * host listed. A host that predates the panel's projection fields sends no
- * `sessionId`, and then `workspace` falls back to `all` — showing too much beats
- * showing an empty list on a host this plugin still supports.
+ * host listed **from a workspace** — a video the plugin delivered outside the
+ * workspace is in none of them, which is what `hidden` reports. A host that
+ * predates the panel's projection fields sends no `sessionId`, and then
+ * `workspace` falls back to `all` — showing too much beats showing an empty list
+ * on a host this plugin still supports.
  *
  * @param input - ledger rows, scanned files, the chosen scope and the identity of the on-screen Session.
- * @returns the sections and counts the panel draws, and the row to expand first.
+ * @returns the sections and counts the panel draws, the row to expand first, and what it held back.
  */
 export function buildPanelView(input: {
   tasks: readonly PanelTask[]
@@ -294,7 +360,8 @@ export function buildPanelView(input: {
   sessionId: string
   workspaceSessionIds: readonly string[]
 }): PanelView {
-  const { rows, scanned } = mergeRows(input.tasks, input.files)
+  const merged = mergeRows(input.tasks, input.files)
+  const rows = merged.rows.filter(isListed)
   const workspaceSessionIds = new Set(input.workspaceSessionIds)
   const attributable = rows.some(row => row.sessionId !== null)
   const counts: Record<PanelScope, number> = {
@@ -308,9 +375,7 @@ export function buildPanelView(input: {
       ? rows.filter(row => inWorkspace(row, workspaceSessionIds))
       : rows
 
-  // A video that landed outside the workspace (a read-only session, $DSH_HOME)
-  // is still a finished video this plugin made: it groups under '' and keeps its
-  // description as the subtitle, rather than vanishing from the panel.
+  const heldBack = merged.rows.filter(row => !isListed(row))
   const ready = scoped.filter(row => row.tone === 'ready')
   const active = scoped.filter(row => row.tone === 'active').sort(byRecency)
   const failed = scoped.filter(row => row.tone === 'failed' || (row.tone === 'other' && row.kind === 'task')).sort(byRecency)
@@ -333,7 +398,8 @@ export function buildPanelView(input: {
     failed,
     counts,
     defaultKey: newestFirst[0]?.key ?? null,
-    scanned,
+    scanned: merged.scanned,
+    hidden: { count: heldBack.length, unmapped: heldBack.some(row => row.placement === 'unmapped') },
     attributable,
   }
 }

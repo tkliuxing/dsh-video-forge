@@ -16,6 +16,7 @@ import {
   fileAddress,
   formatDuration,
   harnessFileUrl,
+  isListed,
   mergeRows,
   panelStatusKey,
   rowFacts,
@@ -125,10 +126,50 @@ describe('merging the ledger with the scan', () => {
   })
 
   it('keeps a task that never produced a video', () => {
-    const row = taskRow(task({ status: 'failed', playUrl: null, workspacePath: null, artifactBytes: null, error: 'refused' }))
+    const row = taskRow(task({ status: 'failed', playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null, error: 'refused' }))
     expect(row.workspacePath).toBe('')
+    expect(row.placement).toBe('outside')
     expect(row.tone).toBe('failed')
     expect(row.status).toBe('failed')
+    // No artifact at all: it is this project's work, so it stays listed.
+    expect(isListed(row)).toBe(true)
+  })
+})
+
+describe('what the panel holds back', () => {
+  it('lists nothing whose video the host placed outside the workspace', () => {
+    const outside = task({
+      taskId: 'v-9',
+      workspacePath: null,
+      artifactPath: '/Users/me/.dsh/dsh-video-forge/outputs/untitled/v001.mp4',
+      artifactLocation: '/Users/me/.dsh/dsh-video-forge/outputs/untitled/v001.mp4 (kept outside the workspace: it was not requested from a workspace conversation)',
+    })
+    const row = taskRow(outside)
+    expect(row.placement).toBe('outside')
+    expect(isListed(row)).toBe(false)
+    const view = buildPanelView({ tasks: [outside, task()], files: [], scope: 'all', sessionId: 'session-a', workspaceSessionIds: ['session-a'] })
+    // Not under any scope, and not counted by any chip: it belongs to no project.
+    expect(view.ready.flatMap(group => group.rows.map(candidate => candidate.taskId))).toEqual(['v-20261019-0001'])
+    expect(view.counts).toEqual({ session: 1, workspace: 1, all: 1 })
+    expect(view.hidden).toEqual({ count: 1, unmapped: false })
+  })
+
+  it('never claims a video is outside a workspace just because the host sent no path', () => {
+    // A host half from an older build omits `workspacePath`; the video may well be
+    // in the workspace. It is held back (the panel cannot place it), but as the
+    // "unmapped" case, so the panel says the host is stale instead of inventing a
+    // location — and never prints the old "outside the workspace" group.
+    const { workspacePath: _path, ...unknown } = task()
+    const view = buildPanelView({ tasks: [unknown], files: [file('renders/hero/v009.mp4')], scope: 'all', sessionId: 'session-a', workspaceSessionIds: ['session-a'] })
+    expect(view.ready.map(group => group.directory)).toEqual(['renders/hero'])
+    expect(view.ready.flatMap(group => group.rows.map(row => row.kind))).toEqual(['file'])
+    expect(view.hidden).toEqual({ count: 1, unmapped: true })
+  })
+
+  it('groups every listed video under a real directory', () => {
+    const view = buildPanelView({ tasks: [task()], files: [], scope: 'workspace', sessionId: 'session-a', workspaceSessionIds: ['session-a'] })
+    expect(view.ready.map(group => group.directory)).toEqual(['renders/hero'])
+    expect(view.hidden).toEqual({ count: 0, unmapped: false })
   })
 })
 
@@ -149,8 +190,8 @@ describe('scoping, grouping and ordering', () => {
       shot: 'other',
       submittedAt: '2026-10-19T10:00:00.000Z',
     }),
-    task({ taskId: 'v-5', status: 'running', playUrl: null, workspacePath: null, submittedAt: '2026-10-19T11:00:00.000Z' }),
-    task({ taskId: 'v-6', status: 'failed', playUrl: null, workspacePath: null, submittedAt: '2026-10-19T07:00:00.000Z' }),
+    task({ taskId: 'v-5', status: 'running', progress: 0.4, playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null, submittedAt: '2026-10-19T11:00:00.000Z' }),
+    task({ taskId: 'v-6', status: 'failed', playUrl: null, workspacePath: null, artifactPath: null, artifactLocation: null, artifactBytes: null, submittedAt: '2026-10-19T07:00:00.000Z' }),
   ]
   const files: PanelFile[] = [file('renders/hero/v000.mp4'), file('renders/scan-only/v001.mp4')]
 
@@ -200,18 +241,20 @@ describe('scoping, grouping and ordering', () => {
     expect(view('session').defaultKey).toBe('v-2')
   })
 
-  it('falls back to the unscoped list on a host without the projection fields', () => {
+  it('falls back to the unscoped list on a host too old to attribute Sessions', () => {
     // An older host sends neither field (it omits them rather than sending null),
-    // so nothing is attributable: "workspace" must not come back empty, and a
-    // finished row with no path still appears — grouped outside the workspace,
-    // playable from its token URL.
+    // so nothing is attributable and "workspace" must not come back empty. What
+    // it can still do is list the work with no video yet; the finished rows are
+    // held back as unplaceable, and the panel says why instead of guessing.
     const legacy = tasks.map(({ sessionId: _session, workspacePath: _path, ...rest }) => rest)
     const unscoped = buildPanelView({ tasks: legacy, files, scope: 'workspace', sessionId: 'session-a', workspaceSessionIds: ['session-a'] })
-    expect(unscoped.counts.workspace).toBe(8)
+    // The two scanned files and the two rows with no video yet.
+    expect(unscoped.counts.workspace).toBe(4)
+    expect(unscoped.ready.map(group => group.directory).sort()).toEqual(['renders/hero', 'renders/scan-only'])
     expect(unscoped.active.map(row => row.taskId)).toEqual(['v-5'])
-    const elsewhere = unscoped.ready.find(group => group.directory === '')!
-    expect(elsewhere.rows.map(row => row.taskId)).toEqual(['v-4', 'v-2', 'v-1', 'v-3'])
-    expect(elsewhere.rows.every(row => row.playUrl !== null)).toBe(true)
+    expect(unscoped.failed.map(row => row.taskId)).toEqual(['v-6'])
+    // Four finished rows the host could not place: held back, and said to be unmapped.
+    expect(unscoped.hidden).toEqual({ count: 4, unmapped: true })
   })
 })
 
