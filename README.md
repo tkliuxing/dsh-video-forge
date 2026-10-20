@@ -139,7 +139,7 @@ several. The same config can be written by hand:
 | Where | What |
 |---|---|
 | Chat | One card per `video_generate` call that follows its task live: status and progress, a real `<video>` player once it finishes, where the file is (or that it was moved or deleted), a cancel button while the provider may still stop it, and two ways out — **Open in file viewer** on that video, **All videos** in the panel |
-| Right sidebar → **Videos** | Every video this project has, newest shot first: a row per take with its status, size and duration, the newest one open and playable. Work in flight and failures sit at the bottom; a clip found in `renders/` that the ledger does not know is listed as "file only". Read-only — it never submits or deletes anything |
+| Right sidebar → **Videos** | Every video **in this workspace**, newest shot first: a row per take with its status, size and duration, the newest one open and playable. Work in flight and failures sit at the bottom; a clip found in `renders/` that the ledger does not know is listed as "file only". A video the plugin delivered outside the workspace is not listed at all — the panel is this project's videos, and the chat card still says where that one went. Read-only — it never submits or deletes anything |
 | Right sidebar → file viewer | Opening an `.mp4` (from the panel, the files tree, or a path in the conversation) plays it in the same tab as text and images, with the harness's own toolbar above it (reload, open in your video player) |
 | Guide page (the "+" in the right sidebar) | Picks the Videos panel |
 | Bottom-right badge | How many tasks are in flight (hidden when none are) |
