@@ -63,10 +63,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The gate runs on its own, for every run. npm's `prepublishOnly` hangs off
+      # `npm publish`, which the skip below may never reach, and a green run that
+      # skipped the tests would mean nothing. A publish that does happen re-runs
+      # the same gate inside `npm publish`; ~40 s of duplication buys a skipped
+      # run that still proves something.
+      - name: Gate — tsc, bundle, tests
+        run: pnpm check
+
       # 0.1.0 is published by the one-time bootstrap (docs/RELEASING.md §1),
       # because npm can only mint a trusted publisher for a package that already
-      # exists. Its tag still runs this workflow — that run is the proof the OIDC
-      # path works — so a version the registry already has is skipped loudly
+      # exists. Its tag still runs this workflow — that run is the proof the
+      # pipeline works — so a version the registry already has is skipped loudly
       # instead of failing with EPUBLISHCONFLICT.
       - name: Skip a version the registry already has
         id: published
@@ -77,9 +85,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # `prepublishOnly` runs tsc --noEmit, the client bundle build and the whole
-      # vitest suite, and `prepare` rebuilds `lib/` before packing, so the gate a
-      # tag push passes is the same one a local `pnpm check` passes.
+      # `prepare` rebuilds `lib/` before packing, so the tarball carries what this
+      # commit builds even if the checkout had no `lib/` at all.
       - name: Publish
         if: steps.published.outputs.skip != 'true'
         env:

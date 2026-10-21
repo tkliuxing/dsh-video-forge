@@ -69,9 +69,14 @@ npm 不能给尚不存在的包配置 trusted publisher，所以 `0.1.0` 只能�
    ```
 
    这一次 workflow 会**跳过发布**（`0.1.0` 已经在 registry 上，步骤日志里会打一行
-   notice），所以它证明的是**门禁**：`pnpm install --frozen-lockfile`、构建、524 例
-   测试、以及 tag 与 `package.json` 互校都在干净的 runner 上过了。**它不验证 OIDC
-   本身**——`npm publish` 被跳过了，OIDC 的第一次真实交换发生在 `0.1.1`（见 §2）。
+   notice），所以它证明的是**门禁**：`pnpm install --frozen-lockfile`、显式的
+   `Gate — tsc, bundle, tests` 步骤（`pnpm check`，524 例）、以及 tag 与 `package.json`
+   互校，都在干净的 runner 上过了。它**不验证 OIDC 本身**——`npm publish` 被跳过了，
+   OIDC 的第一次真实交换发生在 `0.1.1`（见 §2）。
+
+   > 门禁是独立的一步、不是靠 `prepublishOnly`：npm 的 `prepublishOnly` 挂在
+   > `npm publish` 上，而跳过发布时那一步根本不执行。真发布时同一套门禁会再跑一遍，
+   > 多花约 40 秒，换"跳过的 run 仍然有意义"。
 6. **收尾（必做）**：删掉 GitHub 的 `NPM_TOKEN` secret、在 npm 撤销那个 token、删除
    `publish-bootstrap.yml`。之后每个版本都只靠 tag 触发。
 
