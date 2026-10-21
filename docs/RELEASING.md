@@ -61,7 +61,7 @@ npm 不能给尚不存在的包配置 trusted publisher，所以 `0.1.0` 只能�
    - Repository: `tkliuxing/dsh-video-forge`
    - Workflow filename: `publish.yml`
    - Environment: `publishing`（工作流引用了这个 environment，npm 侧必须填同一个名字）
-5. 补上 `0.1.0` 的 tag，并推上去验证 OIDC 链路：
+5. 补上 `0.1.0` 的 tag，并推上去把 CI 门禁跑通：
 
    ```bash
    git tag -a v0.1.0 -m "0.1.0：首次公开发布"
@@ -69,15 +69,17 @@ npm 不能给尚不存在的包配置 trusted publisher，所以 `0.1.0` 只能�
    ```
 
    这一次 workflow 会**跳过发布**（`0.1.0` 已经在 registry 上，步骤日志里会打一行
-   notice），绿灯就是 OIDC 配好了的证据。**真正由 CI 发布出去的第一个版本会是
-   `0.1.1`。**
+   notice），所以它证明的是**门禁**：`pnpm install --frozen-lockfile`、构建、524 例
+   测试、以及 tag 与 `package.json` 互校都在干净的 runner 上过了。**它不验证 OIDC
+   本身**——`npm publish` 被跳过了，OIDC 的第一次真实交换发生在 `0.1.1`（见 §2）。
 6. **收尾（必做）**：删掉 GitHub 的 `NPM_TOKEN` secret、在 npm 撤销那个 token、删除
    `publish-bootstrap.yml`。之后每个版本都只靠 tag 触发。
 
 > 为什么不在 `0.1.0` 就直接推 tag：npm 只能给**已存在**的包铸造 trusted publisher，
-> 第一次必须借一次 token；而 tag 一旦推上去就会跑 workflow，所以顺序只能是"先 token
-> 发出去，再配 OIDC，最后用那个 tag 验证"。workflow 里的 `Skip a version the registry
-> already has` 步骤就是为这个顺序准备的，同时也让重复推同一个 tag 变成一次无害的跳过。
+> 第一次必须借一次 token（或本地发一次）；而 tag 一旦推上去就会跑 workflow，所以顺序
+> 只能是"先把 `0.1.0` 发出去，再配 OIDC，最后用那个 tag 校验门禁"。workflow 里的
+> `Skip a version the registry already has` 步骤就是为这个顺序准备的，同时也让重复推
+> 同一个 tag 变成一次无害的跳过。
 
 > 后备方案（不推荐）：本地 `npm publish --otp <6 位码>` 发 0.1.0，之后同样去配
 > trusted publisher。缺点：这一版没有 provenance，且违背"不在本地发布"的约定。
@@ -103,6 +105,10 @@ git push origin "vX.Y.Z"                    # 这一步才触发 publish.yml
   修好树之后把 tag 移到新提交上，并在 release 说明里说明；一旦上线就绝不动。
 - 需要预发布（`next`）时用 **Actions → publish → Run workflow**，把 `dist_tag` 选成
   `next`；`latest` 不受影响。
+- **第一次真正走 OIDC 的版本是 `0.1.1`**（`0.1.0` 是本地/引导发出去的，tag 那次又跳过
+  了发布）。发完 `0.1.1` 必须确认 `npm view dsh-video-forge@0.1.1 dist.attestations`
+  非空——那是 trusted publishing 生效的唯一硬证据；空的话先查 npm 侧 trusted publisher
+  的仓库 / workflow 文件名 / environment 三处拼写，再发下一版。
 
 ## 3. 发布后核对
 
