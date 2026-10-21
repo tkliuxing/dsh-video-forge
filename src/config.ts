@@ -13,7 +13,7 @@
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { DEFAULT_PRICE_TABLE } from './prices.ts'
+import { DEFAULT_PRICE_SOURCE_URL } from './price-source.ts'
 import type { PriceTable } from './prices.ts'
 import { SUPPORTED_PROTOCOLS } from './provider-presets.ts'
 import type { ProviderSetting, VideoForgeSettings } from './settings.ts'
@@ -35,6 +35,8 @@ export interface Config {
   maxGiB: Volatile<number>
   requestTimeoutMs: Volatile<number>
   priceTable: Volatile<PriceTable>
+  priceSourceUrl: Volatile<string>
+  priceRefreshHours: Volatile<number>
 }
 
 const model = z.object({
@@ -82,15 +84,25 @@ const provider = z.object({
 const priceRow = z.object({
   providerId: z.string().default('').description('Provider id; empty matches any provider'),
   modelId: z.string().default('').description('Model id; empty matches any model'),
+  resolution: z.string().default('').description('Output tier this row prices (e.g. 720p, 2K); empty matches any tier'),
   unit: z.union(['token', 'second']).description('Billing unit: token for ARK, second for MiniMax'),
   pricePerUnit: z.number().min(0).description('Price of one unit, in the table currency'),
 })
 
+/**
+ * The operator's own price rows (DESIGN §21.6).
+ *
+ * `rows` defaults to empty on purpose: they win over every fetched row, so a
+ * non-empty default would mean the fetched table never takes effect. Empty means
+ * "no override" and the effective table is remote > cache > built-in snapshot.
+ * The three header fields are only meaningful while `rows` is what prices
+ * something; a fetched table brings its own.
+ */
 const priceTable = z.object({
-  currency: z.string().default(DEFAULT_PRICE_TABLE.currency),
-  pricedAt: z.string().default(DEFAULT_PRICE_TABLE.pricedAt),
-  source: z.string().default(DEFAULT_PRICE_TABLE.source),
-  rows: z.array(priceRow).default([...DEFAULT_PRICE_TABLE.rows]),
+  currency: z.string().default('CNY'),
+  pricedAt: z.string().default(''),
+  source: z.string().default(''),
+  rows: z.array(priceRow).default([]).description('Your own rows, which win over every fetched row'),
 })
 
 /**
@@ -116,6 +128,10 @@ export const Config = z.object({
   maxGiB: z.number().min(0).default(20).volatile(),
   requestTimeoutMs: z.number().min(1000).default(120000).volatile(),
   priceTable: priceTable.volatile(),
+  priceSourceUrl: z.string().default(DEFAULT_PRICE_SOURCE_URL).volatile()
+    .description('Public price feed to read (DESIGN §21); empty disables the remote source'),
+  priceRefreshHours: z.number().min(0).default(24).volatile()
+    .description('Hours between price refreshes; 0 fetches once on start'),
 }) as unknown as z<Config>
 
 /** Read every volatile reference into one plain, stable value. */
@@ -136,6 +152,24 @@ export function snapshot(config: Config): VideoForgeSettings {
     maxTasks: config.maxTasks.get(),
     maxGiB: config.maxGiB.get(),
     requestTimeoutMs: config.requestTimeoutMs.get(),
-    priceTable: config.priceTable.get(),
+    priceTable: userPriceTable(config.priceTable.get()),
+  }
+}
+
+/**
+ * Drop the empty strings schemastery writes into every defaulted field, so a row
+ * with no resolution is a row that matches any tier rather than one that matches
+ * the empty tier.
+ */
+function userPriceTable(raw: PriceTable): PriceTable {
+  return {
+    ...raw,
+    rows: raw.rows.map(row => ({
+      providerId: row.providerId,
+      modelId: row.modelId,
+      unit: row.unit,
+      pricePerUnit: row.pricePerUnit,
+      ...(row.resolution === undefined || row.resolution.trim() === '' ? {} : { resolution: row.resolution }),
+    })),
   }
 }

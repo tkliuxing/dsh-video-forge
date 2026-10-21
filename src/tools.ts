@@ -23,6 +23,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TOOL_TASK_ROWS, cancelTask, describeSetup, estimateGeneration, generate, listTasks, requireLedger, summarizeCost, type SetupStatus } from './operations.ts'
+import type { PriceSourceInfo } from './prices.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
 import { sessionContextOf } from './session-context.ts'
 import type { VideoMode } from './types.ts'
@@ -73,6 +74,32 @@ const TASK_SCHEMA = {
 
 const STRINGS = { type: 'array', required: true, items: { type: 'string' } } as const
 const NULLABLE_STRING = { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] } as const
+/** Billable seconds, which may be fractional. */
+const NULLABLE_NUMBER = { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] } as const
+
+/**
+ * Where the prices behind an amount came from (DESIGN §21.6). Carried by every
+ * money-bearing result, because "82 CNY" from this morning's fetch and the same
+ * number from a three-week-old cache are not the same claim.
+ */
+const PRICE_SOURCE_SCHEMA = {
+  required: true,
+  oneOf: [
+    { type: 'null' },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { type: 'string', required: true, enum: ['remote', 'cache', 'bundled', 'none'] },
+        url: NULLABLE_STRING,
+        fetched_at: NULLABLE_STRING,
+        age_days: NULLABLE_NUMBER,
+        last_error: NULLABLE_STRING,
+        note: NULLABLE_STRING,
+      },
+    },
+  ],
+} as const
 
 /** `video_status` with no task id: what the model needs to know before generating. */
 const SETUP_SCHEMA = {
@@ -133,6 +160,8 @@ const SETUP_SCHEMA = {
         },
       },
     },
+    price_source: PRICE_SOURCE_SCHEMA,
+    price_source_warning: NULLABLE_STRING,
     workspace: {
       type: 'object',
       required: true,
@@ -159,6 +188,7 @@ const COST_SCHEMA = {
     priced_at: { type: 'string', required: true },
     source: { type: 'string', required: true },
     note: { type: 'string', required: true },
+    price_source: PRICE_SOURCE_SCHEMA,
     groups: {
       type: 'array',
       required: true,
@@ -204,6 +234,7 @@ const ESTIMATE_SCHEMA = {
     currency: { type: 'string', required: true },
     priced_at: { type: 'string', required: true },
     note: { type: 'string', required: true },
+    price_source: PRICE_SOURCE_SCHEMA,
   },
 } as const
 
@@ -238,8 +269,36 @@ function setupValue(setup: SetupStatus) {
         cancelable: model.cancelable,
       })),
     })),
+    price_source: priceSourceValue(setup.priceSource),
+    price_source_warning: setup.priceSourceWarning,
     workspace: { ...setup.workspace, characters: [...setup.workspace.characters] },
   }
+}
+
+/** A price source in the tool's snake_case vocabulary. */
+function priceSourceValue(info: PriceSourceInfo | null) {
+  if (info === null) return null
+  return {
+    kind: info.kind,
+    url: info.url,
+    fetched_at: info.fetchedAt,
+    age_days: info.ageDays,
+    last_error: info.lastError,
+    note: info.note,
+  }
+}
+
+/** Where prices came from, as one clause; empty when nothing is known about them. */
+function priceSourceText(source: { kind: string; url: string | null; fetched_at: string | null; age_days: number | null; last_error: string | null; note: string | null } | null): string {
+  if (source === null) return ''
+  if (source.kind === 'none') return 'prices: no source configured, so usage is not priced'
+  const age = source.age_days === null || source.age_days === 0 ? 'today' : `${source.age_days} day(s) old`
+  const parts = [
+    `prices: ${source.kind === 'bundled' ? 'built-in snapshot' : source.kind === 'cache' ? `cache ${age}` : `fetched today from the public feed`}`,
+    source.note === null ? null : source.note,
+    source.last_error === null ? null : `last refresh failed: ${source.last_error}`,
+  ]
+  return parts.filter((part): part is string => part !== null).join(' · ')
 }
 
 /** The setup as a few lines of text. */
@@ -251,6 +310,9 @@ function setupText(setup: ReturnType<typeof setupValue>): string {
     const marker = provider.id === setup.default_provider ? ' (default)' : ''
     lines.push(`provider ${provider.id}${marker} [${provider.protocol}], ${key}${provider.continuable ? ', takes can be continued with from' : ''}: ${provider.models.map(model => `${model.id} (${model.modes.join('/')})`).join(', ')}`)
   }
+  const prices = priceSourceText(setup.price_source)
+  if (prices !== '') lines.push(prices)
+  if (setup.price_source_warning !== null) lines.push(`note: ${setup.price_source_warning}`)
   const chip = setup.selection
   const chosen = chip === null
     ? []
@@ -296,6 +358,7 @@ interface CostValue {
   currency: string
   priced_at: string
   note: string
+  price_source: { kind: string; url: string | null; fetched_at: string | null; age_days: number | null; last_error: string | null; note: string | null } | null
   groups: { provider: string; model: string; shot: string | null; tasks: number; tokens: number; output_seconds: number; estimated_amount: number | null }[]
   unknown_usage: { task_id: string }[]
   total_tasks: number
@@ -306,6 +369,8 @@ interface CostValue {
 function costText(cost: CostValue): string {
   const total = cost.total_estimated_amount === null ? 'nothing priced' : formatAmount(cost.total_estimated_amount, cost.currency)
   const lines = [`estimated cost: ${total} across ${cost.total_tasks} settled task(s) (${cost.currency}, prices as of ${cost.priced_at}) — ${cost.note}`]
+  const prices = priceSourceText(cost.price_source)
+  if (prices !== '') lines.push(prices)
   for (const group of cost.groups) {
     const usage = group.tokens > 0 ? `${group.tokens} tokens` : group.output_seconds > 0 ? `${group.output_seconds} s` : 'no usage reported'
     const money = group.estimated_amount === null ? 'not priced' : formatAmount(group.estimated_amount, cost.currency)
@@ -556,6 +621,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           priced_at: cost.pricedAt,
           source: cost.source,
           note: cost.note,
+          price_source: priceSourceValue(cost.priceSource),
           groups: cost.groups.map(group => ({
             provider: group.provider,
             model: group.model,
@@ -575,6 +641,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           currency: estimate.currency,
           priced_at: estimate.pricedAt,
           note: estimate.note,
+          price_source: priceSourceValue(estimate.priceSource),
         },
       }
     },

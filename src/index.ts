@@ -23,6 +23,7 @@ import { LedgerCorruptError, sharedLedger } from './ledger.ts'
 import { deliverNotices, quietOnKill, setNoticeHost, type NoticeHost } from './notify.ts'
 import { mediaHandler } from './media-route.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from './panel-api.ts'
+import { PriceSource, priceCachePath } from './price-source.ts'
 import { registerStreamRoute, type StreamScope, type StreamSessions } from './stream-route.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRuntime } from './runtime.ts'
@@ -70,6 +71,23 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   // instances on one document would each flush their own copy.
   const selections = sharedSelections({ path: join(pluginHome(home), 'selections.json') })
 
+  /**
+   * Prices (DESIGN §21). The cache is read synchronously here so the first
+   * `video_status cost` after a restart already has prices; the fetch itself is
+   * started below and never awaited, because a price refresh must not delay
+   * anything. No tool path touches the network: they all read `effective()`.
+   */
+  const prices = new PriceSource({
+    path: priceCachePath(pluginHome(home)),
+    url: config.priceSourceUrl.get().trim(),
+    refreshHours: config.priceRefreshHours.get(),
+    // A feed that prices none of the configured models is a mismatch (an
+    // upstream rename, a relay's own ids), not a table worth installing.
+    configuredModelIds: () => snapshot(config).providers.flatMap(provider => provider.models.map(model => model.id)),
+    logger,
+  })
+  prices.loadCacheSync()
+
   const runtime: VideoForgeRuntime = {
     ctx,
     ledger,
@@ -77,9 +95,20 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     logger,
     settings: () => {
       const value = snapshot(config)
+      const effective = prices.effective(value.priceTable)
       // `retain` is read straight from the live config so a limit change applies
       // to the very next write rather than only after a remount.
-      return { ...value, maxTasks: config.maxTasks.get(), maxGiB: config.maxGiB.get() }
+      return {
+        ...value,
+        maxTasks: config.maxTasks.get(),
+        maxGiB: config.maxGiB.get(),
+        priceTable: effective.table,
+        priceSource: {
+          url: config.priceSourceUrl.get().trim(),
+          refreshHours: config.priceRefreshHours.get(),
+          info: effective.info,
+        },
+      }
     },
     outputRoot: () => {
       const configured = config.outputDir.get().trim()
@@ -237,11 +266,21 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
     scope.effect(() => jobs.events.subscribe({ owners: 'all' }, quietOnKill(ledger, jobTasks, logger)), 'video-forge: watches stopped with job_kill')
   })
 
+  // Reading the cache must not depend on an effect having run, and the timer
+  // must not outlive this instance.
+  ctx.effect(() => () => { prices.dispose() }, 'video-forge: price refresh timer')
+  prices.start()
+
   // A live config edit reaches us here. Nothing needs re-registering: the tools
   // and the route read `runtime.settings()` per operation, so the only work is
-  // to tell the operator what changed.
+  // to tell the operator what changed — plus, for the price source, to act on it:
+  // a corrected URL or interval takes effect at once instead of at the next tick.
   ctx.on('loader/volatile-update', (paths) => {
     logger.info(`video-forge: configuration updated (${paths.map(path => path.join('.')).join(', ')})`)
+    const touchesPrices = paths.some(path => path[0] === 'priceSourceUrl' || path[0] === 'priceRefreshHours')
+    if (touchesPrices) {
+      prices.reconfigure({ url: config.priceSourceUrl.get().trim(), refreshHours: config.priceRefreshHours.get() })
+    }
   })
 
   // The rows a previous process left are exactly those on disk at load time. A

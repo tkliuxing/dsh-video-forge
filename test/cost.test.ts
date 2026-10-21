@@ -6,10 +6,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { estimateGeneration, summarizeCost } from '../src/operations.ts'
 import { Ledger } from '../src/ledger.ts'
 import { SelectionStore } from '../src/selection.ts'
-import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
+import type { PriceTable } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import type { VideoTask } from '../src/types.ts'
+
+/**
+ * This suite prices against its own table: the grouping and multiplication are
+ * what it tests, and a table whose numbers may move with the upstream feed would
+ * make every assertion here about the feed instead. The built-in snapshot's
+ * numbers are asserted in `prices.test.ts`.
+ */
+const TABLE: PriceTable = {
+  currency: 'CNY',
+  pricedAt: '2026-10-21',
+  source: 'test',
+  rows: [
+    { providerId: '', modelId: '', unit: 'token', pricePerUnit: 0.0001 },
+    { providerId: '', modelId: '', unit: 'second', pricePerUnit: 0.5 },
+  ],
+}
 
 const MODEL: ModelSetting = {
   id: 'm', label: 'm', modes: ['t2v'], durations: [], resolutions: [], aspectRatios: [], sizes: [], cancelable: true, generateAudio: false, pollIntervalMs: 5000, frameRoleFirst: 'first_frame', frameRoleLast: 'last_frame', frameRoleReference: 'reference_image',
@@ -46,7 +62,7 @@ function runtimeFor(ledger: Ledger, over: Partial<VideoForgeSettings> = {}): Vid
     maxTasks: 200,
     maxGiB: 20,
     requestTimeoutMs: 30_000,
-    priceTable: DEFAULT_PRICE_TABLE,
+    priceTable: TABLE,
     ...over,
   }
   return {
@@ -67,12 +83,12 @@ function reported(tokens: number | null, outputSeconds: number | null): VideoTas
   return { state: 'reported', tokens, outputSeconds, fields: {}, settledAt: new Date().toISOString() }
 }
 
-function task(localId: string, provider: string, model: string, shot: string, billing: VideoTask['billing']): VideoTask {
+function task(localId: string, provider: string, model: string, shot: string, billing: VideoTask['billing'], resolution: string | null = null): VideoTask {
   const now = new Date().toISOString()
   return {
     localId, provider, protocol: provider === 'ark' ? 'ark-seedance' : 'minimax-video', model, providerTaskId: `cgt-${localId}`,
     status: 'succeeded', progress: null, submittedAt: now, updatedAt: now, paramsFingerprint: localId,
-    params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution: null, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
+    params: { prompt: 'x', mode: 't2v', durationSeconds: null, resolution, aspectRatio: null, firstFrame: null, lastFrame: null, referenceImages: [] },
     artifacts: [], error: null, destination: { kind: 'workspace', root: '/ws', renders: 'renders', shot, writeManifest: false },
     ...(billing === undefined ? {} : { billing }),
   }
@@ -89,7 +105,7 @@ describe('summarizeCost', () => {
     const summary = summarizeCost(runtimeFor(ledger))
 
     expect(summary.totalTasks).toBe(3)
-    expect(summary.currency).toBe(DEFAULT_PRICE_TABLE.currency)
+    expect(summary.currency).toBe(TABLE.currency)
     // one group per (provider, model, shot)
     expect(summary.groups).toHaveLength(2)
     const ark = summary.groups.find(group => group.provider === 'ark')!
@@ -122,15 +138,15 @@ describe('estimateGeneration', () => {
     const ledger = new Ledger({ path: join(process.cwd(), 'unused-cost.json'), maxTasks: 1, maxGiB: 1 })
     const estimate = estimateGeneration(runtimeFor(ledger), { providerId: 'ark', modelId: 'seedance', durationSeconds: 4, resolution: '480p', aspectRatio: '16:9' })
     expect(estimate.unit).toBe('token')
-    // 40594 tokens × the default token price
-    expect(estimate.amount).toBe(40594 * (DEFAULT_PRICE_TABLE.rows[0]!.pricePerUnit))
+    // 40594 tokens × the test table's token price
+    expect(estimate.amount).toBe(40594 * (TABLE.rows[0]!.pricePerUnit))
   })
 
   it('estimates MiniMax by seconds × price', () => {
     const ledger = new Ledger({ path: join(process.cwd(), 'unused-cost.json'), maxTasks: 1, maxGiB: 1 })
     const estimate = estimateGeneration(runtimeFor(ledger), { providerId: 'mm', modelId: 'hailuo', durationSeconds: 5, resolution: null, aspectRatio: null })
     expect(estimate.unit).toBe('second')
-    expect(estimate.amount).toBe(5 * (DEFAULT_PRICE_TABLE.rows[1]!.pricePerUnit))
+    expect(estimate.amount).toBe(5 * (TABLE.rows[1]!.pricePerUnit))
   })
 
   it('refuses a provider it cannot resolve', () => {

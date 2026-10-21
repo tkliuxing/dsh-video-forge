@@ -42,10 +42,21 @@ tracked in a durable ledger, so a timeout or a restart never means paying twice.
 | `video_cancel` | Ask the provider to stop (distinct from `job_kill`, which only stops watching while the provider keeps working and billing) |
 
 `video_status` also answers money questions: `cost: true` sums settled usage
-times an editable price table (grouped by provider/model/shot, with the
-price-table date and any task whose usage is still unknown), and an `estimate`
-parameter prices a request before it is submitted. Every figure is labelled an
-estimate — the provider bill is authoritative.
+times a price table (grouped by provider/model/shot, with the price-table date
+and any task whose usage is still unknown), and an `estimate` parameter prices a
+request before it is submitted. Every figure is labelled an estimate — the
+provider bill is authoritative.
+
+Prices come from a public feed ([LiteLLM's price database](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json),
+converted at 7.0 CNY/USD and split per resolution tier) instead of being typed
+into this source, where they were wrong the day they were written. The feed is
+fetched in the background — never on a tool call — validated whole, cached under
+`$DSH_HOME/dsh-video-forge/price-cache.json`, and composed as *your own rows >
+fresh fetch > cache > built-in snapshot*. Every amount carries `price_source`
+(`remote` / `cache` / `bundled` / `none`, its age and the last failure), and a
+model no table prices is reported as "not priced" rather than as 0. Point
+`priceSourceUrl` at a mirror (jsDelivr, npmmirror) when raw GitHub is
+unreachable; empty disables the feed.
 
 ## Bundled skills
 

@@ -6,7 +6,7 @@
  * Nothing here touches a DSH service, so every rule below is unit-testable.
  */
 
-import type { PriceTable } from './prices.ts'
+import type { PriceSourceInfo, PriceTable } from './prices.ts'
 import type { SupportedProtocol } from './provider-presets.ts'
 import type { VideoMode } from './types.ts'
 
@@ -97,8 +97,18 @@ export interface VideoForgeSettings {
   maxTasks: number
   maxGiB: number
   requestTimeoutMs: number
-  /** Editable price table used to turn usage into an estimate (never the bill). */
+  /** The price table used to turn usage into an estimate (never the bill). */
   priceTable: PriceTable
+  /**
+   * Where {@link priceTable} comes from (DESIGN §21): the configured feed, the
+   * refresh interval, and the provenance of the layer that answered. Absent in
+   * a reduced composition (and in tests), where prices are local only.
+   */
+  priceSource?: {
+    url: string
+    refreshHours: number
+    info: PriceSourceInfo
+  }
 }
 
 /** A configuration problem the model can act on: it names the exact field to fix. */

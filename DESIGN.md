@@ -36,6 +36,7 @@
 | P12 | 成本可见性 | 台账保存供应商用量；金额 = 用量 × 价格表（**预设参考价，用户可改**）；事前估算**只在被问时**给 | 用户决策（2026-10-15）；两家接口都不返回金额；见 §16.5 |
 | P13 | 下一阶段 | **先做真实通道验证（M2.5）**，用方舟 Seedance 与 MiniMax 的真实 key | 用户决策（2026-10-15）；三个协议至今只对 fixture 验证过 |
 | P14 | 会话级模型选择 | **对话栏 chip**：`conversation.input.right` 上一个控件，为本会话选供应商/模型 + 时长/分辨率/画幅；优先级 **显式参数 > chip > 清单 `defaults` > 插件设置**；**本版包含参数菜单** | 用户决策（2026-10-20）；见 §20 |
+| P15 | 价格来源 | **直接消费 LiteLLM 的 `model_prices_and_context_window.json`（raw GitHub 的 `main`）**，跟 main + 严格校验 + last-good 缓存；价格行加 `resolution`；离线用内置快照并标注 stale；汇率常数 7.0。**修订 P12 的"预设参考价"** | 用户决策（2026-10-21）；内置两行 2026-10-21 已核实偏低 2.5 倍/40%，见 §21 |
 
 **默认项（本文直接定，不再讨论）**
 
@@ -77,6 +78,8 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 │   ├── notify.ts               # 接手任务结束后通知所属会话（M3.5）
 │   ├── download.ts             # 拉取产物与尾帧到 $DSH_HOME（0600/0700 + 128-bit token）
 │   ├── billing.ts              # 用量结算规则
+│   ├── prices.ts               # 价格表：行结构/匹配/归一化上游价目（纯函数，无网络）
+│   ├── price-source.ts         # 价格源：后台抓取/整份校验/缓存/退避/降级合成（§21）
 │   ├── credentials.ts          # 凭据解析顺序（对象解构！）
 │   ├── runtime.ts              # 运行时面，以及按台账文件共享的盯守表 / job 表
 │   ├── providers/              # 协议表
@@ -764,6 +767,8 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 
 **预算闸门**（单次或每日上限、超额审批）2026-10-15 决定暂不做，优先级很低。
 
+**价格来源（2026-10-21 决定，修订 P12）**：预设单价不再是手写两行，而是归一化 LiteLLM 价格库的产物，见 §21。
+
 ### 16.6 使用指导
 
 用户问"怎么用这个插件"时，由 `video-guide` skill 提供指导，不让模型临场发挥：模型只看得到工具描述，会提到已删除的功能、漏掉"先配 key"、或承诺做不到的事。
@@ -1074,7 +1079,7 @@ commit `089536a`、`c3e1850`、`4c432ff` 及其后续可用性修复；测试 24
 测试 327 → 346 例（新增 `test/skills.test.ts`、`test/prices.test.ts`、`test/cost.test.ts`、`test/guide-consistency.test.ts`）。
 
 - **5 个 skill 注册**（`src/skills.ts` + `assets/skills/*.md`）：`video-project` / `video-prompting` / `video-storyboard` / `video-iterate` / `video-guide`。契约照官方 bundled skill 插件的形状：`ctx.skills.registerProvider`，`rank: BUNDLED_SKILL_RANK`（600）、`source: 'bundled'`、`resourceBase: { kind: 'directory', path }`，正文用 `import.meta.url` 相对定位、`readFile` 按需加载。**可选依赖**：经 `ctx.inject(['skills'], cb)` 条件挂载——组合里没挂 `dsh-skill` 时插件照常工作，工具从不依赖 skill 被加载过。三个 skill（project / storyboard / guide）`userInvocable: true`（首行 `/<name>` 触发），两个（prompting / iterate）只给模型。package.json：`files` 加 `assets`，`@deepseek-ai/dsh-skill` 进 peer + dev。
-- **价格表**（`src/prices.ts`）：`PriceTable { currency, pricedAt, source, rows[] }`，行按 (providerId, modelId, unit) 匹配，最精确者胜。`DEFAULT_PRICE_TABLE` 带第三方参考价（方舟 token ~28 元/百万、MiniMax 秒 ~0.3 元/秒，2026-10-16），明确"估算、以账单为准"，进 config schema 可改（`priceTable`）。金额 = 用量 × 单价（`estimateCost`），用量来自台账里供应商报告的 tokens / outputSeconds。
+- **价格表**（`src/prices.ts` + `src/price-source.ts`，**2026-10-21 起按 §21 改造**）：`PriceTable { currency, pricedAt, source, rows[] }`，行按 (providerId, modelId, unit, resolution) 匹配，最精确者胜；分辨率命中比模型命中更细，空分辨率按基础档（token → 720p，second → 768p）。单价不再写死在源码里，而是归一化公网价目文件（`normalizeLitellm`）+ 用户行 + 缓存 + 内置快照四层合成，见 §21。金额 = 用量 × 单价（`estimateCost`），用量来自台账里供应商报告的 tokens / outputSeconds。
 - **花费汇总**（`summarizeCost` + `video_status` 的 `cost: true`）：按 (provider, model, shot) 分组，返回任务数、tokens/outputSeconds 合计、估算金额、价格表日期、用量未知任务列表（`unknown` 不计入、单独列出）。总额是已结算且可定价部分之和。
 - **事前估算**（`estimateGeneration` + `video_status` 的 `estimate` 参数，只读不提交）：方舟按反推的 token 公式 `宽×高×帧数÷1024`（帧数 = 秒×24+1；480p/720p/1080p/4k × 16:9/9:16/1:1），MiniMax 按秒 × 单价；其他协议或几何返回"无法估算"，从不编数字。
 - **一致性测试**（`test/guide-consistency.test.ts`，§16.6）：5 个 skill 正文里提到的每个 `video_*` 名必须真实存在于 `tools.ts` 注册的工具；`video_export`、`视频工坊`、`workbench`、`工作台` 不得出现。
@@ -1255,3 +1260,214 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 
 **真浏览器没能覆盖的**：宿主侧"chip → 生成"的整条链（隔离实例没有 LLM key，无法让模型真的调一次 `video_generate`）。这条链由 fixture 供应商的真实 socket 集成测试覆盖：`test/workspace-project.test.ts` 里五条新用例断言了 chip 压过清单、参数压过 chip、chip 值不被模型声明时**不花钱就拒绝并点名 chip**、chip 的模型消失时拒绝而不是回落、以及 chip 不跨会话串味。
 
+## 21. 价格表远端化：直接消费 LiteLLM（2026-10-21 设计并实施）
+
+§16.5 的三层数字里，第 2 层"估算金额"一直靠 `DEFAULT_PRICE_TABLE` 两行手写单价（28 元/百万 token、0.3 元/秒）。2026-10-21 核对官方刊例价，这两行**当时就已经是错的**：Seedance 2.5 720p 实为 70 元/百万 token（低 2.5 倍），MiniMax H3 768P 国内刊例 0.50 元/秒（低 40%）。价格不是"可能过期"，是"必然过期且过期方向不可预测"，所以改成消费上游。
+
+### 21.1 决定（用户决策 2026-10-21）
+
+| 项 | 决定 | 理由 |
+|---|---|---|
+| 数据源 | **直接消费 LiteLLM 的 `model_prices_and_context_window.json`**；不自建价格库、不抓官方页面 | 实测唯一"现成 + 每天自动更新 + 机器可读 + 覆盖两家协议"的视频价格源；官方没有价格 API（账单接口要 AK/SK） |
+| 分发 | **raw GitHub 的 `main` 分支 URL** | 用户决策；实测可取、带 `ETag` |
+| 新鲜度 | **跟 `main` + 严格校验 + last-good 缓存**，不钉 commit | 钉 commit 等于回到"改版本才更新"，与初衷相悖；上游 schema 漂移由校验和旧快照兜住 |
+| 维度 | **价格行加可选 `resolution`** | 上游基础键 = 720p/768p；只读基础键会让 1080p 低估 10%、MiniMax 2K 低估 **39%** |
+| 离线 | **内置快照**（按同一归一化规则生成的当前正确值）+ 标注 stale；**未知不当 0** | "旧"可接受，"错"不可接受；现在的内置值恰是最坏情况 |
+| 汇率 | **常数 7.0**，不联网取汇率 | 上游自述"人民币刊例价 ÷ 7.0 折成美元"，反推可精确还原刊例价；多接一个汇率 API 只是多一个失败点 |
+| 币种 | 继续 **CNY**；MiniMax 用国际站价折算（0.56 / 0.91 元/秒 vs 国内 0.50 / 0.80，差 12% / 14%） | 单源消费的必然代价：只消费 LiteLLM 就拿不到国内刊例价。文案注明"国际站刊例价 ×7.0" |
+| 兜底行 | **取消全局兜底行**（`providerId:'' / modelId:''`） | 一条全局单价会把 2.5 算成 2.0 的价，正是要消灭的那种谎。未知模型走既有的"no price row"分支，报价留空并提示可自行加行 |
+| 范围外 | 不做官方页抓取、不做自建 `prices.json`、不做模型目录（§15 第 9 条）远端化 | 本轮只解决金额估算的来源；目录过期另案 |
+
+### 21.2 上游事实（2026-10-21 实测，供实现时对照）
+
+- 地址 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`：2.97 MB / 4244 条，其中 `mode: 'video_generation'` **85 条**（过滤后 51 KB）。上游一天多次提交（Price-Sync 机器人）。
+- 响应头带 `etag` 与 `cache-control: max-age=300`，**但不含 commit sha** —— 溯源只能用 `ETag` 前 8 位 + 抓取时间，或额外打一次 `api.github.com`（匿名 60 次/小时，不做）。
+- 键形如 `<namespace>/<model>`；`model` = 第一个 `/` 之后的全部内容。**我们的预设模型 id 与上游 model 段逐字相同**（`doubao-seedance-2-5-260628`、`MiniMax-H3`、`sora-2`…），只有 namespace 不同（我们叫 `ark`，上游叫 `volcengine`）。
+- 单价字段：`output_cost_per_second`（基础键）+ `output_cost_per_second_{480p,720p,1080p,4k,768p,2k}`。**基础键精确等于 720p（Seedance 全部）/ 768p（MiniMax 两款）**，实测逐条比对。
+- 字段别名：`openai/sora-2` 用 `output_cost_per_video_per_second`（多一个 `per_`），语义与 `output_cost_per_second` 相同；该条还带 `deprecation_date: 2026-09-24`。
+- 元数据可信：`metadata.comment` 写明"Ark 按输出 token 计费，token = 宽×高×24×秒÷1024，1280×720 是 21600 tokens/s；刊例 480p/720p 70 元/百万、1080p 77 元/百万；按 7.0 汇率折美元"。按此反推，误差为 0（见 21.3 的对照表）。
+- 覆盖：8 个预设模型命中 **6 个**；缺 `doubao-seedance-1-0-pro-250528` / `-fast`（退休中）。
+- 不编码"带视频输入"的折扣档（2.5：70 → 42 元/百万），也无法编码"create 时算不出来"的输入素材费用（MiniMax 超出 5 张后 $0.04/张）。
+
+### 21.3 归一化规则（上游 → `PriceTable`）
+
+**第一步，过滤**：只保留 `mode === 'video_generation'` 的对象条目。
+
+**第二步，映射 namespace**（按当前供应商的协议，不猜）：
+
+| 我们的协议 | 允许的 namespace | 计价单位 |
+|---|---|---|
+| `ark-seedance` | `volcengine` | `token` |
+| `minimax-video` | `minimax` | `second` |
+| `generic-openai-videos` | 任意 namespace，但**同一 modelId 出现多个不同价时跳过** | `second` |
+
+不按"modelId 后缀全局匹配"：`fal_ai/bytedance/seedance-2.5/text-to-video` 这类网关条目与我们无关，且可能和直连价差一倍以上（上游 `fal_ai` 2.5 是 $0.473/s，`volcengine` 是 $0.216/s）。
+
+**第三步，展开分辨率**：把 `output_cost_per_second_<tier>` 每个后缀展开成一行；`output_cost_per_second`（或别名）落到该模型的**基础档**（`ark` → `720p`，`minimax` → `768P`）。档名比较一律**忽略大小写**（我们预设写 `768P`，上游写 `768p`）。
+
+**第四步，单位换算**：
+
+```
+second 行：pricePerUnit = usdPerSecond × 7.0
+token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
+           tokensPerSecond = 宽 × 高 × 24 ÷ 1024
+```
+
+宽高**优先取上游该模型该档的 16:9 帧**（`provider_specific_entry.volcengine_video_frames`），取不到再用名义档位。这一步不能一律用 `ARK_PIXELS_16_9`：**480p 两种模型不一样** —— 2.0 是 864×496（10044 tok/s），2.5 是 854×480（9608 tok/s）；用同一个几何去反推 2.5@480p 会得到 66.96 元/百万而不是 70.00（差 4.4%）。
+
+反推结果与官方刊例价对照（实测逐条，单位元/百万 token）：
+
+| 模型 | 480p | 720p | 1080p | 4K |
+|---|---|---|---|---|
+| Seedance 2.5 | 70.00 | 70.00 | 77.00 | — |
+| Seedance 2.0 | 46.00 | 46.00 | 51.00 | 26.00 |
+| 2.0 Fast | 37.00 | 37.00 | — | — |
+| 2.0 Mini | 23.00 | 23.00 | — | — |
+
+**第五步，行结构与匹配**。`PriceRow` 增加可选 `resolution?: string`（空 = 任意分辨率）。匹配规则在现有"最精确胜"上加一档：
+
+- 查询的分辨率：`params.resolution`；为空时**按基础档查询**（`token` → `720p`，`second` → `768P`），并在报价文案里注明"未记录分辨率，按 720p 估算"。
+- 资格：`row.resolution` 为空，或与查询值忽略大小写相等。
+- 得分：`providerId` 命中 +2、`modelId` 命中 +1、`resolution` 命中 +1；最高分胜，同分时**用户行胜远端行**。
+
+**第六步，表头**：`currency: 'CNY'`；`pricedAt` = 抓取日期（语义从"取价日期"放宽为"快照日期"，文案相应改成"价格快照"）；`source` = `litellm main etag:<前8位> fetched <ISO 时间> · 国际站刊例价 ×7.0 · 无视频输入档`。
+
+**输出形状**（一个模型的样例，实际由归一化函数生成）：
+
+```
+{ providerId: '', modelId: 'doubao-seedance-2-5-260628', unit: 'token', resolution: '720p',  pricePerUnit: 0.00007 }
+{ providerId: '', modelId: 'doubao-seedance-2-5-260628', unit: 'token', resolution: '1080p', pricePerUnit: 0.000077 }
+{ providerId: '', modelId: 'MiniMax-H3',                  unit: 'second', resolution: '768P', pricePerUnit: 0.56 }
+{ providerId: '', modelId: 'MiniMax-H3',                  unit: 'second', resolution: '2K',   pricePerUnit: 0.91 }
+```
+
+**内置快照**（`DEFAULT_PRICE_TABLE` 改成同一函数的产物，不再是手写两行）：上表四款 Seedance 的 token 行 + `MiniMax-H3`（768P 0.56 / 2K 0.91）+ `MiniMax-H3-Max`（480P 0.35 / 768P 0.56）+ `sora-2`（0.70，已弃用仍保留）。`pricedAt: '2026-10-21'`。
+
+### 21.4 抓取与缓存
+
+- 配置新增两项：`priceSourceUrl`（默认上面那个 raw URL，**空串 = 关闭远端**）、`priceRefreshHours`（默认 24；`0` = 只在 `apply` 时抓一次）。
+- 时机：`apply` 之后**异步**抓一次 → 之后每 `priceRefreshHours` 一次 → 配置若改了就立刻重抓。**任何工具调用路径（`video_status` 的花费/估算）一律读内存快照，绝不同步联网** —— 估算不能因为网络失败而失败。
+- 条件请求：带 `If-None-Match`；304 只更新"上次检查时间"，不动价格。超时 8 s（连接）/12 s（总计）；响应体上限 8 MB（上游现 2.97 MB 且在涨）；**不跟随跨 host 重定向**。
+- 缓存文件 `$DSH_HOME/dsh-video-forge/price-cache.json`：
+
+```
+{ "version": 1, "url": "<抓取的地址>", "etag": "<ETag 原值>",
+  "fetchedAt": "<ISO>", "checkedAt": "<ISO>",
+  "table": { "currency": "CNY", "pricedAt": "...", "source": "...", "rows": [...] } }
+```
+
+缓存里存的是**归一化后的表**，不是上游原文：上游 3 MB 不落盘，且 schema 变了也不影响已缓存的数据。写入用原子写（同台账）。
+
+### 21.5 校验：拒绝而不是猜测
+
+远端 JSON 是**数据**，不是配置，更不是指令。整份校验通过才采纳，否则整份丢弃、保留旧表：
+
+| 检查 | 阈值 / 规则 |
+|---|---|
+| 顶层 | 必须是 `Record<string, object>`；条目数 > 0；解析失败、非对象、数组 → 丢弃 |
+| 条目 | 只认 `mode === 'video_generation'`；缺 `mode` 的条目一律不看 |
+| 数值 | `Number.isFinite`、`> 0`；**单位护栏**：token 行 ≤ 0.01 元/token，second 行 ≤ 100 元/秒（防"字段换了单位"这种事故） |
+| 行数 | 归一化后 ≤ 500 行，超出丢弃（正常约 40 行） |
+| 字符串 | modelId ≤ 120 字符、resolution ≤ 16 字符；含控制字符的条目丢弃 |
+| 匹配 | 归一化后**至少一行能对上当前已配置的模型**，否则视为无效（表整体不可用） |
+| 未知字段 | 忽略，不报错（上游天天加字段） |
+| 联动 | 价格数据**只能影响价格**：不得改变 provider 列表、地址、端点、开关、并发数 |
+
+`priceSourceUrl` 允许改，但默认只放行 `raw.githubusercontent.com`：改到别的 host 时，配置卡给一行提示（不阻塞）。URL 里不许带凭据（`user:pass@`、query 里像 token 的键）。
+
+### 21.6 降级阶梯、失败行为与呈现
+
+有效价格表的合成顺序（越靠左越优先）：**用户手写行 > 远端最新 > 缓存 > 内置快照 > 无**。任何一层为空都往下走；全部为空时不给金额，只给"无法估算"。
+
+| 状态 | `video_status` 增补的 `priceSource` | 金额 |
+|---|---|---|
+| 远端成功 | `{ kind:'remote', url, fetchedAt, ageDays:0 }` | 给 |
+| 304 / 网络失败但有缓存 | `{ kind:'cache', url, fetchedAt, ageDays:N, lastError? }`，N ≥ 7 时文案标"已过期 N 天" | 给，标注旧 |
+| 从未成功 | `{ kind:'bundled', pricedAt, note:'内置快照，可能过期', lastError? }` | 给，标注 |
+| 远端关闭且无缓存 | `{ kind:'none' }` | **不给金额**，说明"未配置价格来源" |
+
+**失败时的具体行为（逐条定死）**：
+
+1. **失败原因必须可见**。`priceSource.lastError` 记最后一次失败的一句话（`timeout` / `HTTP 404` / `not JSON` / `0 rows matched` / `guard: 120 元/秒`），`video_status` 原样带出。否则"金额偏低"和"刚改过 URL 写错了"在用户眼里没有区别。
+2. **抓不到价格不影响任何非金额功能**。生成、去重、盯守、取消、导出、面板、台账**全部照常**；受影响的只有 `video_status` 的 `cost` 汇总与 `estimate` 估算。这是硬边界：价格是"附加信息"，不是运行前提。
+3. **重试退避**：失败后 5 min → 30 min → 2 h → 6 h（封顶），成功后回到 `priceRefreshHours`。不因失败而缩短周期轰炸下游，也不一次失败就等到明天（用户改完 URL 能较快看到结果）。
+4. **缓存没有过期上限，永不自动丢弃**。价格"旧"永远优于"没有"，只在 `ageDays ≥ 7` 时在金额旁标"已过期 N 天"。删缓存的唯一途径是用户删文件或改 `priceSourceUrl`。
+5. **缓存损坏按无缓存处理，但不静默删文件**：JSON 解析失败、`version` 不认识、行校验不过 → 本次忽略该文件、落到内置快照、`lastError: 'cache corrupt'`，文件保留供诊断。远端抓取成功后原子覆盖。
+6. **启动时序**：`apply` 时**同步读缓存**（小文件，毫秒级）、**异步**抓远端。所以启动后第一次问花费，拿到的是缓存或内置快照，不会是"没有价格"；远端结果到达后自动换表，无需重启。
+7. **历史任务按当前有效表重算**（沿用现有实现）：远端价格一更新，所有已结算任务的估算金额随之变化，总额会漂移。这是有意的取舍——台账只存**用量**、不存单价，任何时刻都只有一份价格口径。代价是"上周问是 82 元、这周问是 79 元"。缓解：所有金额都带 `pricedAt`（快照日期）。
+   - **结算时不冻结单价（用户决定，2026-10-21）**：台账不加 `billing.pricePerUnit`，历史金额永远跟着当前价格表走。理由：台账的职责是记录供应商报告的用量，冻结单价把"当时的估算"变成一列看起来精确、实际仍是猜的数字，等于给估算多一层假精度；真要按历史口径对账，应该去供应商控制台，不是看这里。**这条决定同时否掉了"金额可对账"的期待**——插件给的是口径一致的相对量，不是账。
+
+所有金额文案保留既有的"估算，以供应商账单为准"，并追加口径：`国际站刊例价 ×7.0 · 无视频输入档`。`unknown` 用量（供应商 7 天窗口过期）继续单列，不按 0 计。
+
+### 21.7 与现有代码的接缝（实施清单，已全部落地）
+
+| 位置 | 改动 |
+|---|---|
+| `src/prices.ts` | `PriceRow.resolution?`；`unitPrice()` 加分辨率维与基础档回落；`DEFAULT_PRICE_TABLE` 换成快照；新增纯函数 `normalizeLitellm(json, fx)`（不碰网络，便于表驱动测试） |
+| 新文件 `src/price-source.ts` | 抓取 + 校验 + 缓存 + 定时刷新 + `effectiveTable()` 合成；不依赖 `ctx.tools`，便于单测注入 `fetch` |
+| `src/config.ts` | `priceSourceUrl`、`priceRefreshHours`；`priceTable.rows` 默认改为 `[]`（空 = 不覆盖），避免"默认值变成永远压过远端的用户行" |
+| `src/settings.ts` / `operations.ts` | `summarizeCost` / `estimateGeneration` 改用 `effectiveTable`；`CostSummary` / `GenerationEstimate` 增补 `priceSource`；`summarizeCost` 的匹配带上 `task.params.resolution` |
+| `test/prices.test.ts` | 新增归一化表驱动用例（含 480p 双几何、别名、缺档、歧义跳过、护栏拒绝） |
+| `fixtures/` | 一份上游裁剪样本（不联网） |
+
+**一个必须一起想清楚的点**：token 价与 token 估算必须用**同一份几何**。两者一改都改的话，`估算金额 = 秒数 × 每秒价` 恒成立（几何只影响报出去的 token 数）；只改一边则 2.5@480p 会多算 4.4%。`estimateArkTokens()` 目前用写死的 `ARK_PIXELS_16_9`，应改为从快照取该模型该档的帧，取不到再回落常量。
+
+### 21.8 测试策略（全部离线，已按此实现）
+
+1. **归一化**：用裁剪样本断言 21.3 的对照表（70.00 / 46.00 / 77.00 / 51.00 / 26.00 / 37.00 / 23.00 与 0.56 / 0.91 / 0.35），容差 1e-6 相对误差。
+2. **几何**：同一份样本里 2.0@480p 用 864×496、2.5@480p 用 854×480，断言两条反推都等于刊例价。
+3. **匹配**：分辨率命中 > 模型命中 > 兜底；查询分辨率为空按 720p/768P；用户行压过远端行。
+4. **校验**：顶层是数组、条目全缺 `mode`、单价为负、单价 0.5 元/秒（超 second 护栏不触发，但 500 元/秒触发）、行数超限、modelId 超长、URL 带 `user:pass@`。
+5. **降级**：首次失败 → bundled；成功后失败 → cache + ageDays；304 → 价格不变、`checkedAt` 变。
+6. **绝不联网**：单测注入假 `fetch`；真网络只在 §13 的隔离实例里手工验证一次，验证后 `close --all`。
+7. **对账（可选，人工/发布前）**：把反推值与官方刊例价比对，差 > 5% 视为上游改了换算口径，人工看一次。
+
+### 21.9 风险与已知缺口
+
+- **上游 schema 漂移**：每天多次提交，字段可能改名。缓解：整份校验 + last-good 缓存 + "对账可比对"；最坏退到内置快照并标注。**不钉 commit 是有意的取舍。**
+- **国内可达性**：`raw.githubusercontent.com` 在国内容易失败。本轮只留 `priceSourceUrl` 可改（可换 jsDelivr 或 npmmirror，两者 2026-10-21 实测均可达），不预置。
+- **下载量**：每天约 3 MB（按 24 h 一次）。上游若长到 8 MB 以上会被上限拒绝，届时需要换更小的上游或加过滤代理。
+- **无 commit sha**：溯源只能用 `ETag` 前缀 + 时间，无法从响应头证明"这是哪次提交"。
+- **精度损失（接受，不修）**：s2v（参考视频）按无视频输入档估算，会高估约 65%；汇率若被上游从 7.0 改掉，元/百万 token 会随之漂移；480p 几何在 2.0 与 2.5 之间不一致带来 <5% 的结算偏差。
+- **国产价差**：MiniMax 国内刊例比国际站折价低 12% / 14%，本设计选择国际站，国内用户看到的估算偏高。
+- **未计入的计费项**：MiniMax 超额输入图（$0.04/张）、方舟的参考素材计费；`generic-openai-videos` 的按次计价网关无 `second` 价 → 无估算。
+- **与 §15 第 9 条同源**：模型目录仍写死在代码里，远端价格表里有 `模型不存在` 的信号但不负责发现它。
+- **历史金额会漂移**：远端价格一更新，已结算任务的估算金额按新表重算（§21.6 第 7 条）。**2026-10-21 用户决定不冻结单价**，所以同一问题在一周内可能得到两个数字是已接受的行为；金额只表示"按当前价格口径的相对量"，不用于对账。
+
+### 21.10 实施记录（2026-10-21，与设计稿的差异逐条列出）
+
+**落地位置**（与 §21.7 的清单一致，只有一处新增文件）：
+
+| 文件 | 内容 |
+|---|---|
+| [src/prices.ts](src/prices.ts) | `PriceRow.resolution?`；`unitPrice(table, providerId, modelId, unit, resolution?)`（四级：provider +2 / model +1 / tier +1，空 tier 按 `BASE_TIER`，同分按列表顺序）；`estimateArkTokens(…, modelId?)` 用**按模型的 16:9 帧**；纯函数 `normalizeLitellm(payload, { fx })` → `{ rows, skipped, dropped }`；`DEFAULT_PRICE_TABLE` 换成 16 行快照 |
+| [src/price-source.ts](src/price-source.ts) | `PriceSource` 类：`loadCacheSync()` / `start()` / `refresh()` / `reconfigure()` / `dispose()` / `effective(userTable)`；`priceSourceUrlProblem()` 纯校验；缓存原子写 |
+| [src/config.ts](src/config.ts) | `priceSourceUrl`（默认 raw GitHub）、`priceRefreshHours`（默认 24，0 = 只抓一次）；`priceRow.resolution`；`priceTable.rows` 默认 `[]`；`snapshot()` 把空字符串 resolution 归一成"缺省" |
+| [src/settings.ts](src/settings.ts) | `VideoForgeSettings.priceSource?: { url, refreshHours, info }`（可选，所以测试与精简组合不受影响） |
+| [src/index.ts](src/index.ts) | `apply` 里同步读缓存 → `prices.start()`；`settings()` 每次合成有效表；`loader/volatile-update` 命中价格两项时 `reconfigure`；`ctx.effect` 里 `dispose` |
+| [src/operations.ts](src/operations.ts) | `summarizeCost` 按 `task.params.resolution` 计价并透出 `priceSource`；`estimateGeneration` 用模型自己的帧 + 分档单价；`describeSetup` 增 `priceSource` / `priceSourceWarning` |
+| [src/tools.ts](src/tools.ts) | `price_source` 进 setup/cost/estimate 三个 schema 与对应文本行 |
+| [fixtures/litellm-video-sample.json](fixtures/litellm-video-sample.json) | 上游真实数据的裁剪样本（13 条，含 2 条非视频条目作过滤用例） |
+| [test/prices.test.ts](test/prices.test.ts) / [test/price-source.test.ts](test/price-source.test.ts) | 归一化对照表、几何、匹配、校验、降级、退避、绝不联网（注入假 `fetch`） |
+
+**与设计稿不同的地方（都是实现时才看清的）**：
+
+1. **校验颗粒度分两层**（§21.5 原文只说"整份丢弃"）：结构性问题（不是对象、无 `video_generation` 条目、0 行可用、> 500 行、与已配模型 0 命中）→ 整份拒绝；**单行数值护栏**（token > 0.01 元、second > 100 元/秒）→ 只丢这一行并计数，`lastError` 不报（否则一个上游错条目会让整份表失效，而护栏本来就是逐值防的）。
+2. **`priceSourceUrl` 为空时连内置快照也不用**（§21.6 的"远端关闭且无缓存 → `none`"按字面实现）：`url === ''` 表示用户明确拒绝远端价格，此时不再拿内置快照顶上；**用户自己写的行仍然生效**（显式意图优于沉默降级）。
+3. **"至少一行对上已配置模型"在没配任何模型时跳过**：全新安装 `providers: []`，否则第一次抓取必定被判无效。
+4. **重定向**：同 host 最多跟 3 跳，跨 host **拒绝**（不是"不跟但用响应"）——用 `redirect: 'manual'` 自己走，才能判断 host。
+5. **抓取超时拆两步**：8 s 等响应头、12 s 总上限（用两个 timer + `AbortController`），因为 `fetch` 本身分不出连接超时与整请求超时。
+6. **单价按 8 位有效数字收敛**（`roundPrice`）：上游的美元价本身只到小数几位，反推出来是 `0.000046000000298685786` 这种带噪声的数，不收敛的话每句估算文案里都会原样出现。
+7. **480p 默认帧仍是 2.0 的 864×496**（既有常量与 §7.1 的参考点不动），只有 `doubao-seedance-2-5-260628` 覆盖成 854×480；上游 `volcengine_video_frames` 里给了哪档就用哪档，取不到落到档位名义帧（1080p/4k 就走这条）。
+8. **内置快照"由同一函数生成"改成"由测试钉住"**：`DEFAULT_PRICE_TABLE.rows` 是字面量，`test/prices.test.ts` 断言它**等于** `normalizeLitellm(fixture)` 里预设模型那部分（逐行、同序）。比在构建期生成常量更不容易悄悄漂移。
+9. **顺手修掉一个既有缺陷**：`summarizeCost` 以前把"有用量但没有任何价格行"的组算成 `estimatedAmount: 0`（因为只在累计金额上判断），取消全局兜底行之后这个分支才第一次真的可达；现在按"该组是否有一条真被定价"给 `null`。**未知不能显示成 0。**
+10. **"配置卡给一行提示"改在 setup 输出里给**（`price_source_warning`）：`priceTable` 本来就没有浏览器 UI 字段，为一条提示单开一个客户端控件不划算；模型读 `video_status` 就能转述。
+11. **实测行数 82 行**（§21.2 估的"约 40 行"只算了我们那两个 namespace）：`generic-openai-videos` 会把 fal、runway、veo 等网关条目一起归一化进来，这些行只有用户把中转站的模型 id 配成上游同名时才会被用到。上限 500 仍宽松。
+
+**证据**：
+
+- `pnpm check`（`tsc --noEmit` + `vitest run`）**524 例全绿**（M6 收尾 489 → +35：`prices` 26、`price-source` 19，其中既有 `cost` 用例改成自带价格表）。连跑三次无抖动。
+- **隔离实例实网一次**（§13 配方：`DSH_HOME=/tmp/dsh-video-studio-verify/home`、端口 34781、npm 实包 `@deepseek-ai/dsh@0.2.1-rc.2`、tarball 安装且 `sha256` 与仓库 `lib/index.js` 一致）：
+  - 宿主启动后自己写出 `$DSH_HOME/dsh-video-forge/price-cache.json`（14.6 KB、`0600`），`etag: W/"6bb8e1ac…`（比设计时的 `d3ac3440` 新，上游确实在几分钟级更新）、`fetchedAt 2026-10-21T03:00:07Z`、**82 行**。
+  - 把这份**真缓存**用 `PriceSource.loadCacheSync()` 读回（`kind: 'cache'`，不碰网络）：`doubao-seedance-2-0-260128 @1080p = 0.000051`、`doubao-seedance-2-5-260628 @480p = 0.00007`、`MiniMax-H3 @2K = 0.91`；别名模型 `fixture-model` 查价返回 `null`（不是 0）。5 秒 720p Seedance 2.5 = 108900 token → **7.623 元**——正是调研阶段预测的 7.62 元，而旧的内置两行会给 3.05 元。
+  - 收尾：`kill` 宿主 → `lsof -iTCP:34781` 为空、`ps` 无孤儿；用户的 3080 实例 `GET /` 仍 401，**全程未被写入**。

@@ -16,9 +16,9 @@ import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
 import { moderationOf, ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, cancelSupported, returnsLastFrame, type AdapterContext } from './providers/index.ts'
-import { estimateArkTokens, estimateCost, unitPrice, type PriceUnit } from './prices.ts'
+import { BASE_TIER, estimateArkTokens, estimateCost, unitPrice, type PriceSourceInfo, type PriceUnit } from './prices.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
-import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting } from './settings.ts'
+import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from './settings.ts'
 import {
   NOT_SUBMITTED_CODE,
   UNCONFIRMED_CODE,
@@ -642,6 +642,10 @@ export interface SetupStatus {
     continuable: boolean
     models: ProviderStatus['models']
   }[]
+  /** Where the price table in effect came from (DESIGN §21.6); null when prices are local only. */
+  priceSource: PriceSourceInfo | null
+  /** A non-default price host, said once, never blocking (DESIGN §21.5). */
+  priceSourceWarning: string | null
   workspace: {
     /** `none`: no workspace conversation; `unavailable`: the filesystem service is away. */
     state: 'none' | 'unavailable' | 'default-layout' | 'manifest' | 'invalid-manifest'
@@ -705,8 +709,28 @@ export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSes
     defaultModel: settings.defaultModel === '' ? null : settings.defaultModel,
     selection: session === null ? null : selectionView(await runtime.selections.get(session.id)),
     providers,
+    priceSource: settings.priceSource?.info ?? null,
+    priceSourceWarning: priceSourceWarning(settings),
     workspace,
   }
+}
+
+/**
+ * The one thing worth saying about a non-default price host: it is allowed, and
+ * it is only as trustworthy as that host. Never a refusal — a mirror is a
+ * legitimate answer to an unreachable CDN (DESIGN §21.5 / §21.9).
+ */
+function priceSourceWarning(settings: VideoForgeSettings): string | null {
+  const url = settings.priceSource?.url
+  if (url === undefined || url === '') return null
+  let host: string
+  try {
+    host = new URL(url).host
+  } catch {
+    return `priceSourceUrl is not a URL: ${url}`
+  }
+  if (host === 'raw.githubusercontent.com') return null
+  return `prices come from ${host}, not the default raw.githubusercontent.com; that is allowed, but those numbers are only as trustworthy as that host`
 }
 
 /** The chip's choice as `video_status` reports it: no timestamp, and null when it chose nothing. */
@@ -735,12 +759,14 @@ export interface CostGroup {
   estimatedAmount: number | null
 }
 
-/** The "how much has this cost" answer (DESIGN §16.5), usage × the editable price table. */
+/** The "how much has this cost" answer (DESIGN §16.5), usage × the price table in effect. */
 export interface CostSummary {
   currency: string
   pricedAt: string
   source: string
   note: string
+  /** Which layer of the price ladder answered, and its age (DESIGN §21.6); null when prices are local only. */
+  priceSource: PriceSourceInfo | null
   groups: CostGroup[]
   unknownUsage: { taskId: string; provider: string; model: string }[]
   totalTasks: number
@@ -759,7 +785,8 @@ function shotOfTask(task: VideoTask): string | null {
 export function summarizeCost(runtime: VideoForgeRuntime, options: { since?: string } = {}): CostSummary {
   const settings = runtime.settings()
   const table = settings.priceTable
-  const groups = new Map<string, CostGroup & { _amount: number }>()
+  const priceSource = settings.priceSource?.info ?? null
+  const groups = new Map<string, CostGroup & { _amount: number; _priced: boolean }>()
   const unknownUsage: CostSummary['unknownUsage'] = []
   let totalTasks = 0
 
@@ -776,22 +803,29 @@ export function summarizeCost(runtime: VideoForgeRuntime, options: { since?: str
     const key = `${task.provider}\u0000${task.model}\u0000${shot ?? ''}`
     let group = groups.get(key)
     if (group === undefined) {
-      group = { provider: task.provider, model: task.model, shot, tasks: 0, tokens: 0, outputSeconds: 0, estimatedAmount: 0, _amount: 0 }
+      group = { provider: task.provider, model: task.model, shot, tasks: 0, tokens: 0, outputSeconds: 0, estimatedAmount: 0, _amount: 0, _priced: false }
       groups.set(key, group)
     }
     group.tasks++
     totalTasks++
     if (billing.tokens !== null) group.tokens += billing.tokens
     if (billing.outputSeconds !== null) group.outputSeconds += billing.outputSeconds
-    const estimate = estimateCost(table, billing, task.provider, task.model)
-    if (estimate !== null) group._amount += estimate.amount
+    // The tier the task was run at, when the row records it: MiniMax charges
+    // 60% more at 2K than at 768P, so a tier-blind lookup is not an estimate.
+    const estimate = estimateCost(table, billing, task.provider, task.model, task.params.resolution)
+    if (estimate !== null) {
+      group._amount += estimate.amount
+      group._priced = true
+    }
   }
 
   let total = 0
   const resultGroups = [...groups.values()]
-    .map(({ _amount, ...group }) => {
+    .map(({ _amount, _priced, ...group }) => {
       total += _amount
-      return { ...group, estimatedAmount: group.tokens > 0 || group.outputSeconds > 0 ? _amount : null }
+      // "Not priced" is null, never 0: a task whose model has no row is unknown,
+      // and a group of unknown amounts must not read as free.
+      return { ...group, estimatedAmount: _priced ? _amount : null }
     })
     .sort((left, right) => (right.estimatedAmount ?? 0) - (left.estimatedAmount ?? 0) || left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model))
 
@@ -799,7 +833,10 @@ export function summarizeCost(runtime: VideoForgeRuntime, options: { since?: str
     currency: table.currency,
     pricedAt: table.pricedAt,
     source: table.source,
-    note: 'estimate only — the provider bill is authoritative',
+    note: priceSource?.kind === 'none'
+      ? 'estimate only — no price source is configured, so nothing here is priced'
+      : 'estimate only — the provider bill is authoritative',
+    priceSource,
     groups: resultGroups,
     unknownUsage,
     totalTasks,
@@ -814,6 +851,8 @@ export interface GenerationEstimate {
   currency: string
   pricedAt: string
   note: string
+  /** Which layer of the price ladder answered, and its age (DESIGN §21.6); null when prices are local only. */
+  priceSource: PriceSourceInfo | null
 }
 
 /**
@@ -830,6 +869,7 @@ export function estimateGeneration(
 ): GenerationEstimate {
   const settings = runtime.settings()
   const table = settings.priceTable
+  const priceSource = settings.priceSource?.info ?? null
   const fromChip: string[] = []
   // Provider and model travel as a pair: a model the chip chose must not be
   // paired with a provider the caller named.
@@ -855,32 +895,50 @@ export function estimateGeneration(
     aspectRatio = selection.aspectRatio
     fromChip.push(selection.aspectRatio)
   }
-  const tail = `estimate only (${table.currency}, prices as of ${table.pricedAt})${fromChip.length === 0 ? '' : ` — ${fromChip.join(', ')} from the video chip in this conversation`} — the provider bill is authoritative`
+  const provenance = provenanceNote(priceSource)
+  const tierNote = resolution === null ? `, no resolution recorded so the ${BASE_TIER.token} tier is assumed` : ''
+  const tail = `estimate only (${table.currency}, prices as of ${table.pricedAt}${provenance})${fromChip.length === 0 ? '' : ` — ${fromChip.join(', ')} from the video chip in this conversation`} — the provider bill is authoritative`
   let target: { provider: ProviderSetting; model: ModelSetting }
   try {
     target = resolveTarget(settings, providerId, modelId)
   } catch (error) {
-    return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: error instanceof Error ? error.message : String(error) }
+    return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, priceSource, note: error instanceof Error ? error.message : String(error) }
   }
   const { provider, model } = target
   if (provider.protocol === 'ark-seedance') {
-    const tokens = estimateArkTokens(resolution, aspectRatio, durationSeconds)
+    // The token estimate and the token price must come from one geometry: 2.5
+    // renders 854×480 at 480p, the 2.0 family 864×496 (DESIGN §21.3).
+    const tokens = estimateArkTokens(resolution ?? BASE_TIER.token, aspectRatio, durationSeconds, model.id)
     if (tokens === null) {
-      return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `cannot estimate ARK tokens for ${resolution ?? '?'}/${aspectRatio ?? '?'} — only 16:9, 9:16 and 1:1 at 480p/720p/1080p/4k are estimated; ${tail}` }
+      return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `cannot estimate ARK tokens for ${resolution ?? '?'}/${aspectRatio ?? '?'} — only 16:9, 9:16 and 1:1 at 480p/720p/1080p/4k are estimated; ${tail}` }
     }
-    const price = unitPrice(table, provider.id, model.id, 'token')
-    if (price === null) return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `no token price row for ${provider.id}/${model.id}; ${tail}` }
-    return { amount: tokens * price, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `≈${tokens} tokens × ${price} ${table.currency}/token; ${tail}` }
+    const price = unitPrice(table, provider.id, model.id, 'token', resolution)
+    if (price === null) return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `no token price row for ${provider.id}/${model.id}${resolution === null ? '' : ` at ${resolution}`}; add one under the plugin's priceTable.rows; ${tail}` }
+    return { amount: tokens * price, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `≈${tokens} tokens × ${priceText(price)} ${table.currency}/token${tierNote}; ${tail}` }
   }
   if (provider.protocol === 'minimax-video') {
     if (durationSeconds === null) {
-      return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `a duration_seconds is required to estimate MiniMax; ${tail}` }
+      return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `a duration_seconds is required to estimate MiniMax; ${tail}` }
     }
-    const price = unitPrice(table, provider.id, model.id, 'second')
-    if (price === null) return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `no second price row for ${provider.id}/${model.id}; ${tail}` }
-    return { amount: durationSeconds * price, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `${durationSeconds}s × ${price} ${table.currency}/s; ${tail}` }
+    const price = unitPrice(table, provider.id, model.id, 'second', resolution)
+    if (price === null) return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `no second price row for ${provider.id}/${model.id}${resolution === null ? '' : ` at ${resolution}`}; add one under the plugin's priceTable.rows; ${tail}` }
+    return { amount: durationSeconds * price, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `${durationSeconds}s × ${priceText(price)} ${table.currency}/s${tierNote}; ${tail}` }
   }
-  return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: `no estimate for protocol ${provider.protocol}; ${tail}` }
+  return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, priceSource, note: `no estimate for protocol ${provider.protocol}; ${tail}` }
+}
+
+/** A per-unit price with no more precision than an estimate deserves (0.000046, not 0.000046000000298685786). */
+function priceText(price: number): string {
+  return String(Number(price.toPrecision(6)))
+}
+
+/** How old the price table is, as a clause for the estimate note; empty when prices are local only. */
+function provenanceNote(info: PriceSourceInfo | null): string {
+  if (info === null) return ''
+  if (info.kind === 'none') return ', no price source configured'
+  if (info.kind === 'bundled') return ', built-in snapshot that may be out of date'
+  if (info.kind === 'cache') return `, from a cache${info.ageDays === null ? '' : ` ${info.ageDays} day(s) old`}${info.lastError === null ? '' : ` (last refresh failed: ${info.lastError})`}`
+  return ', fetched from the public price feed'
 }
 
 /** One provider as the configuration card shows it: capability plus credential state, never a secret. */
