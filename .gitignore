@@ -4,3 +4,8 @@ node_modules/
 *.tgz
 .DS_Store
 coverage/
+
+# Agent-tool state (session logs, checkpoints); no machine-local state belongs
+# in the repository, and a contributor's machine may not have the global
+# ignore rule that used to cover it.
+.omc/
