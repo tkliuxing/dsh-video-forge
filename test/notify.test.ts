@@ -14,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger, parseDocument } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { deliverNotices, MAX_NOTICE_ATTEMPTS, owesNotice, quietOnKill, setNoticeHost } from '../src/notify.ts'
 import { reconcile, retryOrphans } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
@@ -74,6 +75,7 @@ function runtimeFor(fake: Fixture, ledger: Ledger, host: FakeHost | null): Video
   return {
     ctx: { get: (name: string) => services[name] } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

@@ -6,14 +6,15 @@
  */
 
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, symlink, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { PANEL_ROUTE_PREFIX, panelHandler } from '../src/panel-api.ts'
 import { MAX_TASK_ROWS, listTasks } from '../src/operations.ts'
 import { isIPv4Loopback, isLoopbackAddress, isLoopbackHostname, isTrustedRequest } from '../src/trust.ts'
@@ -97,6 +98,7 @@ beforeAll(async () => {
   runtime = {
     ctx: { get: () => undefined } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(root, 'outputs'),
@@ -404,5 +406,57 @@ describe('overview projection for the video panel (M5)', () => {
     } finally {
       await new Promise<void>(resolve => { scopedServer.close(() => resolve()) })
     }
+  })
+})
+
+describe('selection (M6)', () => {
+  const url = (session?: string, action = 'selection'): string =>
+    `${base}${PANEL_ROUTE_PREFIX}/${action}${session === undefined ? '' : `?session=${encodeURIComponent(session)}`}`
+
+  it('refuses a request that names no conversation', async () => {
+    expect((await fetch(url())).status).toBe(400)
+    expect((await fetch(url('   '))).status).toBe(400)
+    expect((await fetch(url('has space'))).status).toBe(400)
+  })
+
+  it('reads an empty choice together with the model matrix the chip renders from', async () => {
+    const body = await (await fetch(url('session-empty'))).json() as {
+      selection: unknown
+      enabled: boolean
+      defaults: { provider: string; model: string }
+      providers: { id: string; credential: { configured: boolean }; models: { id: string; durations: number[] }[] }[]
+    }
+    expect(body.selection).toBeNull()
+    expect(body.enabled).toBe(true)
+    expect(body.defaults).toEqual({ provider: 'fixture', model: '' })
+    // Never a secret: credential state is a boolean here, the mask lives in overview.
+    expect(body.providers[0]?.models[0]?.durations).toEqual([5])
+    expect(typeof body.providers[0]?.credential.configured).toBe('boolean')
+  })
+
+  it('stores, reports and then forgets one conversation\'s choice', async () => {
+    const saved = await post('selection?session=session-write', { provider: 'fixture', model: MODEL.id, durationSeconds: 5, resolution: '720p', aspectRatio: '16:9' })
+    expect(saved.status).toBe(200)
+    expect((await saved.json() as { selection: unknown }).selection).toMatchObject({ provider: 'fixture', model: MODEL.id, durationSeconds: 5 })
+    const read = await (await fetch(url('session-write'))).json() as { selection: { resolution: string } | null }
+    expect(read.selection?.resolution).toBe('720p')
+    // It is on disk, not only in this process's memory.
+    const document = JSON.parse(await readFile(join(dirname(ledger.path), 'selections.json'), 'utf8')) as { sessions: Record<string, unknown> }
+    expect(Object.keys(document.sessions)).toContain('session-write')
+    const cleared = await fetch(url('session-write'), { method: 'DELETE' })
+    expect(cleared.status).toBe(200)
+    expect((await (await fetch(url('session-write'))).json() as { selection: unknown }).selection).toBeNull()
+  })
+
+  it('refuses a body that could not be a choice, without writing anything', async () => {
+    const before = await (await fetch(url('session-bad'))).json() as { selection: unknown }
+    expect((await post('selection?session=session-bad', { model: MODEL.id })).status).toBe(400)
+    expect((await post('selection?session=session-bad', { provider: 'fixture', model: MODEL.id, durationSeconds: -1 })).status).toBe(400)
+    expect((await post('selection?session=session-bad', { provider: 'x'.repeat(201) })).status).toBe(400)
+    expect((await (await fetch(url('session-bad'))).json() as { selection: unknown }).selection).toEqual(before.selection)
+  })
+
+  it('answers 405 for a method it does not accept', async () => {
+    expect((await fetch(url('session-patch'), { method: 'PATCH' })).status).toBe(405)
   })
 })

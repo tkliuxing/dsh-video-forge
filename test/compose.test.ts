@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { deliverArtifact } from '../src/destination.ts'
 import { Ledger, parseDocument } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { downloadArtifact } from '../src/download.ts'
 import { describeSetup, generate } from '../src/operations.ts'
 import { buildArkBody, readArkState } from '../src/providers/ark-seedance.ts'
@@ -61,6 +62,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
   const runtime: VideoForgeRuntime = {
     ctx: { get: (name: string) => (name === 'fs' ? hostWorkspaceFs : undefined) } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

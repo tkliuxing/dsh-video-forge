@@ -147,6 +147,7 @@ function bench(declared: readonly string[], withConfigForms = true, withSidebar 
 
 const ALL_SEATS = [
   'tool.call.toolview',
+  'conversation.input.right',
   'main',
   'sidebar.panellist',
   'shell.overlay',
@@ -185,6 +186,19 @@ describe('client apply', () => {
     expect(typeof injected.liveTasks.source).toBe('function')
     expect(typeof injected.liveTasks.cancel).toBe('function')
     expect(b.effects).toContain('video-forge: live task store')
+  })
+
+  it('puts the conversation\'s video chip in the composer tool row, under this plugin\'s copy', () => {
+    const b = bench(ALL_SEATS)
+    apply(b.ctx)
+    const chip = b.registrations.find(entry => entry.options['name'] === 'conversation.input.right')
+    // A fresh id keeps us beside the shipped entries instead of taking one over.
+    expect(chip?.options['id']).toBe('video-forge.model')
+    expect(chip?.options['locale']).toBe(NS)
+    expect(typeof chip?.options['order']).toBe('number')
+    expect(typeof chip?.component).toBe('function')
+    // One chip, not one per surface: nothing else claims that seat.
+    expect(b.registrations.filter(entry => entry.options['name'] === 'conversation.input.right')).toHaveLength(1)
   })
 
   it('keeps the floating entry to a badge with no owner props', () => {

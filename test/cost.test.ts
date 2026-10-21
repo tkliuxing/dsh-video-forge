@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { estimateGeneration, summarizeCost } from '../src/operations.ts'
 import { Ledger } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
@@ -51,6 +52,7 @@ function runtimeFor(ledger: Ledger, over: Partial<VideoForgeSettings> = {}): Vid
   return {
     ctx: { get: () => undefined } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

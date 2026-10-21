@@ -5,15 +5,17 @@ used entirely from a workspace conversation: ask for a shot, and the finished
 video lands in the workspace as `renders/<shot>/vNNN.mp4`. Every generation is
 tracked in a durable ledger, so a timeout or a restart never means paying twice.
 
-> **Status: M5 complete (2026-10-19).** Three model tools, two vendor protocols
+> **Status: M6 complete (2026-10-20).** Three model tools, two vendor protocols
 > plus an OpenAI-compatible one, the workspace as a video project, live chat
 > cards, restart recovery with a notice to the conversation, five bundled
-> `video-*` skills, cost visibility, and two places to watch the result: a
-> **Videos panel** in the right sidebar and **mp4 playback in the file viewer**.
-> Verified against an offline provider double and a live isolated DSH instance
-> (0.2.1-rc.2); real generations with ARK Seedance and MiniMax were run in M2.5.
-> Next: the public release. See `DESIGN.md` §14, §17–§19. There is no local
-> inference path by design — this plugin is a client of online models only.
+> `video-*` skills, cost visibility, a **Video model chip** in the composer (per
+> conversation: model, length, resolution, aspect ratio), and two places to watch
+> the result: a **Videos panel** in the right sidebar and **mp4 playback in the
+> file viewer**. Verified against an offline provider double and a live isolated
+> DSH instance (0.2.1-rc.2) in a real browser; real generations with ARK Seedance
+> and MiniMax were run in M2.5. Next: the public release. See `DESIGN.md` §14,
+> §17–§20. There is no local inference path by design — this plugin is a client
+> of online models only.
 
 ## In a conversation
 
@@ -138,6 +140,7 @@ several. The same config can be written by hand:
 
 | Where | What |
 |---|---|
+| Composer tool row | **Video model** chip: the model this conversation generates with, plus length / resolution / aspect ratio. It outranks `video-project.yaml` and the plugin settings; an argument you (or the model) pass still wins. "Auto" hands the decision back. Session-scoped: a new conversation starts at Auto |
 | Chat | One card per `video_generate` call that follows its task live: status and progress, a real `<video>` player once it finishes, where the file is (or that it was moved or deleted), a cancel button while the provider may still stop it, and two ways out — **Open in file viewer** on that video, **All videos** in the panel |
 | Right sidebar → **Videos** | Every video **in this workspace**, newest shot first: a row per take with its status, size and duration, the newest one open and playable. Work in flight and failures sit at the bottom; a clip found in `renders/` that the ledger does not know is listed as "file only". A video the plugin delivered outside the workspace is not listed at all — the panel is this project's videos, and the chat card still says where that one went. Read-only — it never submits or deletes anything |
 | Right sidebar → file viewer | Opening an `.mp4` (from the panel, the files tree, or a path in the conversation) plays it in the same tab as text and images, with the harness's own toolbar above it (reload, open in your video player) |

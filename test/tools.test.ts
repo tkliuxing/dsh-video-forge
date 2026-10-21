@@ -13,6 +13,7 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { registerTools } from '../src/tools.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
@@ -67,6 +68,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
   return {
     ctx,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),
@@ -261,6 +263,8 @@ describe('video_status / video_cancel', () => {
     expect(value.setup).toMatchObject({
       enabled: true,
       default_provider: 'ark',
+      // Nobody touched the composer chip in this conversation.
+      selection: null,
       providers: [{ id: 'ark', protocol: 'ark-seedance', key: 'not required', key_problem: null, continuable: true, models: [{ id: MODEL.id }] }],
       workspace: { state: 'default-layout', folder: WORKSPACE, mode: null, renders: 'renders', characters: [], style: false, problem: null },
     })
@@ -269,6 +273,25 @@ describe('video_status / video_cancel', () => {
     expect(text).toMatch(/no video-project\.yaml yet \(default layout\)/)
     const one = await status?.execute({ task_id: 'v-20261013-0009' }, exec) as { setup: unknown }
     expect(one.setup).toBeNull()
+  })
+
+  it('reports the conversation\'s video chip choice, so the model knows where a default came from', async () => {
+    const ledger = await makeLedger()
+    const runtime = runtimeFor(settingsWith(arkProvider(`${fixture.url}/api/v3`)), ledger)
+    await runtime.selections.set('session-test', { provider: 'ark', model: MODEL.id, durationSeconds: 5, resolution: null, aspectRatio: null })
+    definitions.clear()
+    registerTools(runtime)
+    const status = definitions.get('video_status')
+    const value = await status?.execute({}, exec) as { setup: { selection: unknown } | null }
+    expect(value.setup?.selection).toEqual({
+      provider: 'ark',
+      model: MODEL.id,
+      duration_seconds: 5,
+      resolution: null,
+      aspect_ratio: null,
+    })
+    const text = (status?.output.render?.({}, value as never) as { text: string }[])[0]?.text ?? ''
+    expect(text).toMatch(/this conversation's video chip: ark\/doubao-seedance-fixture, 5s — it outranks video-project\.yaml/)
   })
 
   it('explains an unknown task id', async () => {

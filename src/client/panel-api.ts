@@ -165,3 +165,68 @@ export function cancelGeneration(taskId: string): Promise<PanelResult<{ cancelle
     body: JSON.stringify({ taskId }),
   })
 }
+
+/**
+ * The conversation's video target, as the composer chip reads and writes it
+ * (M6, DESIGN §20).
+ *
+ * `null` for every field means "not chosen here": the tools then fall back to
+ * the arguments, `video-project.yaml`, and the plugin settings, in that order.
+ * The chip never guesses a model on the host's behalf, so a value it did not
+ * choose is never shown as if it had.
+ */
+export interface ChipSelection {
+  provider: string | null
+  model: string | null
+  durationSeconds: number | null
+  resolution: string | null
+  aspectRatio: string | null
+}
+
+/** One model as the chip offers it: the capability matrix and the label the operator reads. */
+export interface ChipModel {
+  id: string
+  label: string
+  modes: readonly string[]
+  durations: readonly number[]
+  resolutions: readonly string[]
+  aspectRatios: readonly string[]
+  cancelable: boolean
+}
+
+/** One provider with its credential state (a masked tail only) and its models. */
+export interface ChipProvider {
+  id: string
+  protocol: string
+  credential: { configured: boolean; masked: string | null; error: string | null }
+  models: readonly ChipModel[]
+}
+
+/** Everything the chip needs in one answer: the choice, the matrix, and the settings default. */
+export interface ChipOverview {
+  ok: true
+  session: string
+  enabled: boolean
+  selection: ChipSelection | null
+  defaults: { provider: string; model: string }
+  providers: readonly ChipProvider[]
+}
+
+/** The choice plus the model matrix, for one conversation. */
+export function fetchChip(sessionId: string, signal?: AbortSignal): Promise<PanelResult<ChipOverview>> {
+  return call<ChipOverview>(`selection?session=${encodeURIComponent(sessionId)}`, { method: 'GET', ...(signal === undefined ? {} : { signal }) })
+}
+
+/** Store the choice for one conversation. */
+export function saveChipSelection(sessionId: string, selection: ChipSelection): Promise<PanelResult<{ selection: ChipSelection | null }>> {
+  return call(`selection?session=${encodeURIComponent(sessionId)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(selection),
+  })
+}
+
+/** Forget the choice: the conversation goes back to the manifest and the settings. */
+export function clearChipSelection(sessionId: string): Promise<PanelResult<{ selection: null }>> {
+  return call(`selection?session=${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}

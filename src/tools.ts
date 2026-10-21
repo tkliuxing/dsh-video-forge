@@ -82,6 +82,25 @@ const SETUP_SCHEMA = {
     enabled: { type: 'boolean', required: true },
     default_provider: NULLABLE_STRING,
     default_model: NULLABLE_STRING,
+    // M6: what the composer chip chose for this conversation. Null means it
+    // chose nothing, which is the common case in a conversation nobody touched.
+    selection: {
+      required: true,
+      oneOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            provider: NULLABLE_STRING,
+            model: NULLABLE_STRING,
+            duration_seconds: { required: true, oneOf: [{ type: 'number' }, { type: 'null' }] },
+            resolution: NULLABLE_STRING,
+            aspect_ratio: NULLABLE_STRING,
+          },
+        },
+      ],
+    },
     providers: {
       type: 'array',
       required: true,
@@ -194,6 +213,15 @@ function setupValue(setup: SetupStatus) {
     enabled: setup.enabled,
     default_provider: setup.defaultProvider,
     default_model: setup.defaultModel,
+    selection: setup.selection === null
+      ? null
+      : {
+        provider: setup.selection.provider,
+        model: setup.selection.model,
+        duration_seconds: setup.selection.durationSeconds,
+        resolution: setup.selection.resolution,
+        aspect_ratio: setup.selection.aspectRatio,
+      },
     providers: setup.providers.map(provider => ({
       id: provider.id,
       protocol: provider.protocol,
@@ -223,6 +251,18 @@ function setupText(setup: ReturnType<typeof setupValue>): string {
     const marker = provider.id === setup.default_provider ? ' (default)' : ''
     lines.push(`provider ${provider.id}${marker} [${provider.protocol}], ${key}${provider.continuable ? ', takes can be continued with from' : ''}: ${provider.models.map(model => `${model.id} (${model.modes.join('/')})`).join(', ')}`)
   }
+  const chip = setup.selection
+  const chosen = chip === null
+    ? []
+    : [
+      chip.provider === null ? null : `${chip.provider}${chip.model === null ? '' : `/${chip.model}`}`,
+      chip.duration_seconds === null ? null : `${chip.duration_seconds}s`,
+      chip.resolution,
+      chip.aspect_ratio,
+    ].filter((part): part is string => part !== null)
+  lines.push(chosen.length === 0
+    ? 'this conversation\'s video chip chooses nothing: your arguments decide first, then video-project.yaml, then the plugin settings'
+    : `this conversation's video chip: ${chosen.join(', ')} — it outranks video-project.yaml and the plugin settings, and an argument you pass outranks it`)
   const workspace = setup.workspace
   if (workspace.state === 'none') lines.push('no workspace: videos stay in the plugin\'s own folder')
   else if (workspace.state === 'unavailable' || workspace.state === 'invalid-manifest') lines.push(`workspace ${workspace.folder ?? ''}: ${workspace.problem ?? workspace.state}`)
@@ -294,6 +334,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'Returns immediately with a task id and a background job id; the generation continues while you work, and its completion is delivered to you as a notice. Use video_status to check on it.',
       'Inputs: prompt (required), optional provider/model, mode t2v (text only), i2v (first_frame), flf2v (first_frame + last_frame) or s2v (reference_images).',
       'A local image is a path relative to the workspace (or absolute) that already exists; verify it with the read tool first.',
+      'When this call leaves provider, model, duration_seconds, resolution or aspect_ratio out, the video chip beside the composer may supply them (the user\'s per-conversation choice), and after that video-project.yaml, then the plugin settings. An argument always wins; the result names what the chip set, and video_status setup reports the current choice.',
       'shot names the take\'s folder under renders/. from continues an earlier take (its task id or video path): its last frame becomes the first frame and its shot carries over — only providers that return a last frame (ARK) can be continued.',
       'characters names characters registered in video-project.yaml: their descriptions are added to the prompt and their reference images are sent (mode s2v when you set no mode). The project style from video-project.yaml is added to every prompt.',
       'Never re-submit the same prompt to work around a timeout: call video_status instead. A duplicate submission inside the dedupe window is refused.',
@@ -395,7 +436,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
     name: 'video_status',
     description: [
       'List recent video generations with their provider, status, progress, error and (once finished) where the video is and its play URL.',
-      'Without task_id it also reports the setup (setup): configured providers and whether their keys are set, their models and modes, and this workspace (manifest, renders folder, characters, permission mode) — check it before a first generation or when one is refused.',
+      'Without task_id it also reports the setup (setup): configured providers and whether their keys are set, their models and modes, this conversation\'s video chip choice (selection), and this workspace (manifest, renders folder, characters, permission mode) — check it before a first generation or when one is refused.',
       'This is the recovery entry point: after a timeout, a host restart, or any doubt, check here instead of submitting the prompt again.',
       'moderation is set when the provider\'s content review refused the task (input or output side): the identical request is refused again, so rewrite the prompt or change the materials rather than retrying.',
       'billing is what the provider reported a finished task consumed (tokens for ARK, output seconds for MiniMax, every raw field under fields) — usage, not money; null until settled, "unknown" when the provider\'s seven-day query window closed first.',
@@ -474,7 +515,9 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       // into its context does not.
       const list = listTasks(runtime, { taskId: args.task_id, limit: Math.min(args.limit ?? 10, TOOL_TASK_ROWS) })
       const single = args.task_id !== undefined && args.task_id !== ''
-      const setup = single ? null : setupValue(await describeSetup(runtime, sessionContextOf(runtime.ctx, exec.agent), exec.signal))
+      const session = sessionContextOf(runtime.ctx, exec.agent)
+      const setup = single ? null : setupValue(await describeSetup(runtime, session, exec.signal))
+      const chip = session === null ? null : await runtime.selections.get(session.id)
       const cost = args.cost === true ? summarizeCost(runtime) : null
       const estimate = args.estimate !== undefined && args.estimate !== null
         ? estimateGeneration(runtime, {
@@ -483,7 +526,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
           durationSeconds: args.estimate.duration_seconds ?? null,
           resolution: args.estimate.resolution ?? null,
           aspectRatio: args.estimate.aspect_ratio ?? null,
-        })
+        }, chip)
         : null
       return {
         setup,

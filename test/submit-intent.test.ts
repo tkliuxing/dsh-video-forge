@@ -15,6 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger, parseDocument } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { generate, listTasks, SubmissionUnconfirmedError } from '../src/operations.ts'
 import { ProviderRequestError } from '../src/providers/adapter.ts'
 import { reconcile } from '../src/reconcile.ts'
@@ -81,6 +82,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): VideoForgeRun
     // No credentials service: the fixture is loopback, so the key is legitimately absent.
     ctx: { get: () => undefined } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

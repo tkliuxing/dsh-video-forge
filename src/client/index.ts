@@ -27,6 +27,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Each of these pulls the SlotMap declaration for one seat this plugin occupies:
 // without them a `register` call is typed against an incomplete slot map.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -42,6 +43,7 @@ import { ProgressBadge } from './badge.tsx'
 import { VideoActionRow, VideoGenerateRow, VideoStatusRow } from './cards.tsx'
 import { BUNDLE_CONFIG_SEAT, SETTINGS_TAB_SEAT, installConfigCard } from './config-card-seat.ts'
 import { createLiveTasks } from './live-tasks.ts'
+import { ModelChip } from './model-chip.tsx'
 import { loadPanel, type WorkspaceFilesRemoteLike } from './panel-data.ts'
 import { NS, en, zh, type VideoForgeKey } from './locales.ts'
 import { VideoPanel } from './video-panel.tsx'
@@ -166,6 +168,14 @@ export function apply(ctx: Context): void {
   // The tool is gone (M3.3), but conversations that called it still render.
   ctx.slots.inject('tool.call.toolview', () =>
     ctx.slots.register({ name: 'tool.call.toolview', key: 'video_export', locale: NS }, VideoActionRow))
+
+  // --- the conversation's video chip (M6) ---------------------------------
+  // A plain list entry in the composer's tool row: the per-conversation choice of
+  // provider, model, length, resolution and aspect ratio (DESIGN §20). An older
+  // host that does not declare this seat never runs the callback, and the tools
+  // keep resolving through the arguments, the manifest and the settings.
+  ctx.slots.inject('conversation.input.right', () =>
+    ctx.slots.register({ name: 'conversation.input.right', id: 'video-forge.model', order: 15, locale: NS }, ModelChip))
 
   // --- ambient progress badge ---------------------------------------------
   ctx.slots.inject('shell.overlay', () =>

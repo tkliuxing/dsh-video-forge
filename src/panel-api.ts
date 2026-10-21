@@ -6,6 +6,11 @@
  * here submits a generation or writes a file. Every endpoint calls the same
  * `operations.ts` functions the tools call.
  *
+ * The one write this family has is `selection` (M6): the composer chip stores
+ * the conversation's provider/model/geometry choice. It lands in the plugin's
+ * own `$DSH_HOME` document — not in a workspace file — which is what keeps the
+ * "no workbench" boundary intact.
+ *
  * Two rules this file exists to enforce:
  *
  * - **Never a secret, only a masked tail.** Credential state is reported as
@@ -18,9 +23,10 @@
 
 import { lstat, realpath, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { describeProviders, LedgerUnavailableError, listTasks, cancelTask, requireLedger, type TaskRow } from './operations.ts'
+import { describeProviders, LedgerUnavailableError, listTasks, cancelTask, requireLedger, selectionView, type TaskRow } from './operations.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
 import { adapterFor, cancelSupported } from './providers/index.ts'
+import { isSessionId, parseSelectionInput, SelectionError } from './selection.ts'
 import { ConfigError, resolveTarget } from './settings.ts'
 import { isTrustedRequest } from './trust.ts'
 import type { VideoTask } from './types.ts'
@@ -186,9 +192,40 @@ export function panelHandler(
         return
       }
 
+      // The composer chip's choice for one conversation (M6, DESIGN §20): read,
+      // write or forget it. GET also carries the model capability matrix the chip
+      // renders from, so a popover needs no second request — and the credential
+      // state, which is how a model whose key is missing gets marked as such.
+      if (action === 'selection') {
+        const session = sessionParam(url)
+        const settings = runtime.settings()
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          sendJson(res, 200, {
+            ok: true,
+            session,
+            enabled: settings.enabled,
+            selection: selectionView(await runtime.selections.get(session)),
+            defaults: { provider: settings.defaultProvider, model: settings.defaultModel },
+            providers: await describeProviders(runtime),
+          })
+          return
+        }
+        if (req.method === 'POST') {
+          const saved = await runtime.selections.set(session, parseSelectionInput(await readJsonBody(req)))
+          sendJson(res, 200, { ok: true, session, selection: selectionView(saved) })
+          return
+        }
+        if (req.method === 'DELETE') {
+          await runtime.selections.clear(session)
+          sendJson(res, 200, { ok: true, session, selection: null })
+          return
+        }
+        return sendError(res, 405, 'method not allowed')
+      }
+
       sendError(res, 404, `unknown video-forge action "${action}"`)
     } catch (error: unknown) {
-      if (error instanceof RequestError) {
+      if (error instanceof RequestError || error instanceof SelectionError) {
         sendError(res, 400, error.message)
         return
       }
@@ -203,6 +240,25 @@ export function panelHandler(
       sendError(res, 400, message)
     }
   }
+}
+
+/**
+ * The conversation a `selection` call is about.
+ *
+ * The chip always knows its session; a request without one is not a chip, and
+ * silently defaulting it would write a choice into a conversation that never
+ * made it.
+ */
+function sessionParam(url: URL): string {
+  const raw = url.searchParams.get('session')
+  if (raw === null || raw.trim() === '') {
+    throw new RequestError('session is required: a selection belongs to one conversation')
+  }
+  const session = raw.trim()
+  if (!isSessionId(session)) {
+    throw new RequestError('session must be a session id (no whitespace, at most 200 characters)')
+  }
+  return session
 }
 
 /** Whether `video_cancel` could ask the provider to stop this task (configuration as it is now). */

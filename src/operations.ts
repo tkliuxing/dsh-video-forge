@@ -35,6 +35,7 @@ import { compose } from './compose.ts'
 import { describeLocation, planDestination, workspaceRefusal } from './destination.ts'
 import { LedgerCorruptError } from './ledger.ts'
 import { DEFAULT_SHOT, isShotName, MANIFEST_FILE, ManifestError, readProject, type ProjectState } from './project.ts'
+import type { SessionSelection } from './selection.ts'
 import type { TaskSession } from './session-context.ts'
 import { workspaceFsOf } from './workspace-fs.ts'
 
@@ -115,20 +116,26 @@ export async function generate(
   // `from`, characters and the project style, applied by the tool itself.
   const composition = await compose(runtime, input, project, session, options.signal)
   const shot = requestedShot ?? composition.inheritedShot ?? DEFAULT_SHOT
-  const applied = withProjectDefaults(composition.input, project)
+  // DESIGN §20: the conversation's own choice (the composer chip) outranks the
+  // workspace manifest, and the tool's arguments outrank both. Filled in that
+  // order, so a field a higher layer set is never overwritten by a lower one.
+  const chosen = withSessionSelection(composition.input, session === null ? null : await runtime.selections.get(session.id))
+  const applied = withProjectDefaults(chosen.input, project)
+  const filled = mergeFilled(chosen, applied)
+  const chipNote = selectionProblem(runtime, session)
   const destination = await planDestination(runtime.ctx, session, project, shot)
 
   let target: ReturnType<typeof resolveTarget>
   try {
-    target = resolveTarget(settings, applied.input.provider ?? null, applied.input.model ?? null)
+    target = resolveTarget(settings, filled.input.provider ?? null, filled.input.model ?? null)
   } catch (error: unknown) {
-    if (error instanceof ConfigError && applied.target.length > 0) {
-      throw new ConfigError(`${error.message} (${applied.target.join(' and ')} came from the defaults in ${MANIFEST_FILE})`)
+    if (error instanceof ConfigError && filled.target !== null) {
+      throw new ConfigError(`${error.message} (provider and model came from ${defaultSourceText(filled.target)})`)
     }
     throw error
   }
   const { provider, model } = target
-  const request = normaliseRequest(applied.input)
+  const request = normaliseRequest(filled.input)
   if (composition.impliedS2v && !supportsMode(model, 's2v')) {
     throw new ConfigError(`the characters' reference images need mode s2v, which model "${model.id}" does not support; pass mode t2v to send only their descriptions, or choose a model with s2v`)
   }
@@ -142,8 +149,9 @@ export async function generate(
       aspectRatio: request.aspectRatio,
     })
   } catch (error: unknown) {
-    if (error instanceof ConfigError && applied.from.length > 0) {
-      throw new ConfigError(`${error.message} (${applied.from.join(', ')} came from the defaults in ${MANIFEST_FILE})`)
+    const clause = fieldsClause(filled.fields)
+    if (error instanceof ConfigError && clause !== null) {
+      throw new ConfigError(`${error.message} (${clause})`)
     }
     throw error
   }
@@ -244,6 +252,7 @@ export async function generate(
   const final = runtime.ledger.byId(task.localId) ?? task
   const artifact = final.artifacts[0] ?? null
   const done = final.status === 'succeeded' && artifact !== null
+  const chipLine = chipContribution(chosen, provider, model, request)
   return {
     task: final,
     jobId: done ? null : jobId,
@@ -256,6 +265,8 @@ export async function generate(
           ? describe(final).trim()
           : `submitted ${final.localId} (${provider.id}/${model.id})${destination.kind === 'workspace' ? ` for ${destination.renders}/${destination.shot}/` : ''}; track it with video_status — do not re-submit`,
       ...composition.notes,
+      ...(chipLine === null ? [] : [chipLine]),
+      ...(chipNote === null ? [] : [chipNote]),
     ].join('; '),
   }
 }
@@ -609,6 +620,18 @@ export interface SetupStatus {
   enabled: boolean
   defaultProvider: string | null
   defaultModel: string | null
+  /**
+   * What this conversation's composer chip chose (M6, DESIGN §20), or null when
+   * it chose nothing — then the arguments, `video-project.yaml` and the plugin
+   * settings decide, in that order.
+   */
+  selection: {
+    provider: string | null
+    model: string | null
+    durationSeconds: number | null
+    resolution: string | null
+    aspectRatio: string | null
+  } | null
   providers: {
     id: string
     protocol: string
@@ -680,8 +703,21 @@ export async function describeSetup(runtime: VideoForgeRuntime, session: TaskSes
     enabled: settings.enabled,
     defaultProvider: settings.defaultProvider === '' ? null : settings.defaultProvider,
     defaultModel: settings.defaultModel === '' ? null : settings.defaultModel,
+    selection: session === null ? null : selectionView(await runtime.selections.get(session.id)),
     providers,
     workspace,
+  }
+}
+
+/** The chip's choice as `video_status` reports it: no timestamp, and null when it chose nothing. */
+export function selectionView(selection: SessionSelection | null): SetupStatus['selection'] {
+  if (selection === null) return null
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    durationSeconds: selection.durationSeconds,
+    resolution: selection.resolution,
+    aspectRatio: selection.aspectRatio,
   }
 }
 
@@ -780,37 +816,69 @@ export interface GenerationEstimate {
   note: string
 }
 
-/** Estimate what a generation would cost, without submitting anything. */
+/**
+ * Estimate what a generation would cost, without submitting anything.
+ *
+ * `selection` is the conversation's chip (M6): it supplies only what the request
+ * leaves out, exactly as {@link generate} resolves the same chain, so the
+ * estimate priced here is the request that would actually be sent.
+ */
 export function estimateGeneration(
   runtime: VideoForgeRuntime,
   request: { providerId: string | null; modelId: string | null; durationSeconds: number | null; resolution: string | null; aspectRatio: string | null },
+  selection: SessionSelection | null = null,
 ): GenerationEstimate {
   const settings = runtime.settings()
   const table = settings.priceTable
-  const tail = `estimate only (${table.currency}, prices as of ${table.pricedAt}) — the provider bill is authoritative`
+  const fromChip: string[] = []
+  // Provider and model travel as a pair: a model the chip chose must not be
+  // paired with a provider the caller named.
+  let providerId = request.providerId
+  let modelId = request.modelId
+  if (providerId === null && selection !== null && selection.provider !== null) {
+    providerId = selection.provider
+    modelId = selection.model
+    fromChip.push(selection.model === null ? selection.provider : `${selection.provider}/${selection.model}`)
+  }
+  let durationSeconds = request.durationSeconds
+  if (durationSeconds === null && selection !== null && selection.durationSeconds !== null) {
+    durationSeconds = selection.durationSeconds
+    fromChip.push(`${selection.durationSeconds}s`)
+  }
+  let resolution = request.resolution
+  if (resolution === null && selection !== null && selection.resolution !== null) {
+    resolution = selection.resolution
+    fromChip.push(selection.resolution)
+  }
+  let aspectRatio = request.aspectRatio
+  if (aspectRatio === null && selection !== null && selection.aspectRatio !== null) {
+    aspectRatio = selection.aspectRatio
+    fromChip.push(selection.aspectRatio)
+  }
+  const tail = `estimate only (${table.currency}, prices as of ${table.pricedAt})${fromChip.length === 0 ? '' : ` — ${fromChip.join(', ')} from the video chip in this conversation`} — the provider bill is authoritative`
   let target: { provider: ProviderSetting; model: ModelSetting }
   try {
-    target = resolveTarget(settings, request.providerId, request.modelId)
+    target = resolveTarget(settings, providerId, modelId)
   } catch (error) {
     return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: error instanceof Error ? error.message : String(error) }
   }
   const { provider, model } = target
   if (provider.protocol === 'ark-seedance') {
-    const tokens = estimateArkTokens(request.resolution, request.aspectRatio, request.durationSeconds)
+    const tokens = estimateArkTokens(resolution, aspectRatio, durationSeconds)
     if (tokens === null) {
-      return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `cannot estimate ARK tokens for ${request.resolution ?? '?'}/${request.aspectRatio ?? '?'} — only 16:9, 9:16 and 1:1 at 480p/720p/1080p/4k are estimated; ${tail}` }
+      return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `cannot estimate ARK tokens for ${resolution ?? '?'}/${aspectRatio ?? '?'} — only 16:9, 9:16 and 1:1 at 480p/720p/1080p/4k are estimated; ${tail}` }
     }
     const price = unitPrice(table, provider.id, model.id, 'token')
     if (price === null) return { amount: null, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `no token price row for ${provider.id}/${model.id}; ${tail}` }
     return { amount: tokens * price, unit: 'token', currency: table.currency, pricedAt: table.pricedAt, note: `≈${tokens} tokens × ${price} ${table.currency}/token; ${tail}` }
   }
   if (provider.protocol === 'minimax-video') {
-    if (request.durationSeconds === null) {
+    if (durationSeconds === null) {
       return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `a duration_seconds is required to estimate MiniMax; ${tail}` }
     }
     const price = unitPrice(table, provider.id, model.id, 'second')
     if (price === null) return { amount: null, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `no second price row for ${provider.id}/${model.id}; ${tail}` }
-    return { amount: request.durationSeconds * price, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `${request.durationSeconds}s × ${price} ${table.currency}/s; ${tail}` }
+    return { amount: durationSeconds * price, unit: 'second', currency: table.currency, pricedAt: table.pricedAt, note: `${durationSeconds}s × ${price} ${table.currency}/s; ${tail}` }
   }
   return { amount: null, unit: null, currency: table.currency, pricedAt: table.pricedAt, note: `no estimate for protocol ${provider.protocol}; ${tail}` }
 }
@@ -1037,39 +1105,148 @@ async function readSessionProject(
 }
 
 /**
- * Fill what the request leaves out from the manifest's defaults. Provider and
- * model come as a pair, and only when the request names neither: a model id
- * from the manifest must not be paired with a provider the request chose.
+ * Which layer supplied a field the request left out (DESIGN §20). Every layer
+ * below the arguments is named in a refusal, because a default that no one
+ * mentions is how a 10-second shot quietly becomes 5 seconds.
  */
-function withProjectDefaults(input: GenerateInput, project: ProjectState | null): { input: GenerateInput; from: string[]; target: string[] } {
-  if (project === null) return { input, from: [], target: [] }
-  const defaults = project.manifest.defaults
-  const from: string[] = []
-  const target: string[] = []
+export type DefaultSource = 'conversation' | 'manifest'
+
+/** The geometry a layer may fill in, and the request fields they live in. */
+type GeometryField = 'duration_seconds' | 'resolution' | 'aspect_ratio'
+
+/** One layer's contribution: the input after it, and what it supplied. */
+interface Filled {
+  input: GenerateInput
+  /** Set when this layer supplied the provider/model pair. */
+  target: DefaultSource | null
+  /** The geometry fields this layer supplied, each with the layer that did. */
+  fields: Partial<Record<GeometryField, DefaultSource>>
+}
+
+/**
+ * Fill what the request leaves out from the conversation's own choice — the
+ * composer chip (M6). Provider and model travel as a pair, and only when the
+ * request names neither: a model the chip chose must not be paired with a
+ * provider the model passed as an argument.
+ */
+export function withSessionSelection(input: GenerateInput, selection: SessionSelection | null): Filled {
+  if (selection === null) return { input, target: null, fields: {} }
   const next: GenerateInput = { ...input }
+  const fields: Filled['fields'] = {}
+  let target: DefaultSource | null = null
+  if (blankToNull(input.provider) === null && blankToNull(input.model) === null && selection.provider !== null) {
+    next.provider = selection.provider
+    if (selection.model !== null) next.model = selection.model
+    target = 'conversation'
+  }
+  if (blankToNull(input.resolution) === null && selection.resolution !== null) {
+    next.resolution = selection.resolution
+    fields.resolution = 'conversation'
+  }
+  if (blankToNull(input.aspectRatio) === null && selection.aspectRatio !== null) {
+    next.aspectRatio = selection.aspectRatio
+    fields.aspect_ratio = 'conversation'
+  }
+  if ((input.durationSeconds === undefined || input.durationSeconds === null) && selection.durationSeconds !== null) {
+    next.durationSeconds = selection.durationSeconds
+    fields.duration_seconds = 'conversation'
+  }
+  return { input: next, target, fields }
+}
+
+/**
+ * Fill what the request leaves out from the manifest's defaults. Same pairing
+ * rule as above: a model id from the manifest must not be paired with a
+ * provider the request chose.
+ */
+export function withProjectDefaults(input: GenerateInput, project: ProjectState | null): Filled {
+  if (project === null) return { input, target: null, fields: {} }
+  const defaults = project.manifest.defaults
+  const fields: Filled['fields'] = {}
+  const next: GenerateInput = { ...input }
+  let target: DefaultSource | null = null
   if (blankToNull(input.provider) === null && blankToNull(input.model) === null) {
-    if (defaults.provider !== null) {
-      next.provider = defaults.provider
-      target.push('provider')
-    }
-    if (defaults.model !== null) {
-      next.model = defaults.model
-      target.push('model')
-    }
+    if (defaults.provider !== null) next.provider = defaults.provider
+    if (defaults.model !== null) next.model = defaults.model
+    if (defaults.provider !== null || defaults.model !== null) target = 'manifest'
   }
   if (blankToNull(input.resolution) === null && defaults.resolution !== null) {
     next.resolution = defaults.resolution
-    from.push('resolution')
+    fields.resolution = 'manifest'
   }
   if (blankToNull(input.aspectRatio) === null && defaults.aspectRatio !== null) {
     next.aspectRatio = defaults.aspectRatio
-    from.push('aspect_ratio')
+    fields.aspect_ratio = 'manifest'
   }
   if ((input.durationSeconds === undefined || input.durationSeconds === null) && defaults.durationSeconds !== null) {
     next.durationSeconds = defaults.durationSeconds
-    from.push('duration_seconds')
+    fields.duration_seconds = 'manifest'
   }
-  return { input: next, from, target }
+  return { input: next, target, fields }
+}
+
+/**
+ * Combine the layers, which were applied in order: the earlier layer's input is
+ * already in the later layer's, so only the attributions need merging, and the
+ * higher layer wins one.
+ */
+export function mergeFilled(first: Filled, ...rest: Filled[]): Filled {
+  let target: DefaultSource | null = first.target
+  let fields: Filled['fields'] = first.fields
+  let input: GenerateInput = first.input
+  for (const layer of rest) {
+    input = layer.input
+    target = target ?? layer.target
+    fields = { ...layer.fields, ...fields }
+  }
+  return { input, target, fields }
+}
+
+/** How a layer reads inside a refusal: the thing the user would go and change. */
+export function defaultSourceText(source: DefaultSource): string {
+  return source === 'conversation' ? 'the video chip in this conversation' : `the defaults in ${MANIFEST_FILE}`
+}
+
+/** Name every filled geometry field with the layer that supplied it, or null when none was filled. */
+export function fieldsClause(fields: Filled['fields']): string | null {
+  const groups = new Map<DefaultSource, string[]>()
+  for (const [field, source] of Object.entries(fields) as [GeometryField, DefaultSource][]) {
+    const names = groups.get(source) ?? []
+    names.push(field)
+    groups.set(source, names)
+  }
+  if (groups.size === 0) return null
+  return [...groups.entries()]
+    .map(([source, names]) => `${names.join(', ')} came from ${defaultSourceText(source)}`)
+    .join('; ')
+}
+
+/**
+ * What the video chip contributed to this request, as one clause of the tool
+ * result. The model is the reader: it must be able to tell that a value came
+ * from somewhere other than its own arguments, or it will keep composing takes
+ * against a duration the user set in the composer.
+ */
+export function chipContribution(
+  chosen: Filled,
+  provider: ProviderSetting,
+  model: ModelSetting,
+  request: NormalisedRequest,
+): string | null {
+  const parts: string[] = []
+  if (chosen.target === 'conversation') parts.push(`${provider.id}/${model.id}`)
+  if (chosen.fields.duration_seconds === 'conversation' && request.durationSeconds !== null) parts.push(`${request.durationSeconds}s`)
+  if (chosen.fields.resolution === 'conversation' && request.resolution !== null) parts.push(request.resolution)
+  if (chosen.fields.aspect_ratio === 'conversation' && request.aspectRatio !== null) parts.push(request.aspectRatio)
+  if (parts.length === 0) return null
+  return `the video chip in this conversation set ${parts.join(', ')} — pass provider/model/duration_seconds/resolution/aspect_ratio explicitly to override it for one take`
+}
+
+/** A note when the conversation's choice could not be read at all, or null. */
+function selectionProblem(runtime: VideoForgeRuntime, session: TaskSession | null): string | null {
+  if (session === null) return null
+  const problem = runtime.selections.readProblem()
+  return problem === null ? null : `${problem}: this take used the arguments, then video-project.yaml, then the plugin settings`
 }
 
 function blankToNull(value: string | undefined): string | null {

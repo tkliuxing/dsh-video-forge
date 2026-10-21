@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger, parseDocument } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { generate, listTasks } from '../src/operations.ts'
 import { moderationOf } from '../src/providers/adapter.ts'
 import { arkVideosAdapter } from '../src/providers/ark-seedance.ts'
@@ -42,6 +43,7 @@ function runtimeFor(fake: Fixture, ledger: Ledger): VideoForgeRuntime {
   return {
     ctx: { get: () => undefined } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

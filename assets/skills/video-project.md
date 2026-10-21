@@ -23,7 +23,7 @@
 
 ```yaml
 version: 1
-defaults:                 # 只在请求漏填时才用
+defaults:                 # 只在请求（和对话栏 chip）漏填时才用
   provider: ark           # 插件设置里的供应商 id
   model: seedance-2.0-mini
   resolution: 720p
@@ -43,6 +43,7 @@ paths:                    # 把布局映射到你自己的目录（都是工作�
 ```
 
 规则：
+- **优先级**：`video_generate` 的显式参数 > 对话栏的「视频模型」chip（会话级选择）> 清单 `defaults` > 插件设置的默认供应商/模型。所以本会话若在 chip 里选过模型，清单的 `defaults.provider`/`model` 不生效；工具结果会写明哪个值来自 chip。
 - `paths` 的值必须是工作区相对路径；绝对路径、`~`、`..` 都会被拒绝。
 - 不认识的**顶层**键会被忽略（给未来版本留余地）；`defaults`、`paths`、某个角色**里面**的不认识键会被拒绝——当拼写错误处理（`render:` 写成了 `renders:`）。
 - 解析不了的清单在提交前就被拒绝（不会花钱）。

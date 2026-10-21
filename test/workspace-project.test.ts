@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { deliverArtifact, publish } from '../src/destination.ts'
 import { Ledger, parseDocument } from '../src/ledger.ts'
+import { SelectionStore, type SelectionInput, type SessionSelection } from '../src/selection.ts'
 import { mediaHandler } from '../src/media-route.ts'
 import { generate, listTasks } from '../src/operations.ts'
 import { retryOrphans } from '../src/reconcile.ts'
@@ -94,6 +95,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger, host: Host): V
   const runtime: VideoForgeRuntime = {
     ctx: contextFor(host),
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),
@@ -473,6 +475,60 @@ describe('review fixes (M3.2 round 1)', () => {
     await writeFile(join(workspace, 'video-project.yaml'), 'defaults: { model: no-such-model }\n')
     await expect(generate(runtime, { prompt: 'x' }, { session: session(workspace) })).rejects.toThrowError(/model came from the defaults in video-project\.yaml/)
     expect(posts(fake)).toBe(0)
+  })
+
+  // --- the conversation's video chip (M6, DESIGN §20) ----------------------
+  // The chain: the tool's arguments, then the chip, then the manifest, then the
+  // plugin settings. These pin the middle edges, which is where a quiet default
+  // would otherwise change a paid request.
+
+  /** Store a choice for one conversation, the way the composer chip does. */
+  const chip = (runtime: VideoForgeRuntime, id: string, over: Partial<SelectionInput> = {}): Promise<SessionSelection> =>
+    runtime.selections.set(id, { provider: null, model: null, durationSeconds: null, resolution: null, aspectRatio: null, ...over })
+
+  it('the video chip outranks the manifest, and an argument outranks the chip', async () => {
+    const { runtime, workspace } = await setup()
+    await writeFile(join(workspace, 'video-project.yaml'), 'defaults: { resolution: 720p }\n')
+    await chip(runtime, 'session-1', { resolution: '480p' })
+    const fromChip = await generate(runtime, { prompt: 'chip wins' }, { session: session(workspace) })
+    expect(fromChip.task.params.resolution).toBe('480p')
+    // The same call with the argument present ignores the chip.
+    const fromArgument = await generate(runtime, { prompt: 'argument wins', resolution: '720p' }, { session: session(workspace) })
+    expect(fromArgument.task.params.resolution).toBe('720p')
+    // And the manifest is still the layer below the chip: no chip, 720p again.
+    expect(await runtime.selections.clear('session-1')).toBe(true)
+    const fromManifest = await generate(runtime, { prompt: 'manifest wins', shot: 'second' }, { session: session(workspace) })
+    expect(fromManifest.task.params.resolution).toBe('720p')
+  })
+
+  it('the result says what the chip supplied, so a default is never silent', async () => {
+    const { runtime, workspace } = await setup()
+    await chip(runtime, 'session-1', { provider: 'ark', model: MODEL.id, resolution: '480p' })
+    const outcome = await generate(runtime, { prompt: 'named source' }, { session: session(workspace) })
+    expect(outcome.message).toMatch(/the video chip in this conversation set ark\/doubao-seedance-fixture, 480p/)
+    expect(outcome.message).toMatch(/to override it for one take/)
+  })
+
+  it('a chip value the model does not declare is refused unpaid, naming the chip', async () => {
+    const { fake, runtime, workspace } = await setup()
+    await chip(runtime, 'session-1', { resolution: '1080p' })
+    await expect(generate(runtime, { prompt: 'x' }, { session: session(workspace) })).rejects.toThrowError(/resolution came from the video chip in this conversation/)
+    expect(posts(fake)).toBe(0)
+  })
+
+  it('a chip model that has left the settings is refused unpaid, naming the chip rather than falling back', async () => {
+    const { fake, runtime, workspace } = await setup()
+    await chip(runtime, 'session-1', { provider: 'ark', model: 'no-such-model' })
+    await expect(generate(runtime, { prompt: 'x' }, { session: session(workspace) })).rejects.toThrowError(/provider and model came from the video chip in this conversation/)
+    expect(posts(fake)).toBe(0)
+  })
+
+  it('a chip choice belongs to its own conversation', async () => {
+    const { runtime, workspace } = await setup()
+    await writeFile(join(workspace, 'video-project.yaml'), 'defaults: { resolution: 720p }\n')
+    await chip(runtime, 'session-1', { resolution: '480p' })
+    const elsewhere = await generate(runtime, { prompt: 'another conversation' }, { session: session(workspace, 'workspace-write', 'session-2') })
+    expect(elsewhere.task.params.resolution).toBe('720p')
   })
 
   it('a dangling link or an unwritable folder in the way is refused before submitting', async () => {

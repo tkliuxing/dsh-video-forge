@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startFixture, type Fixture } from '../fixtures/provider.ts'
 import { Ledger } from '../src/ledger.ts'
+import { SelectionStore } from '../src/selection.ts'
 import { reconcile, recoverableOrphans, retryOrphans, scheduleReconciliation, settleBilling, type ReconcileHost } from '../src/reconcile.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
@@ -79,6 +80,7 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger): { runtime: Vi
   const runtime: VideoForgeRuntime = {
     ctx: { get: (name: string) => (name === 'credentials' && published ? credentials : undefined) } as unknown as Context,
     ledger,
+    selections: new SelectionStore({ path: join(ledger.home, 'selections.json') }),
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     settings: () => settings,
     outputRoot: () => join(ledger.home, 'outputs'),

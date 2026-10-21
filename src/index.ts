@@ -29,6 +29,7 @@ import { artifactUrl, jobTableFor, pluginHome, watchTableFor, type VideoForgeRun
 import { reconcile, retryOrphans, scheduleReconciliation, settleBilling } from './reconcile.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { requireLedger } from './operations.ts'
+import { sharedSelections } from './selection.ts'
 import { registerSkills } from './skills.ts'
 import { registerTools } from './tools.ts'
 import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
@@ -65,9 +66,14 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   /** The job watching each task, while it lives; only a kill through the registry is told apart by it. */
   const jobTasks = jobTableFor(ledger.path)
 
+  // The composer chip's per-conversation choice. Also shared per file: two
+  // instances on one document would each flush their own copy.
+  const selections = sharedSelections({ path: join(pluginHome(home), 'selections.json') })
+
   const runtime: VideoForgeRuntime = {
     ctx,
     ledger,
+    selections,
     logger,
     settings: () => {
       const value = snapshot(config)

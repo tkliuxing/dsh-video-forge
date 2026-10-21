@@ -7,6 +7,7 @@ import { join, resolve as resolvePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import type { Ledger } from './ledger.ts'
+import type { SelectionStore } from './selection.ts'
 import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from './settings.ts'
 import type { VideoArtifact, VideoTask } from './types.ts'
 import type { WatchLogger } from './watch.ts'
@@ -14,6 +15,12 @@ import type { WatchLogger } from './watch.ts'
 export interface VideoForgeRuntime {
   readonly ctx: Context
   readonly ledger: Ledger
+  /**
+   * The per-conversation choice the composer chip writes (M6, DESIGN §20). It
+   * sits between the tool's own arguments and `video-project.yaml` in the target
+   * resolution chain.
+   */
+  readonly selections: SelectionStore
   readonly logger: WatchLogger
   /** Current plain config snapshot; re-read per operation so live edits apply. */
   settings(): VideoForgeSettings

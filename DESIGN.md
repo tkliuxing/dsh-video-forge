@@ -35,6 +35,7 @@
 | P11 | 工具与 skill | **工具 3 个**（`video_generate` / `video_status` / `video_cancel`）+ **随插件附带 5 个 skill**（`video-project` / `video-prompting` / `video-storyboard` / `video-iterate` / `video-guide`） | 用户决策（2026-10-15）；DSH 的 `ctx.skills` 支持插件注册提供方；见 §16.3 |
 | P12 | 成本可见性 | 台账保存供应商用量；金额 = 用量 × 价格表（**预设参考价，用户可改**）；事前估算**只在被问时**给 | 用户决策（2026-10-15）；两家接口都不返回金额；见 §16.5 |
 | P13 | 下一阶段 | **先做真实通道验证（M2.5）**，用方舟 Seedance 与 MiniMax 的真实 key | 用户决策（2026-10-15）；三个协议至今只对 fixture 验证过 |
+| P14 | 会话级模型选择 | **对话栏 chip**：`conversation.input.right` 上一个控件，为本会话选供应商/模型 + 时长/分辨率/画幅；优先级 **显式参数 > chip > 清单 `defaults` > 插件设置**；**本版包含参数菜单** | 用户决策（2026-10-20）；见 §20 |
 
 **默认项（本文直接定，不再讨论）**
 
@@ -89,7 +90,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 │   ├── trust.ts                # 面板 API 的信任门（回环 / 已配对设备）
 │   ├── media-route.ts          # token 化媒体路由（GET/HEAD + Range/206，工作区文件的句柄校验）
 │   ├── stream-route.ts         # 同源 Range 流路由（/api/video-forge/stream，M5；§9、§19）
-│   └── panel-api.ts            # 面板 API /video-forge/api/{overview,cancel}
+│   └── panel-api.ts            # 面板 API /video-forge/api/{overview,cancel,selection}
 ├── src/client/                 # Client 半区
 │   ├── index.ts                # 座位注册：toolview 卡片 / overlay badge / 配置卡；实时任务 store
 │   ├── cards.tsx               # 工具卡片（生成卡片跟随实时状态）
@@ -162,7 +163,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 
 ## 5. 能力面 B：浏览器界面
 
-> 2026-10-16 起本节描述 M3.4 之后的实现。**没有单独的工作台页**：视频只在对话里生成（§16.4），浏览器这一侧不能提交生成，也不写文件。
+> 2026-10-16 起本节描述 M3.4 之后的实现。**没有单独的工作台页**：视频只在对话里生成（§16.4），浏览器这一侧不能提交生成，也不写工作区文件。M6 起它有一处**自己的**写：对话栏 chip 的会话选择落到 `$DSH_HOME/dsh-video-forge/selections.json`（§20），仍然不碰工作区、不提交生成。
 
 | slot | 用途 |
 |---|---|
@@ -171,6 +172,7 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 | `plugins.bundle.config`（主）→ `settings.plugins.tab`（回退） | 供应商与模型配置：从预设目录里挑（可加多个）、协议/默认供应商/默认模型都是选项、Base URL、Key（掩码显示 + 可写入）、模型能力矩阵（§8.1） |
 | `sidebar.right.pane.tab`（M5） | 「视频」面板：右侧栏的 page tab，按镜头分组列出本工作区的成片、进行中与失败的片子，展开即播（§19） |
 | `sidebar.right.tab.document`（M5） | 文件查看器的 mp4 渲染器：`renders/` 里的片子直接在同一个 tab 里播，工具栏仍是宿主那一套 |
+| `conversation.input.right`（M6） | 「视频模型」chip：本会话的供应商/模型 + 时长/分辨率/画幅，点开是模型列表与参数菜单；未选就是"自动"，交给清单与设置（§20） |
 
 **实时卡片**（`src/client/live-tasks.ts`、`src/client/cards.tsx`）：工具卡片拿到的数据在结果出来后就冻结了，所以生成卡片另从插件注入的 `liveTasks` 读取实时状态——注册时 `inject: () => ({ liveTasks })`（与 `ui-deliverables` 同一做法），卡片用 `useSyncExternalStore` 订阅。
 
@@ -190,10 +192,11 @@ dsh-video-studio/               # 目录名；npm 包名 = dsh-video-forge
 
 卡片只从 `ToolCallBlock` 的 args / content / meta 和注入的 `liveTasks` 派生，畸形输入回退为通用行。媒体播放走 §9 的自建路由。
 
-**面板 API**：`/video-forge/api/{overview,cancel}`。
+**面板 API**：`/video-forge/api/{overview,cancel,selection}`。
 
 - `overview`：不带参数时给配置卡和 badge 用（设置、供应商与凭据状态、任务列表、用量）；带 `taskId` 时只返回该任务的行和 `artifactState`（视频是否仍在写入时的位置），不查凭据。空 `taskId` 返回 400，未知任务返回 404，先等台账读完再回答。
 - `cancel`：与 `video_cancel` 同一个函数。
+- `selection`（M6）：chip 的读写。`GET` 回本会话的选择 + 模型能力矩阵 + 供应商凭据状态 + 插件的默认供应商/模型；`POST` 存一份选择（形状与取值校验，provider 与 model 必须成对）；`DELETE` 忘掉它。会话 id 必须给（`?session=`），缺了就是 400——chip 永远知道自己属于哪个会话，猜一个会把选择写进没选过的对话。
 - `generate` 与 `export` 已删除。
 
 > **信任门**：harness 只认证自己的 index 与 bundle，不拦插件路由，所以这一族自带闸门：本机回环放行，已配对设备放行（`remoteWebUiPairing` 在时），未配对的局域网浏览器 403；以 socket 地址为准，`X-Forwarded-For` 永不采信，并要求浏览器的同源标记。媒体路由用 128-bit token 授权，两者策略不同，理由都已写明。
@@ -1155,3 +1158,100 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 | 切到「全部」 | 仍是同一组三行、同样计数，播种行依旧不出现（范围改的是归属，不是这条底线） |
 
 **没被真浏览器覆盖的**：`unmapped` 那句话（宿主端不上报路径）需要让客户端与宿主端来自不同构建，隔离实例里两边一致，所以只有 jsdom 覆盖（`test/client-video-panel.test.tsx` 两条 + 模型测试两条）。另外中文文案没在浏览器里看（实例语言是英文），只由字典的 `Record<VideoForgeKey,string>` 类型保证中英键集一致。
+
+## 20. M6 实施记录：对话栏的视频模型 chip（2026-10-20）
+
+**动机**：在这之前，"这次用哪个模型"只能在对话里说（`video_generate` 的 `provider`/`model` 参数），一次性的，而且**没有一眼可见的"当前用谁"**。配置卡管的是全局默认（填 key 必须它），清单管的是项目默认；缺的是"这个对话现在用什么"。
+
+用户 2026-10-20 拍板的三条即 P14：
+
+| 项 | 决定 |
+|---|---|
+| 作用域 | **会话级 chip**：新会话回到清单/设置的默认，不跨会话串味 |
+| 优先级 | **显式参数 > chip > 清单 `defaults` > 插件设置默认** |
+| 范围 | **本版包含参数菜单**（模型 + 时长/分辨率/画幅），一个 chip 点开分两段 |
+
+### 20.1 座位
+
+`conversation.input.right`：`kind:list`、`scope:session`、宿主 **无内置占用**（`slot-catalog.ts` 的 `occupants: []`），标准 props 自带 `sessionId`，声明方是 `conversation.composer.bar` 的 occupant（`client-ui-conversation`）。同类先例是 `dsh-web-search-enhanced` 的搜索连接下拉；DSH 自己的 LLM 模型选择在 `conversation.input.model`，两者不抢。`id` 用 `video-forge.model`（新 id 是"加在我旁边"，复用宿主 id 才是"顶掉它"），`order` 15，`locale` 是本插件命名空间。
+
+旧宿主没有这个座位时 `ctx.slots.inject` 的 callback 根本不会跑，chip 直接不存在，工具照旧按 参数 → 清单 → 设置 解析——不需要特性探测。
+
+### 20.2 解析链与"来源"追踪
+
+`generate()` 里两层依次填充，`withSessionSelection`（chip）在 `withProjectDefaults`（清单）之前，因此高优先级层填过的字段不会被低层覆盖；两层都返回 `{ input, target, fields }`，`mergeFilled` 只合并"谁填的"，输入已经是链式结果。工具结果多一句 `the video chip in this conversation set ark/seedance-2.0, 5s, 720p — pass … explicitly to override it for one take`，`video_status` 的 `setup.selection` 也报当前选择。
+
+**为什么这么啰嗦**：会话级时长默认值是"5 秒默认悄悄把 10 秒镜头截短"的那类陷阱。所以三层都点名：结果里说 chip 给了什么，拒绝时说清是 chip 还是清单（`defaultSourceText`：`the video chip in this conversation` / `the defaults in video-project.yaml`）。模型是这两句话的读者。
+
+### 20.3 失效、冲突与"不许说谎"
+
+用户选的规则是"按当前模型过滤 + 切换时清掉不兼容项并提示"：
+
+- **模型列表**按配置渲染，缺 key 的标 `no key` 但仍可选（用户可能正要去填 key）。
+- **参数值**只列当前模型声明的；chip 里还没选模型时列所有已配置模型的**并集**，并提示"实际使用的模型必须声明你选的那个"。
+- **换模型**：`pruneSelection` 清掉新模型没声明的参数，并提示"已清除 分辨率, 画幅"。**模型"什么都没声明"也算没声明**——保留会让参数生效而菜单显示未选，这是 chip 绝不能有的状态。
+- **chip 里的模型从设置里删掉**：chip 标红并写明"所选模型已不在设置里"，**不自动换一个**、也不自动清空（清空是用户的动作）。生成会被拒绝并点名是 chip 的原因——和"不静默回落到默认模型"一致（提交到错误端点要花钱）。
+- **chip 的值与最终模型不兼容**（例如没选模型、清单的模型声明里没有它）：提交前拒绝，列出允许值，不花钱。
+
+### 20.4 为什么参数里没有 `mode`，也没有自由输入
+
+- `mode`（t2v/i2v/flf2v/s2v）由**素材**决定：把它做成会话默认，等于埋一个"没传 `first_frame` 却按 s2v 提交"的坑。它继续由参数与素材决定。
+- 参数值只用模型声明的列表，**不做自由文本**：模型什么都没声明时，chip 说"该模型没有声明这一项，由供应商决定"（对话里传参仍然可以）。给一个不能校验的输入框，代价是提交时才发现不合法。
+
+### 20.5 写边界（§16.4 不变）
+
+浏览器这一半新增的唯一写是 `PUT/POST/DELETE /video-forge/api/selection`，落 `$DSH_HOME/dsh-video-forge/selections.json`（`src/selection.ts`，原子写、0600、按 `updatedAt` 保留最近 200 个会话）。它**不写工作区文件、不提交生成、不写凭据**，所以不构成工作台的回归。
+
+失败语义按"偏好文件"定位：文件缺失或解析不了就是空表（下次写覆盖它）；**单行**读不了不连累别的会话；只有"读失败的真正原因是 I/O"（例如路径是个目录）才**拒绝写入**并在 chip 里显示原因——覆盖一个读不到的文件会把别的会话的选择一起抹掉。`get()` 读失败返回 null 而不是抛：一个坏掉的偏好文件不能挡住生成，这时工具结果会附一句"选择文件读不到，本次按参数→清单→设置走"。
+
+### 20.6 实现落点
+
+| 文件 | 内容 |
+|---|---|
+| `src/selection.ts` | 会话选择的类型、校验（provider/model 成对、时长上界）、`SelectionStore`（共享实例、原子写、上限淘汰、读失败拒写） |
+| `src/operations.ts` | `withSessionSelection` / `withProjectDefaults` / `mergeFilled` / `defaultSourceText` / `fieldsClause` / `chipContribution`；`describeSetup` 的 `selection`；`estimateGeneration` 接受 chip（估算与实际请求走同一条链） |
+| `src/panel-api.ts` | `selection` 的 GET/POST/DELETE、`?session=` 校验、`SelectionError → 400` |
+| `src/tools.ts` | `SETUP_SCHEMA.selection`、`setupText` 一行、两个工具描述 |
+| `src/client/panel-api.ts` | chip 的类型与三个调用 |
+| `src/client/model-chip.ts` | 纯判断：目标解析、可用值（模型/并集）、淘汰、标签与警告、摘要 |
+| `src/client/model-chip.tsx` | 控件：`popover` 顶层菜单（不支持时降级成内联，靠 React 的 display 控制）、两段菜单、保存后回写本地状态、错误与提示就地显示 |
+| `src/client/index.ts` | 注册 `conversation.input.right` |
+| `assets/skills/*.md` | `video-guide` / `video-project` / `video-prompting` 写明优先级与 chip 的边界 |
+
+**客户端实现注意**：`popover` 属性不在 React 18 的 DOM 类型里（spread 进去）；**不支持 popover 的组合里不能留这个属性**——jsdom 会按 `[popover]:not(:popover-open)` 把它算成 `display:none`，于是菜单"打开了但看不见"。所以属性只在 `'showPopover' in HTMLElement.prototype` 时加，可见性始终由 React 的 `open` 状态决定，浏览器则通过 `toggle` 事件把它同步回来（Esc、点外面关掉）。bundle 仍然只 `require` react 与 react/jsx-runtime。
+
+### 20.7 被否决的方案
+
+| 方案 | 否决理由 |
+|---|---|
+| 两个 chip（模型 / 参数分开） | 输入框右下角已有搜索连接下拉，再挤一个控件窄窗口会换行；参数与模型本就强相关 |
+| 参数写进 `video-project.yaml` | 要浏览器写工作区文件，破只读边界；而且项目级 ≠ 会话级 |
+| 冲突时一律报错、不清理参数 | 每次换模型都要用户自己回去改一行 |
+| 不兼容参数静默丢弃 | 时长/画幅会悄悄变成供应商默认，正是本项目最反对的那种谎 |
+| chip 里放 `mode` | 见 §20.4 |
+
+### 20.8 没做 / 留到以后
+
+- chip 里不做自由文本参数值，也不做"在 chip 里填 key"（key 仍在配置卡）。
+- 不做"跨会话记住上次选择"：会话级是用户定的作用域；要固定整组镜头用清单。
+- 参数菜单不带 `generateAudio`、`sizes` 这类供应商特有的字段。
+
+**实测**（隔离实例 + 真浏览器，2026-10-21）：`pnpm check` **489 例全绿**（M5 收尾 443 → +46：selection 存储 12、链路 5、`tools` 的 setup 1、面板 API 5、chip 纯函数 13、chip 渲染 8、客户端接线 1、其余为既有用例调整）。隔离实例仍按 §13：`DSH_HOME=/tmp/dsh-video-studio-verify/home`、端口 34781、npm 实包 `@deepseek-ai/dsh@0.2.1-rc.2`、tarball 装进隔离 profile（`sha256` 与仓库 `lib/client.js` 一致）。插件配置用一份 seed patch 提供两家供应商、三个模型（`ark` 两个 → 缺 key，`fixture` → 回环免 key），这样 chip 的"缺 key"分支也被真实渲染到。
+
+| 检查 | 结果 |
+|---|---|
+| 座位与外观 | 输入框工具行里出现 `🎬 Video model ⌄`，就在宿主的 `Select model`（LLM 模型选择）**左边**，没有顶掉任何宿主控件 |
+| 打开菜单 | 点开后是顶层 popover（不受 composer 裁剪），两段：`Model`（Auto + 三个模型，右上角标 `ark · no key` / `fixture`）、`Parameters`（Length / Resolution / Aspect ratio，各带"不设"） |
+| 写入 | 点 `Seedance 2.0` → `$DSH_HOME/dsh-video-forge/selections.json` 出现该会话的行（`0600`、`version:1`）；随后点 `10s`/`1080p`/`9:16`，三处都被存下，触发器变成 `Seedance 2.0 10s · 1080p · …` 并带红色 `!`（该供应商缺 key） |
+| 换模型的清理 | 切到 `Seedance 2.0 Fast`（只声明 5s/720p/16:9）→ 存储里三项**全被清空**，菜单里给出 `Cleared Length, Resolution, Aspect ratio: the new model does not declare them.`，参数行只剩该模型声明的值 |
+| 恢复自动 | 点 Auto → 该会话的行**从文件里删除**（不是写成空值），`GET /video-forge/api/selection?session=…` 返回 `selection: null` |
+| 缺 key 的分界 | 选 `Fixture (no key needed)`（回环）→ 触发器**没有**红色 `!`；选 `ark` 的模型就有。说明警告跟随凭据状态，不是写死的 |
+| 持久与作用域 | 刷新页面后 chip 仍是 `Fixture (no key needed)`（同一个会话 id 的选择留住了）；另一个会话 id 的 `GET` 仍返回 `null`（作用域是会话，不是全局） |
+| 关闭行为 | `Escape` 关掉菜单：`:popover-open` 为 false、`display:none`、`aria-expanded=false`（React 状态与浏览器状态同步） |
+| 面板 API | `GET`（带矩阵与凭据状态）、`POST`（校验后落盘）、`DELETE`、缺 `?session=` → 400、非法 body（`model` 单独给、时长 -1、200 字以上的 id）→ 400 且不写盘、`PATCH` → 405 |
+| 收尾 | `close --all` + `kill`；`lsof -iTCP:34781` 为空、无孤儿宿主进程；用户的 3080 实例（`GET /` → 401，登录墙原样）**全程未被写入** |
+
+**真浏览器抓到的一个缺陷（已修）**：菜单**一加载就是打开的**。`popover` 的"关闭即 `display:none`"来自 UA 样式表，而本控件的 `.dvf-chip-panel { display:flex }` 以类选择器把它盖掉了，于是面板在没点开时也常驻显示、把触发器压在下面。修法是补一条 `.dvf-chip-panel[popover]:not(:popover-open) { display:none }`（只作用于真的带 `popover` 属性的元素，降级路径仍由 React 的 `open` 控制）。这一条 jsdom 覆盖不到——jsdom 没有 popover API，走的是降级分支。
+
+**真浏览器没能覆盖的**：宿主侧"chip → 生成"的整条链（隔离实例没有 LLM key，无法让模型真的调一次 `video_generate`）。这条链由 fixture 供应商的真实 socket 集成测试覆盖：`test/workspace-project.test.ts` 里五条新用例断言了 chip 压过清单、参数压过 chip、chip 值不被模型声明时**不花钱就拒绝并点名 chip**、chip 的模型消失时拒绝而不是回落、以及 chip 不跨会话串味。
+
