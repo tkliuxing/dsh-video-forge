@@ -63,10 +63,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # 0.1.0 is published by the one-time bootstrap (docs/RELEASING.md §1),
+      # because npm can only mint a trusted publisher for a package that already
+      # exists. Its tag still runs this workflow — that run is the proof the OIDC
+      # path works — so a version the registry already has is skipped loudly
+      # instead of failing with EPUBLISHCONFLICT.
+      - name: Skip a version the registry already has
+        id: published
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if npm view "dsh-video-forge@$version" version >/dev/null 2>&1; then
+            echo "::notice::dsh-video-forge@$version is already on the registry; nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # `prepublishOnly` runs tsc --noEmit, the client bundle build and the whole
       # vitest suite, and `prepare` rebuilds `lib/` before packing, so the gate a
       # tag push passes is the same one a local `pnpm check` passes.
       - name: Publish
+        if: steps.published.outputs.skip != 'true'
         env:
           DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
         run: npm publish --tag "$DIST_TAG"
