@@ -103,11 +103,16 @@ describe('VideoPanel', () => {
     })
     render(<VideoPanel {...props({ loadPanel: () => Promise.resolve(load({ tasks: [newest, task()] })) })} />)
     await waitFor(() => { expect(screen.getByText('v002.mp4')).toBeTruthy() })
+    // The open row's own detail (path, prompt) lands in a later update than the
+    // row list: once in eight full-suite runs the row existed and this had not
+    // rendered yet, so it gets the same wait-for as the row list itself.
+    await waitFor(() => {
+      expect(screen.getByText('renders/hero')).toBeTruthy()
+      expect(screen.getByText('a rainy street at night')).toBeTruthy()
+    })
     const players = document.querySelectorAll('video')
     expect(players).toHaveLength(1)
     expect(players[0]?.getAttribute('src')).toContain('/video-forge/media/v-2/tok/v002.mp4')
-    expect(screen.getByText('renders/hero')).toBeTruthy()
-    expect(screen.getByText('a rainy street at night')).toBeTruthy()
     // A finished row's progress is 1; a bar there reads as a highlight, not as
     // progress, so only work in flight draws one.
     expect(document.querySelector('.vf-track')).toBeNull()
