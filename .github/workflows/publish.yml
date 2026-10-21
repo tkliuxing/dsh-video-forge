@@ -1,0 +1,72 @@
+# Publishes dsh-video-forge to npm through trusted publishing (OIDC). The npm side
+# is configured for this repository against the workflow file `publish.yml` and
+# the GitHub environment `publishing`, so neither name may change without
+# updating npm too. No npm token is involved, and npm mints the provenance
+# attestation itself.
+#
+# The first release of a brand-new package cannot use this path: npm can only
+# mint a trusted publisher for a package that already exists. See
+# docs/RELEASING.md — bootstrap once, then every later release is just a tag.
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: npm dist-tag to publish under
+        type: choice
+        default: latest
+        options:
+          - latest
+          - next
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: publishing
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Reads `packageManager` from package.json, so CI and a local checkout use
+      # the same pnpm. Must run before setup-node, which caches its store.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      # Trusted publishing needs npm >= 11.5.1; the runner's bundled npm can lag.
+      - name: Ensure an npm that can exchange OIDC tokens
+        run: npm install -g npm@latest
+
+      - name: Reject a tag that disagrees with package.json
+        if: github.event_name == 'push'
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(node -p 'require("./package.json").version')"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME says $tagged, package.json says $declared" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `prepublishOnly` runs tsc --noEmit, the client bundle build and the whole
+      # vitest suite, and `prepare` rebuilds `lib/` before packing, so the gate a
+      # tag push passes is the same one a local `pnpm check` passes.
+      - name: Publish
+        env:
+          DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
+        run: npm publish --tag "$DIST_TAG"

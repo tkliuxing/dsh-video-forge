@@ -1,0 +1,16 @@
+# Draft entry for awesome-dsh-plugin — NOT part of this repository's build.
+#
+# Submit after the npm package is live: open one PR against
+# https://github.com/awesome-dsh-plugin/awesome-dsh-plugin that adds exactly this
+# file as data/plugins/tkliuxing__dsh-video-forge.yml. Do not edit the generated
+# READMEs by hand.
+#
+# Rules that apply here: `url` must match the repository exactly; the description
+# is checked against the code and must not overstate; a description containing
+# `: ` must be quoted (it is, below).
+url: https://github.com/tkliuxing/dsh-video-forge
+name: tkliuxing/dsh-video-forge
+category: tools
+description:
+  en: 'Online-model video generation in a workspace conversation: three tools (video_generate, video_status, video_cancel), a durable ledger that survives timeouts and restarts, live chat cards and a Videos panel that play the result, and cost estimates. Requires your own provider API key.'
+  zh: '在工作区对话里用在线模型生成视频：三个工具（video_generate、video_status、video_cancel）、超时与重启都不丢的持久化台账、可直接播放的聊天卡片与视频面板，以及费用估算。需要自备供应商 API key。'
