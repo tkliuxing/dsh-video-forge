@@ -62,6 +62,9 @@ export interface LiveTask extends PanelTask {
   cancelable?: boolean
 }
 
+/** Where a model's capability lists came from: the operator's row, or this build's preset. */
+export type CapabilitySource = 'config' | 'preset'
+
 export interface ProviderCapability {
   id: string
   label: string
@@ -70,6 +73,8 @@ export interface ProviderCapability {
   resolutions: readonly string[]
   aspectRatios: readonly string[]
   cancelable: boolean
+  /** Absent from a host that predates the fallback; treat it as unknown, not as `config`. */
+  capabilitiesFrom?: CapabilitySource
 }
 
 /** One provider with its credential state — configured, source, and a masked tail only. */
@@ -171,7 +176,9 @@ export function cancelGeneration(taskId: string): Promise<PanelResult<{ cancelle
  * (M6, DESIGN §20).
  *
  * `null` for every field means "not chosen here": the tools then fall back to
- * the arguments, `video-project.yaml`, and the plugin settings, in that order.
+ * the arguments, `video-project.yaml`, and the plugin settings for the provider
+ * and model, in that order. There is no plugin-settings layer for the length,
+ * resolution or ratio, so an unset one of those is left to the vendor.
  * The chip never guesses a model on the host's behalf, so a value it did not
  * choose is never shown as if it had.
  */
@@ -192,6 +199,11 @@ export interface ChipModel {
   resolutions: readonly string[]
   aspectRatios: readonly string[]
   cancelable: boolean
+  /**
+   * Where the lists came from. Absent from an older host; the client fills the
+   * lists in itself in that case and marks the result `preset`.
+   */
+  capabilitiesFrom?: CapabilitySource
 }
 
 /** One provider with its credential state (a masked tail only) and its models. */

@@ -15,6 +15,7 @@
  *   reports what it dropped so the chip can say so.
  */
 
+import { capabilityFallback, SUPPORTED_PROTOCOLS, type SupportedProtocol } from '../provider-presets.ts'
 import type { Translate } from './locales.ts'
 import type { ChipModel, ChipProvider, ChipSelection } from './panel-api.ts'
 
@@ -49,19 +50,38 @@ export interface ModelOption {
   model: ChipModel
 }
 
+/**
+ * Fill a model's three capability lists from this build's preset when its stored
+ * row declares nothing.
+ *
+ * The host already does this (and marks the source), but the client must be able
+ * to say the same on its own: the panel is served from `lib/client.js`, so a
+ * page refresh against a host that predates the fallback still has to show the
+ * buttons. Only an exact protocol + id hit fills anything; an unknown id, or a
+ * row that declares one of the three itself, is returned untouched.
+ */
+export function resolveModelCapabilities(protocol: string, model: ChipModel): ChipModel {
+  if (model.capabilitiesFrom === 'preset') return model
+  if (model.durations.length !== 0 || model.resolutions.length !== 0 || model.aspectRatios.length !== 0) return model
+  if (!(SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol)) return model
+  const fallback = capabilityFallback(protocol as SupportedProtocol, model.id)
+  return fallback === null ? model : { ...model, ...fallback, capabilitiesFrom: 'preset' }
+}
+
 /** Resolve a selection against the configured providers. */
 export function targetOf(selection: ChipSelection | null, providers: readonly ChipProvider[]): ChipTarget {
   if (selection === null || selection.provider === null) return { provider: null, model: null, missing: null }
   const provider = providers.find(entry => entry.id === selection.provider) ?? null
   if (provider === null) return { provider: null, model: null, missing: 'provider' }
   if (selection.model === null) return { provider, model: null, missing: null }
-  const model = provider.models.find(entry => entry.id === selection.model) ?? null
+  const found = provider.models.find(entry => entry.id === selection.model) ?? null
+  const model = found === null ? null : resolveModelCapabilities(provider.protocol, found)
   return { provider, model, missing: model === null ? 'model' : null }
 }
 
 /** Every model the chip can offer, in configuration order. */
 export function modelOptions(providers: readonly ChipProvider[]): ModelOption[] {
-  return providers.flatMap(provider => provider.models.map(model => ({ provider, model })))
+  return providers.flatMap(provider => provider.models.map(model => ({ provider, model: resolveModelCapabilities(provider.protocol, model) })))
 }
 
 /** The values one model declares for one parameter; empty means "the provider decides". */
@@ -160,10 +180,10 @@ export function settingsTarget(defaults: { provider: string; model: string }, pr
   if (defaults.provider === '') return null
   const provider = providers.find(entry => entry.id === defaults.provider)
   if (provider === undefined) return null
-  const model = defaults.model === ''
+  const found = defaults.model === ''
     ? provider.models[0] ?? null
     : provider.models.find(entry => entry.id === defaults.model) ?? null
-  return model === null ? null : { provider, model }
+  return found === null ? null : { provider, model: resolveModelCapabilities(provider.protocol, found) }
 }
 
 /** Whether a chosen model would be refused for a missing key, which the trigger and the row both mark. */

@@ -484,3 +484,39 @@ describe('configuration card: credential verdicts', () => {
     expect(summary.headline).toBe(t('config.credentialMissing'))
   })
 })
+
+describe('configuration card: a row from before the capability lists', () => {
+  it('fills the parameters of a labelled row that declares nothing, and keeps its label', async () => {
+    const stored: ClientConfigShape = {
+      ...CONFIG,
+      providers: [{
+        ...ARK_ROW,
+        models: [{
+          ...ARK_ROW.models[0]!,
+          label: 'My Seedance',
+          durations: [],
+          resolutions: [],
+          aspectRatios: [],
+        }],
+      }],
+    }
+    const b = bench(stored)
+    render(<SettingsCard {...props(b)} />)
+
+    fireEvent.change(screen.getByLabelText(en['config.modelId']), { target: { value: 'doubao-seedance-2-5-260628' } })
+
+    expect((screen.getByLabelText(en['config.modelLabel']) as HTMLInputElement).value).toBe('My Seedance')
+    expect((screen.getByLabelText(en['config.durations']) as HTMLInputElement).value)
+      .toBe(Array.from({ length: 27 }, (_value, index) => index + 4).join(', '))
+    expect((screen.getByLabelText(en['config.resolutions']) as HTMLInputElement).value).toBe('480p, 720p, 1080p')
+
+    fireEvent.click(screen.getByText(en['config.save']))
+    await waitFor(() => { expect(b.save).toHaveBeenCalledTimes(1) })
+    const written = providersOp(b) as { models: Record<string, unknown>[] }[]
+    expect(written[0]?.models[0]).toMatchObject({
+      id: 'doubao-seedance-2-5-260628',
+      label: 'My Seedance',
+      resolutions: ['480p', '720p', '1080p'],
+    })
+  })
+})

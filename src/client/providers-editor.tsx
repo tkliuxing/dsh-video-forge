@@ -397,10 +397,13 @@ interface ModelRowProps {
 function ModelRow(props: ModelRowProps): ReactNode {
   const { t, model, protocol, listId, suggestions, readOnly, open, onToggle, onPatch, onRemove } = props
   // Naming a model this build knows fills in what its vendor documents — but
-  // only into a row that declares nothing yet, so a typed list is never replaced.
+  // only into a row that declares no capability yet, so a typed list is never
+  // replaced. The display name does not enter that decision: rows carried over
+  // from before the capability lists existed usually have a label and nothing
+  // else, and they need the lists just as much.
   const changeId = (id: string): void => {
     const known = knownModel(protocol, id)
-    const blank = model.label === '' && model.durations.length === 0
+    const blank = model.durations.length === 0
       && model.resolutions.length === 0 && model.aspectRatios.length === 0
     if (known === undefined || !blank) {
       onPatch({ id })
@@ -408,7 +411,7 @@ function ModelRow(props: ModelRowProps): ReactNode {
     }
     onPatch({
       id,
-      label: known.label,
+      ...(model.label === '' ? { label: known.label } : {}),
       modes: [...known.modes],
       durations: [...known.durations],
       resolutions: [...known.resolutions],

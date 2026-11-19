@@ -17,6 +17,7 @@ import {
   paramText,
   paramValues,
   pruneSelection,
+  resolveModelCapabilities,
   settingsTarget,
   targetOf,
   type ParamKey,
@@ -58,6 +59,20 @@ const MINIMAX: ChipProvider = {
 }
 
 const PROVIDERS = [ARK, MINIMAX]
+
+/** A stored row from before the capability lists existed: a known id, nothing declared. */
+const KNOWN_EMPTY: ChipModel = {
+  id: 'doubao-seedance-2-0-260128',
+  label: 'Doubao-Seedance-2.0',
+  modes: ['t2v'],
+  durations: [],
+  resolutions: [],
+  aspectRatios: [],
+  cancelable: true,
+}
+
+const ARK_WITH_KNOWN: ChipProvider = { ...ARK, models: [SEEDANCE, KNOWN_EMPTY, NO_DECLARATIONS] }
+const PROVIDERS_WITH_KNOWN = [ARK_WITH_KNOWN, MINIMAX]
 
 const selection = (over: Partial<ChipSelection> = {}): ChipSelection => ({ ...EMPTY_CHIP_SELECTION, provider: 'ark', model: 'seedance-2', ...over })
 
@@ -161,5 +176,32 @@ describe('changing the model', () => {
   it('lists every model with the provider it belongs to', () => {
     expect(modelOptions(PROVIDERS).map(option => `${option.provider.id}/${option.model.id}`))
       .toEqual(['ark/seedance-2', 'ark/opaque', 'minimax/hailuo'])
+  })
+})
+
+describe('capabilities the preset knows but the row does not declare', () => {
+  it('fills the three lists for an exact known id', () => {
+    const resolved = resolveModelCapabilities('ark-seedance', KNOWN_EMPTY)
+    expect(resolved.capabilitiesFrom).toBe('preset')
+    expect(declaredValues(resolved, 'durationSeconds')).toEqual(Array.from({ length: 12 }, (_value, index) => index + 4))
+    expect(declaredValues(resolved, 'resolution')).toEqual(['480p', '720p', '1080p', '4k'])
+    expect(declaredValues(resolved, 'aspectRatio')).toEqual(['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'])
+  })
+
+  it('resolves through the target and the option list, so rendered values need no extra step', () => {
+    const target = targetOf(selection({ model: 'doubao-seedance-2-0-260128' }), PROVIDERS_WITH_KNOWN)
+    expect(target.model?.capabilitiesFrom).toBe('preset')
+    expect(paramValues(PROVIDERS_WITH_KNOWN, target, 'resolution')).toEqual({
+      values: ['480p', '720p', '1080p', '4k'],
+      scope: 'model',
+    })
+    expect(modelOptions(PROVIDERS_WITH_KNOWN)[1]?.model.capabilitiesFrom).toBe('preset')
+  })
+
+  it('fills nothing for an unknown id or a row that declares something itself', () => {
+    const unknown = { ...KNOWN_EMPTY, id: 'opaque' }
+    expect(resolveModelCapabilities('ark-seedance', unknown)).toEqual(unknown)
+    const partial = { ...KNOWN_EMPTY, durations: [7] }
+    expect(resolveModelCapabilities('ark-seedance', partial)).toEqual(partial)
   })
 })

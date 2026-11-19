@@ -18,6 +18,7 @@ import { moderationOf, ProviderRequestError } from './providers/adapter.ts'
 import { adapterFor, cancelSupported, returnsLastFrame, type AdapterContext } from './providers/index.ts'
 import { BASE_TIER, estimateArkTokens, estimateCost, unitPrice, type PriceSourceInfo, type PriceUnit } from './prices.ts'
 import { artifactUrl, type VideoForgeRuntime } from './runtime.ts'
+import { capabilityFallback } from './provider-presets.ts'
 import { assertGeometry, ConfigError, resolveTarget, supportsMode, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from './settings.ts'
 import {
   NOT_SUBMITTED_CODE,
@@ -956,6 +957,12 @@ export interface ProviderStatus {
     resolutions: readonly string[]
     aspectRatios: readonly string[]
     cancelable: boolean
+    /**
+     * `config`: the lists are what the operator's row declares (`[]` included).
+     * `preset`: the row declared nothing, so this build filled them in from its
+     * own preset for the exact protocol and model id. The config is untouched.
+     */
+    capabilitiesFrom: 'config' | 'preset'
   }[]
 }
 
@@ -970,15 +977,23 @@ export async function describeProviders(runtime: VideoForgeRuntime): Promise<Pro
       baseUrl: provider.baseUrl,
       authRef: provider.authRef,
       credential: await credentialStatus(runtime, provider),
-      models: provider.models.map(model => ({
-        id: model.id,
-        label: model.label === '' ? model.id : model.label,
-        modes: model.modes,
-        durations: model.durations,
-        resolutions: model.resolutions,
-        aspectRatios: model.aspectRatios,
-        cancelable: model.cancelable,
-      })),
+      models: provider.models.map(model => {
+        // All three empty is the "declare nothing" shape; a row that filled any
+        // one of them is the operator's own reading and is never overwritten.
+        const blank = model.durations.length === 0
+          && model.resolutions.length === 0 && model.aspectRatios.length === 0
+        const fallback = blank ? capabilityFallback(provider.protocol, model.id) : null
+        return {
+          id: model.id,
+          label: model.label === '' ? model.id : model.label,
+          modes: model.modes,
+          durations: fallback === null ? model.durations : fallback.durations,
+          resolutions: fallback === null ? model.resolutions : fallback.resolutions,
+          aspectRatios: fallback === null ? model.aspectRatios : fallback.aspectRatios,
+          cancelable: model.cancelable,
+          capabilitiesFrom: fallback === null ? 'config' as const : 'preset' as const,
+        }
+      }),
     })
   }
   return rows
@@ -1304,7 +1319,7 @@ export function chipContribution(
 function selectionProblem(runtime: VideoForgeRuntime, session: TaskSession | null): string | null {
   if (session === null) return null
   const problem = runtime.selections.readProblem()
-  return problem === null ? null : `${problem}: this take used the arguments, then video-project.yaml, then the plugin settings`
+  return problem === null ? null : `${problem}: this take used the arguments, then video-project.yaml, then the plugin settings for the provider and model`
 }
 
 function blankToNull(value: string | undefined): string | null {

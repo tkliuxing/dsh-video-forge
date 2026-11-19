@@ -24,10 +24,11 @@ import { mediaHandler } from '../src/media-route.ts'
 import { generate, listTasks } from '../src/operations.ts'
 import { retryOrphans } from '../src/reconcile.ts'
 import { DEFAULT_PATHS, ManifestError, parseManifest, readProject } from '../src/project.ts'
+import { providerPreset } from '../src/provider-presets.ts'
 import { adapterFor } from '../src/providers/index.ts'
 import { artifactUrl, type VideoForgeRuntime } from '../src/runtime.ts'
 import type { SandboxMode, TaskSession } from '../src/session-context.ts'
-import { ConfigError, DEFAULT_ENDPOINTS, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
+import { ConfigError, DEFAULT_ENDPOINTS, type ModelSetting, type ProviderSetting, type VideoForgeSettings } from '../src/settings.ts'
 import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoArtifact, VideoTask } from '../src/types.ts'
 import { startInProcessWatch } from '../src/watch.ts'
@@ -49,13 +50,35 @@ const MODEL = {
   frameRoleReference: 'reference_image',
 }
 
+/**
+ * One Seedance model exactly as the preset catalogue declares it.
+ *
+ * The wire-level tests below use this rather than a hand-written envelope, so a
+ * duration or resolution the vendor does not document cannot start passing just
+ * because a test made it up (DESIGN §7.1).
+ */
+function seedanceModel(id: string): ModelSetting {
+  const preset = providerPreset('ark')?.models.find(entry => entry.id === id)
+  if (preset === undefined) throw new Error(`the ark preset declares no model ${id}`)
+  return {
+    ...MODEL,
+    id: preset.id,
+    label: preset.label,
+    modes: preset.modes,
+    durations: preset.durations,
+    resolutions: preset.resolutions,
+    aspectRatios: preset.aspectRatios,
+    generateAudio: preset.generateAudio,
+  }
+}
+
 const fixtures: Fixture[] = []
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async fixture => fixture.close()))
 })
 
-function settingsFor(fake: Fixture): VideoForgeSettings {
-  const provider: ProviderSetting = { id: 'ark', protocol: 'ark-seedance', baseUrl: `${fake.url}/api/v3`, authRef: '', models: [MODEL], endpoints: DEFAULT_ENDPOINTS }
+function settingsFor(fake: Fixture, models: readonly ModelSetting[] = [MODEL]): VideoForgeSettings {
+  const provider: ProviderSetting = { id: 'ark', protocol: 'ark-seedance', baseUrl: `${fake.url}/api/v3`, authRef: '', models, endpoints: DEFAULT_ENDPOINTS }
   return {
     enabled: true,
     providers: [provider],
@@ -119,13 +142,17 @@ function runtimeFor(settings: VideoForgeSettings, ledger: Ledger, host: Host): V
   return runtime
 }
 
-async function setup(host: Host = { fs: hostWorkspaceFs }, pollsBeforeDone = 1): Promise<{ fake: Fixture; ledger: Ledger; runtime: VideoForgeRuntime; workspace: string }> {
+async function setup(
+  host: Host = { fs: hostWorkspaceFs },
+  pollsBeforeDone = 1,
+  models: readonly ModelSetting[] = [MODEL],
+): Promise<{ fake: Fixture; ledger: Ledger; runtime: VideoForgeRuntime; workspace: string }> {
   const fake = await startFixture({ mode: 'ark', pollsBeforeDone })
   fixtures.push(fake)
   const ledger = new Ledger({ path: join(await mkdtemp(join(tmpdir(), 'video-forge-m32-home-')), 'tasks.json'), maxTasks: 100, maxGiB: 1 })
   await ledger.load()
   const workspace = await mkdtemp(join(tmpdir(), 'video-forge-m32-ws-'))
-  return { fake, ledger, runtime: runtimeFor(settingsFor(fake), ledger, host), workspace }
+  return { fake, ledger, runtime: runtimeFor(settingsFor(fake, models), ledger, host), workspace }
 }
 
 const session = (cwd: string, mode: TaskSession['mode'] = 'workspace-write', id = 'session-1'): TaskSession => ({ id, cwd, mode })
@@ -529,6 +556,74 @@ describe('review fixes (M3.2 round 1)', () => {
     await chip(runtime, 'session-1', { resolution: '480p' })
     const elsewhere = await generate(runtime, { prompt: 'another conversation' }, { session: session(workspace, 'workspace-write', 'session-2') })
     expect(elsewhere.task.params.resolution).toBe('720p')
+  })
+
+  // --- the three parameters a Seedance model takes (DESIGN §7.1) ------------
+  // Length, resolution tier and ratio are the only geometry ARK accepts: the
+  // body carries `duration`, `resolution` and `ratio`, and a layer that leaves
+  // one out must leave it out of the body too, so the vendor default stands.
+  // These pin the whole path — argument, chip, manifest, adapter, socket —
+  // because a break in any link looks the same from the outside: a take that
+  // quietly comes back 720p/16:9/5s.
+  const SEEDANCE_2 = 'doubao-seedance-2-0-260128'
+  const createdBody = (fake: Fixture): Record<string, unknown> => {
+    const create = fake.requests.find(entry => entry.method === 'POST')
+    expect(create?.path).toBe('/api/v3/contents/generations/tasks')
+    return JSON.parse(create?.body ?? '{}') as Record<string, unknown>
+  }
+
+  it('puts the length, resolution and ratio the chip chose into the create body', async () => {
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await chip(runtime, 'session-1', { provider: 'ark', model: SEEDANCE_2, durationSeconds: 10, resolution: '4k', aspectRatio: 'adaptive' })
+    const outcome = await generate(runtime, { prompt: 'a heron at dawn' }, { session: session(workspace) })
+    expect(outcome.task.params).toMatchObject({ durationSeconds: 10, resolution: '4k', aspectRatio: 'adaptive' })
+    // The model spells one ratio `adaptive` and one tier `4k`; the adapter must
+    // pass both through unchanged rather than mapping them to a "safe" default.
+    expect(createdBody(fake)).toMatchObject({ model: SEEDANCE_2, duration: 10, resolution: '4k', ratio: 'adaptive' })
+  })
+
+  it('fills all three from the manifest when neither the argument nor the chip set them', async () => {
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await writeFile(join(workspace, 'video-project.yaml'), 'defaults: { duration_seconds: 5, resolution: 1080p, aspect_ratio: "9:16" }\n')
+    const outcome = await generate(runtime, { prompt: 'a heron at dawn' }, { session: session(workspace) })
+    expect(outcome.task.params).toMatchObject({ durationSeconds: 5, resolution: '1080p', aspectRatio: '9:16' })
+    expect(createdBody(fake)).toMatchObject({ duration: 5, resolution: '1080p', ratio: '9:16' })
+  })
+
+  it('lets one argument override the chip while the chip keeps the fields it left out', async () => {
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await chip(runtime, 'session-1', { durationSeconds: 10, resolution: '480p', aspectRatio: '1:1' })
+    const outcome = await generate(runtime, { prompt: 'a heron at dawn', durationSeconds: 4, aspectRatio: '21:9' }, { session: session(workspace) })
+    expect(outcome.task.params).toMatchObject({ durationSeconds: 4, resolution: '480p', aspectRatio: '21:9' })
+    expect(createdBody(fake)).toMatchObject({ duration: 4, resolution: '480p', ratio: '21:9' })
+  })
+
+  it('sends no geometry when no layer set any, so the vendor default stands', async () => {
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await generate(runtime, { prompt: 'a heron at dawn' }, { session: session(workspace) })
+    const body = createdBody(fake)
+    // Absent, not `null` and not a default: an unset field stays unpublished.
+    expect(body).not.toHaveProperty('duration')
+    expect(body).not.toHaveProperty('resolution')
+    expect(body).not.toHaveProperty('ratio')
+  })
+
+  it('refuses a length the model does not declare, naming the chip, and posts nothing', async () => {
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await chip(runtime, 'session-1', { durationSeconds: 31 })
+    await expect(generate(runtime, { prompt: 'x' }, { session: session(workspace) }))
+      .rejects.toThrowError(/got 31 \(duration_seconds came from the video chip in this conversation\)/)
+    expect(posts(fake)).toBe(0)
+  })
+
+  it('refuses -1 rather than treating "let the model choose" as a length it can send', async () => {
+    // Seedance 2.x accepts `duration: -1`, but the plugin's chip and manifest
+    // cannot express it (a sentinel is not a length). Nothing invents one: the
+    // value is refused with the declared range, before the POST.
+    const { fake, runtime, workspace } = await setup(undefined, 1, [seedanceModel(SEEDANCE_2)])
+    await expect(generate(runtime, { prompt: 'x', durationSeconds: -1 }, { session: session(workspace) }))
+      .rejects.toThrowError(/allows durations .* got -1/)
+    expect(posts(fake)).toBe(0)
   })
 
   it('a dangling link or an unwritable folder in the way is refused before submitting', async () => {

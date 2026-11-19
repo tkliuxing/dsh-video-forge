@@ -51,6 +51,21 @@ const PROVIDERS: ChipProvider[] = [
   },
 ]
 
+const LONG_PROVIDER: ChipProvider = {
+  id: 'ark',
+  protocol: 'ark-seedance',
+  credential: { configured: true, masked: 'sk…1234', error: null },
+  models: [{
+    id: 'seedance-long',
+    label: 'Seedance Long',
+    modes: ['t2v'],
+    durations: [5, 10, 15, 20],
+    resolutions: [],
+    aspectRatios: [],
+    cancelable: true,
+  }],
+}
+
 interface FakeHost {
   selection: ChipSelection | null
   saves: ChipSelection[]
@@ -66,13 +81,13 @@ function json(body: unknown, status = 200): Response {
 }
 
 /** Stand a fake panel API behind `fetch`, the seam the chip talks through. */
-function installHost(selection: ChipSelection | null = null): FakeHost {
+function installHost(selection: ChipSelection | null = null, providers: ChipProvider[] = PROVIDERS): FakeHost {
   host = { selection, saves: [], clears: 0, failSave: null, reads: 0 }
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     if (method === 'GET') {
       host.reads += 1
-      return json({ ok: true, session: 's1', enabled: true, selection: host.selection, defaults: { provider: 'ark', model: '' }, providers: PROVIDERS })
+      return json({ ok: true, session: 's1', enabled: true, selection: host.selection, defaults: { provider: 'ark', model: '' }, providers })
     }
     if (method === 'POST') {
       if (host.failSave !== null) return json({ ok: false, error: host.failSave }, 400)
@@ -151,13 +166,32 @@ describe('the composer chip', () => {
     await waitFor(() => expect(within(dialog).getByRole('status').textContent).toMatch(/Cleared Resolution, Aspect ratio/))
   })
 
-  it('sets one parameter and clears it again with "not set"', async () => {
+  it('sets the length with the slider and clears it again with "not set"', async () => {
     installHost(chipSelection())
     const dialog = await openMenu()
-    fireEvent.click(within(dialog).getByRole('button', { name: '10s' }))
+    const slider = within(dialog).getByRole('slider', { name: 'Length' }) as HTMLInputElement
+    // Seedance 2.0 declares [5, 10], so index 1 is 10 — no assumption that the
+    // steps are one second apart.
+    expect(slider.max).toBe('1')
+    expect(dialog.querySelector('.dvf-chip-slider-readout')?.textContent).toBe('Not set')
+    fireEvent.change(slider, { target: { value: '1' } })
     await waitFor(() => expect(host.saves.at(-1)).toMatchObject({ durationSeconds: 10 }))
+    expect(dialog.querySelector('.dvf-chip-slider-readout')?.textContent).toBe('10s')
+    expect(slider.getAttribute('aria-valuetext')).toBe('10s')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Length: Not set' }))
     await waitFor(() => expect(host.saves.at(-1)).toMatchObject({ durationSeconds: null }))
+    expect(dialog.querySelector('.dvf-chip-slider-readout')?.textContent).toBe('Not set')
+  })
+
+  it('says "not set" on the slider readout until a length is dragged in', async () => {
+    installHost(chipSelection())
+    const dialog = await openMenu()
+    const slider = within(dialog).getByRole('slider', { name: 'Length' })
+    // The thumb sits at the first declared value, but that position is not a choice.
+    expect((slider as HTMLInputElement).value).toBe('0')
+    expect(slider.getAttribute('aria-valuetext')).toBe('Not set')
+    fireEvent.change(slider, { target: { value: '1' } })
+    await waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('10s'))
   })
 
   it('forgets the whole choice when "auto" is picked, so the manifest and settings decide again', async () => {
@@ -182,10 +216,95 @@ describe('the composer chip', () => {
   it('offers every configured model\'s values while the chip chooses no model', async () => {
     installHost()
     const dialog = await openMenu()
-    // Durations: 5 and 10 from Seedance 2.0, 6 from Hailuo — the union.
-    expect(within(dialog).getByRole('button', { name: '6s' })).toBeDefined()
+    // Durations: 5 and 10 from Seedance 2.0, 6 from Hailuo — the union, sorted.
+    const slider = within(dialog).getByRole('slider', { name: 'Length' }) as HTMLInputElement
+    expect(slider.max).toBe('2')
+    fireEvent.change(slider, { target: { value: '1' } })
+    await waitFor(() => expect(host.saves.at(-1)).toMatchObject({ durationSeconds: 6 }))
     // The hint appears once per parameter, because none of them has a model to read from.
     expect(within(dialog).getAllByText(en['chip.unionHint'])).toHaveLength(3)
+  })
+
+  it('keeps a single declared length as a button rather than a one-stop slider', async () => {
+    installHost(chipSelection({ model: 'seedance-fast' }))
+    const dialog = await openMenu()
+    expect(within(dialog).getByRole('button', { name: '5s' })).toBeDefined()
+    expect(within(dialog).queryByRole('slider', { name: 'Length' })).toBeNull()
+  })
+
+  it('keeps the slider usable while a save is in flight, and disables the buttons', async () => {
+    const fake = installHost(chipSelection())
+    const previous = globalThis.fetch as unknown as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    let release = (): void => {}
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'POST') await gate
+      return previous(input, init)
+    }))
+    const dialog = await openMenu()
+    const slider = within(dialog).getByRole('slider', { name: 'Length' }) as HTMLInputElement
+    fireEvent.change(slider, { target: { value: '1' } })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Length: Not set' }).hasAttribute('disabled')).toBe(true))
+    // The thumb follows the drag; disabling it here is what used to cut a drag
+    // off after one step.
+    expect(slider.disabled).toBe(false)
+    expect(slider.value).toBe('1')
+    release()
+    await waitFor(() => expect(fake.saves.at(-1)).toMatchObject({ durationSeconds: 10 }))
+  })
+
+  it('follows a multi-step drag and merges its writes into two requests', async () => {
+    installHost(chipSelection({ model: 'seedance-long' }), [LONG_PROVIDER])
+    const previous = globalThis.fetch as unknown as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    const posts: ChipSelection[] = []
+    const resolvePost: Array<() => void> = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'POST') return previous(input, init)
+      const body = JSON.parse(String(init?.body ?? '{}')) as ChipSelection
+      posts.push(body)
+      return new Promise<Response>(resolve => {
+        resolvePost.push(() => { resolve(json({ ok: true, session: 's1', selection: body })) })
+      })
+    }))
+    const dialog = await openMenu()
+    const slider = within(dialog).getByRole('slider', { name: 'Length' }) as HTMLInputElement
+    const readout = (): string | null | undefined => dialog.querySelector('.dvf-chip-slider-readout')?.textContent
+
+    fireEvent.change(slider, { target: { value: '1' } })
+    await waitFor(() => expect(slider.value).toBe('1'))
+    fireEvent.change(slider, { target: { value: '2' } })
+    await waitFor(() => expect(slider.value).toBe('2'))
+    fireEvent.change(slider, { target: { value: '3' } })
+    await waitFor(() => expect(slider.value).toBe('3'))
+
+    expect(slider.disabled).toBe(false)
+    expect(readout()).toBe('20s')
+    expect(slider.getAttribute('aria-valuetext')).toBe('20s')
+    expect(posts).toHaveLength(1)
+
+    resolvePost[0]!()
+    await waitFor(() => expect(posts).toHaveLength(2))
+    // The merged write carries the value the thumb settled on, not an
+    // intermediate one.
+    expect(posts[1]!.durationSeconds).toBe(20)
+    expect(readout()).toBe('20s')
+
+    resolvePost[1]!()
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Length: Not set' }).hasAttribute('disabled')).toBe(false))
+    expect(posts).toHaveLength(2)
+    expect(readout()).toBe('20s')
+  })
+
+  it('puts the readout back on the stored value when the write fails', async () => {
+    const fake = installHost(chipSelection())
+    const dialog = await openMenu()
+    const slider = within(dialog).getByRole('slider', { name: 'Length' }) as HTMLInputElement
+    fake.failSave = 'the selection file could not be read; not overwriting it'
+    fireEvent.change(slider, { target: { value: '1' } })
+    await waitFor(() => expect(within(dialog).getByText(/Not saved: the selection file could not be read/)).toBeDefined())
+    // The host still says "no length", so the optimistic value is dropped.
+    expect(slider.value).toBe('0')
+    expect(dialog.querySelector('.dvf-chip-slider-readout')?.textContent).toBe('Not set')
   })
 
   it('says why a save failed, and keeps the old choice', async () => {
@@ -195,5 +314,35 @@ describe('the composer chip', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '720p' }))
     await waitFor(() => expect(within(dialog).getByText(/Not saved: the selection file could not be read/)).toBeDefined())
     expect(trigger().textContent).toContain('Seedance 2.0')
+  })
+})
+
+describe('a stored row the build knows but that declares nothing', () => {
+  it('offers the documented parameters and says where they came from', async () => {
+    const stored: ChipProvider = {
+      id: 'ark',
+      protocol: 'ark-seedance',
+      credential: { configured: true, masked: 'sk…1234', error: null },
+      models: [{
+        id: 'doubao-seedance-2-5-260628',
+        label: 'Doubao-Seedance-2.5',
+        modes: ['t2v', 'i2v', 'flf2v'],
+        durations: [],
+        resolutions: [],
+        aspectRatios: [],
+        cancelable: true,
+      }],
+    }
+    installHost(chipSelection({ provider: 'ark', model: 'doubao-seedance-2-5-260628' }), [stored])
+    const dialog = await openMenu()
+
+    expect(within(dialog).getByRole('slider', { name: 'Length' }).getAttribute('max')).toBe('26')
+    expect(dialog.querySelector('.dvf-chip-slider-readout')?.textContent).toBe('Not set')
+    expect(within(dialog).getByRole('button', { name: '1080p' })).toBeDefined()
+    expect(within(dialog).getByRole('button', { name: '21:9' })).toBeDefined()
+    expect(within(dialog).getByText(en['chip.presetCapabilities'])).toBeDefined()
+    expect(within(dialog).queryByText(en['chip.undeclared'])).toBeNull()
+    fireEvent.change(within(dialog).getByRole('slider', { name: 'Length' }), { target: { value: '26' } })
+    await waitFor(() => expect(host.saves.at(-1)).toMatchObject({ durationSeconds: 30 }))
   })
 })

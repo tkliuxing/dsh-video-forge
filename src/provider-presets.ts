@@ -274,6 +274,33 @@ export function knownModel(protocol: SupportedProtocol, id: string): PresetModel
 }
 
 /**
+ * What this build declares for a model id, for a stored row that declares
+ * nothing at all.
+ *
+ * Capability lists were added to the schema after the model row was: a config
+ * written before that (or typed by hand from a vendor page) carries three empty
+ * lists, which reads as "the provider decides" and leaves the chip with no
+ * buttons even when the build knows the model. This returns the preset's lists
+ * only for an exact `(protocol, id)` hit that declares at least one of the
+ * three — an unknown id, or a preset that itself declares nothing (`sora-2`),
+ * returns null so the caller keeps the empty lists and the honest "provider
+ * decides" reading.
+ */
+export function capabilityFallback(
+  protocol: SupportedProtocol,
+  id: string,
+): { durations: number[]; resolutions: string[]; aspectRatios: string[] } | null {
+  const known = knownModel(protocol, id)
+  if (known === undefined) return null
+  if (known.durations.length === 0 && known.resolutions.length === 0 && known.aspectRatios.length === 0) return null
+  return {
+    durations: [...known.durations],
+    resolutions: [...known.resolutions],
+    aspectRatios: [...known.aspectRatios],
+  }
+}
+
+/**
  * One model as the editor holds it: the fields the form surfaces, plus whatever
  * else the row carried.
  *

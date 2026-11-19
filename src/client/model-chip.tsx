@@ -70,6 +70,8 @@ export function ModelChip({ sessionId, t }: ModelChipProps): ReactNode {
   const [open, setOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // The selection as the operator just changed it, before the host confirms it.
+  const [pending, setPending] = useState<ChipSelection | null>(null)
   // A browser without the popover API gets the same menu, positioned inline; the
   // composer may clip it, but every control still works.
   const [popoverSupported] = useState(() => typeof HTMLElement !== 'undefined' && 'showPopover' in HTMLElement.prototype)
@@ -112,37 +114,80 @@ export function ModelChip({ sessionId, t }: ModelChipProps): ReactNode {
     }
   }, [popoverSupported])
 
-  const persist = useCallback(async (next: ChipSelection, note: string | null): Promise<void> => {
-    setSaving(true)
-    const result = await saveChipSelection(sessionId, next)
-    setSaving(false)
-    if (!result.ok) {
-      setNotice(t('chip.saveFailed', { error: result.error }))
-      return
-    }
-    const stored = result.value.selection ?? next
+  /**
+   * Writes go through one serial queue: a request already in flight keeps the
+   * newest target aside and sends it when that request returns, so a drag that
+   * crosses ten steps leaves at most two requests, and the value the thumb
+   * settles on is always the value that lands last. `pending` carries the
+   * optimistic selection in the meantime, so the slider and its readout follow
+   * the drag instead of snapping back to the last stored value.
+   */
+  const inFlight = useRef(false)
+  const latest = useRef<{ kind: 'save'; selection: ChipSelection; note: string | null } | { kind: 'clear' } | null>(null)
+
+  const commit = useCallback((stored: ChipSelection | null): void => {
     setState(previous => previous.data === null
       ? previous
       : { status: 'ready', data: { ...previous.data, selection: stored }, error: null })
-    setNotice(note)
-  }, [sessionId, t])
+  }, [])
 
-  const reset = useCallback(async (): Promise<void> => {
+  const flush = useCallback(async (): Promise<void> => {
+    if (inFlight.current) return
+    inFlight.current = true
     setSaving(true)
-    const result = await clearChipSelection(sessionId)
-    setSaving(false)
-    if (!result.ok) {
-      setNotice(t('chip.saveFailed', { error: result.error }))
-      return
+    try {
+      while (latest.current !== null) {
+        const job = latest.current
+        latest.current = null
+        if (job.kind === 'clear') {
+          const result = await clearChipSelection(sessionId)
+          // A newer target arrived while this one was in flight: its answer is
+          // already stale, so keep the optimistic value and write that instead.
+          if (latest.current !== null) continue
+          if (!result.ok) {
+            setPending(null)
+            setNotice(t('chip.saveFailed', { error: result.error }))
+            return
+          }
+          commit(null)
+          setPending(null)
+          setNotice(null)
+          continue
+        }
+        const result = await saveChipSelection(sessionId, job.selection)
+        if (latest.current !== null) continue
+        if (!result.ok) {
+          setPending(null)
+          setNotice(t('chip.saveFailed', { error: result.error }))
+          return
+        }
+        commit(result.value.selection ?? job.selection)
+        setPending(null)
+        setNotice(job.note)
+      }
+    } finally {
+      inFlight.current = false
+      setSaving(false)
     }
-    setState(previous => previous.data === null
-      ? previous
-      : { status: 'ready', data: { ...previous.data, selection: null }, error: null })
-    setNotice(null)
-  }, [sessionId, t])
+  }, [commit, sessionId, t])
+
+  const push = useCallback((job: { kind: 'save'; selection: ChipSelection; note: string | null } | { kind: 'clear' }): void => {
+    latest.current = job
+    void flush()
+  }, [flush])
+
+  const persist = useCallback((next: ChipSelection, note: string | null): void => {
+    setPending(next)
+    push({ kind: 'save', selection: next, note })
+  }, [push])
+
+  const reset = useCallback((): void => {
+    setPending(null)
+    push({ kind: 'clear' })
+  }, [push])
 
   const data = state.data
-  const selection = data?.selection ?? null
+  const selection = pending ?? data?.selection ?? null
   const providers = useMemo(() => data?.providers ?? [], [data])
   const target = useMemo(() => targetOf(selection, providers), [selection, providers])
   const label = chipLabel(selection, target)
@@ -159,6 +204,7 @@ export function ModelChip({ sessionId, t }: ModelChipProps): ReactNode {
       return
     }
     void refresh()
+    setPending(null)
     setNotice(null)
     setOpen(true)
     if (!popoverSupported) return
@@ -251,40 +297,84 @@ export function ModelChip({ sessionId, t }: ModelChipProps): ReactNode {
               </ChipGroup>
               <ChipGroup label={t('chip.params')}>
                 {target.missing === null ? null : <p className="dvf-chip-warn">{t('chip.unavailable')}</p>}
+                {target.model?.capabilitiesFrom === 'preset'
+                  ? <p className="dvf-chip-hint">{t('chip.presetCapabilities')}</p>
+                  : null}
                 {PARAM_KEYS.map(key => {
                   const { values, scope } = paramValues(providers, target, key)
                   const current = selection?.[key] ?? null
+                  // The duration slider steps through declared values by index, so
+                  // a list like [5, 10] needs no fill-in between the two ends.
+                  const lengths = key === 'durationSeconds'
+                    ? [...new Set(values.map(value => Number(value)))].sort((a, b) => a - b)
+                    : []
+                  const sliderIndex = current === null ? 0 : Math.max(0, lengths.indexOf(Number(current)))
                   return (
                     <div key={key} className="dvf-chip-param">
                       <p className="dvf-chip-heading">{paramLabel(key, t)}</p>
-                      {values.length === 0
-                        ? <p className="dvf-chip-hint">{target.model === null ? t('chip.noValues') : t('chip.undeclared')}</p>
-                        : (
-                          <div className="dvf-chip-values">
-                            <button
-                              type="button"
-                              className="dvf-chip-value"
-                              aria-label={`${paramLabel(key, t)}: ${t('chip.notChosen')}`}
-                              aria-pressed={current === null}
-                              disabled={saving}
-                              onClick={() => { clearParam(key) }}
-                            >
-                              {t('chip.notChosen')}
-                            </button>
-                            {values.map(value => (
+                      {lengths.length > 1
+                        ? (
+                          <>
+                            <div className="dvf-chip-slider-row">
                               <button
-                                key={`${String(value)}`}
                                 type="button"
                                 className="dvf-chip-value"
-                                aria-pressed={current !== null && String(current) === String(value)}
+                                aria-label={`${paramLabel(key, t)}: ${t('chip.notChosen')}`}
+                                aria-pressed={current === null}
                                 disabled={saving}
-                                onClick={() => { chooseParam(key, value) }}
+                                onClick={() => { clearParam(key) }}
                               >
-                                {paramText(key, value)}
+                                {t('chip.notChosen')}
                               </button>
-                            ))}
-                          </div>
-                        )}
+                              <input
+                                type="range"
+                                className="dvf-chip-slider"
+                                min={0}
+                                max={lengths.length - 1}
+                                step={1}
+                                value={sliderIndex}
+                                aria-label={paramLabel(key, t)}
+                                aria-valuetext={current === null ? t('chip.notChosen') : paramText(key, current)}
+                                onChange={event => {
+                                  const next = lengths[Number(event.currentTarget.value)]
+                                  if (next !== undefined) chooseParam(key, next)
+                                }}
+                              />
+                              <span className="dvf-chip-slider-readout" aria-hidden="true">
+                                {current === null ? t('chip.notChosen') : paramText(key, current)}
+                              </span>
+                            </div>
+                            <p className="dvf-chip-hint">{t('chip.durationHint')}</p>
+                          </>
+                        )
+                        : values.length === 0
+                          ? <p className="dvf-chip-hint">{target.model === null ? t('chip.noValues') : t('chip.undeclared')}</p>
+                          : (
+                            <div className="dvf-chip-values">
+                              <button
+                                type="button"
+                                className="dvf-chip-value"
+                                aria-label={`${paramLabel(key, t)}: ${t('chip.notChosen')}`}
+                                aria-pressed={current === null}
+                                disabled={saving}
+                                onClick={() => { clearParam(key) }}
+                              >
+                                {t('chip.notChosen')}
+                              </button>
+                              {values.map(value => (
+                                <button
+                                  key={`${String(value)}`}
+                                  type="button"
+                                  className="dvf-chip-value"
+                                  aria-pressed={current !== null && String(current) === String(value)}
+                                  disabled={saving}
+                                  onClick={() => { chooseParam(key, value) }}
+                                >
+                                  {paramText(key, value)}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                       {scope === 'union' && values.length > 0 ? <p className="dvf-chip-hint">{t('chip.unionHint')}</p> : null}
                     </div>
                   )
@@ -403,6 +493,11 @@ const CHIP_CSS = `
 .dvf-chip-value:hover { background:var(--dsw-alias-interactive-bg-hover); }
 .dvf-chip-value[aria-pressed=true] { border-color:transparent; background:var(--dsw-alias-interactive-bg-active); color:var(--dsw-alias-label-primary); }
 .dvf-chip-value:disabled { opacity:.55; cursor:default; }
+.dvf-chip-slider-row { display:flex; align-items:center; gap:8px; padding:0 7px; }
+.dvf-chip-slider { flex:1 1 auto; min-width:96px; margin:0; accent-color:var(--dsw-alias-label-primary); }
+.dvf-chip-slider:focus-visible { outline:2px solid var(--dsw-alias-border-l2); outline-offset:3px; border-radius:4px; }
+.dvf-chip-slider:disabled { opacity:.55; cursor:default; }
+.dvf-chip-slider-readout { min-width:3.5ch; text-align:right; color:var(--dsw-alias-label-secondary); font-size:12px; font-weight:500; font-variant-numeric:tabular-nums; }
 .dvf-chip-hint,.dvf-chip-warn,.dvf-chip-error,.dvf-chip-notice { margin:0; padding:2px 7px; font-size:12px; line-height:16px; color:var(--dsw-alias-label-tertiary); }
 .dvf-chip-warn,.dvf-chip-error { color:var(--dsw-alias-state-error-primary); }
 .dvf-chip-notice { color:var(--dsw-alias-label-secondary); }
