@@ -70,6 +70,8 @@ OpenAI-Videos 兼容网关，并自动填好 Base URL、凭据引用与厂商文
   让她在每个镜头里长得一样。
 - 超时或重启之后问"好了吗？" → `video_status`。插件在重启后接管的任务，完成时还会
   主动在对话里说一声。
+- `/video-prompting 雨夜里外卖员找不到门牌，十几秒那种紧张感` → 把口语需求改写成目标模型
+  要的形态（MiniMax H3 就是三段字段加 `[Shot N]` 时间轴），只给提示词，不生成。
 
 ## 工具
 
@@ -102,13 +104,13 @@ OpenAI-Videos 兼容网关，并自动填好 Base URL、凭据引用与厂商文
 
 ## 随包附带的 skill
 
-插件带 5 个 skill（由模型用 `skill` 工具加载，其中 3 个也注册为 `/名字` 命令）。
+插件带 5 个 skill（由模型用 `skill` 工具加载，其中 4 个也注册为 `/名字` 命令）。
 它们负责引导工作流；工具本身是自洽的，从不依赖某个 skill 是否被加载过。
 
 | Skill | 覆盖什么 |
 |---|---|
 | `video-project`（`/video-project`） | 工作区布局与 `video-project.yaml`：路径、默认值、风格、角色、版本号 |
-| `video-prompting` | 怎么写/改提示词（主体、动作、镜头、风格），时长与画幅，供应商差异 |
+| `video-prompting`（`/video-prompting`） | 怎么写/改提示词：通用结构、时长与画幅、供应商差异；目标模型是 MiniMax H3 时按官方格式改写（三段字段、`[Shot N]` 时间轴、图生固定指令行） |
 | `video-storyboard`（`/video-storyboard`） | 把剧本拆成 `storyboard/shots.yaml`，一次一个镜头地生成 |
 | `video-iterate` | 重拍还是续拍（`from`）、角色一致性，以及交付前的尾帧自检 |
 | `video-guide`（`/video-guide`） | 端到端用法：配置、能做什么不能做什么、费用、成片落在哪 |

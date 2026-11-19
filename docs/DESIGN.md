@@ -726,7 +726,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 | skill | 内容 | 调用方 |
 |---|---|---|
 | `video-project` | 工作区布局、清单怎么建怎么读、目录映射、`renders/` 版本约定；建项目时模型直接用 write 工具，不需要专门的 init 工具 | 模型 + `/video-project` |
-| `video-prompting` | 视频提示词与镜头语言、运镜、时长与画幅的选择、各家供应商的写法差异 | 模型 |
+| `video-prompting` | 视频提示词与镜头语言、运镜、时长与画幅的选择、各家供应商的写法差异；目标模型是 MiniMax H3 时按官方格式改写，细目在 `assets/skills/prompting/minimax-h3.md`（按模型拆的参考文档，正文不常驻上下文） | 模型 + `/video-prompting` |
 | `video-storyboard` | 剧本怎么拆成分镜、`shots.yaml` 的格式 | 模型 + `/video-storyboard` |
 | `video-iterate` | 什么时候出新版本、什么时候用 `from` 续拍、怎样用参考图和角色登记保持一致 | 模型 |
 | `video-guide` | 使用指导（§16.6） | 模型 + `/video-guide` |
@@ -736,7 +736,8 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 - 注册方式与 DSH 自带的 `dsh-skill-badge`、`dsh-skill-office` 相同：`ctx.skills.registerProvider(...)`。**`skills` 做成可选依赖**，没有 skill 注册表的组合里插件照样能用。
 - 会话目录里只显示 skill 的名字与描述，正文由模型按需用 `skill` 工具加载，平时不占上下文。
 - 工作区的 `.dsh/skills/<name>/SKILL.md`（rank 100）会覆盖插件自带的同名 skill（rank 600）。但覆盖是整份替换，用户一改就丢掉了插件后续对 skill 的更新，所以**项目风格放在清单里**，不鼓励靠覆盖 skill 来改风格。
-- 待定：`video-prompting` 可以按当前配置动态生成正文（提供方的 `get()` 每次都会重新生成），只放用户实际配了的供应商的写法。省上下文，代价是测试要覆盖更多组合。
+- 按模型拆参考文档（2026-11-17）：`assets/skills/prompting/<model>.md` 放单个模型的原生格式规范，`video-prompting` 只保留通用结构 + 一张路由表，指向该读哪份。参考文档不进 skill 列表，模型按需用 read 打开，不占常驻上下文。代价是测试要递归扫描子目录（`test/guide-consistency.test.ts` 已改），收益是不用把每家的格式塞进一份正文。
+- 一开始考虑过让 `video-prompting` 按当前配置动态生成正文（提供方的 `get()` 每次都会重新生成），只放用户实际配了的供应商的写法。没走：换模型要让正文重算，多出来的状态和测试比省下的上下文更贵。
 
 ### 16.4 聊天卡片是唯一的工作界面
 
@@ -1475,3 +1476,51 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
   - 宿主启动后自己写出 `$DSH_HOME/dsh-video-forge/price-cache.json`（14.6 KB、`0600`），`etag: W/"6bb8e1ac…`（比设计时的 `d3ac3440` 新，上游确实在几分钟级更新）、`fetchedAt 2026-10-21T03:00:07Z`、**82 行**。
   - 把这份**真缓存**用 `PriceSource.loadCacheSync()` 读回（`kind: 'cache'`，不碰网络）：`doubao-seedance-2-0-260128 @1080p = 0.000051`、`doubao-seedance-2-5-260628 @480p = 0.00007`、`MiniMax-H3 @2K = 0.91`；别名模型 `fixture-model` 查价返回 `null`（不是 0）。5 秒 720p Seedance 2.5 = 108900 token → **7.623 元**——正是调研阶段预测的 7.62 元，而旧的内置两行会给 3.05 元。
   - 收尾：`kill` 宿主 → `lsof -iTCP:34781` 为空、`ps` 无孤儿；用户的 3080 实例 `GET /` 仍 401，**全程未被写入**。
+
+## 22. 提示词 skill 与按模型拆的参考文档（2026-11-17）
+
+**触发**：用户问"能不能集成一个视频生成提示词优化的 skill"，并点名先做 MiniMax H3。H3 的官方写法不是"主体 + 动作 + 运镜"那种散文：它有固定字段名、`[Shot N]` 时间轴、图生视频的固定指令行、`<d>` 对白标签、运镜三维（类型/幅度/速度）。把这一段塞进 `video-prompting` 的通用正文，会把它从 43 行推到 300 行以上，而不用 H3 的人每次都要付这份上下文。
+
+**决定（用户拍板）**：只做提示词 skill，能力缺口单独立项；形态上要"指令形式"，即 `/video-prompt` 这样的命令。
+
+### 22.1 结构
+
+| 文件 | 角色 | 谁读 |
+|---|---|---|
+| `assets/skills/video-prompting.md` | 通用结构、时长画幅、供应商差异、改写契约（`/video-prompting` 命令的正文） | 模型自动 + 用户 `/video-prompting` |
+| `assets/skills/prompting/minimax-h3.md` | H3 原生格式规范：三段字段、固定指令行、时间轴、运镜表、参考标签、负向清单、示例 | 模型按需 read，不进 skill 列表 |
+
+`src/skills.ts` 里 `video-prompting` 的 `userInvocable` 从 `false` 改为 `true`。
+
+**命令入口没有另立一个 skill**：DSH 的 `SKILL_GESTURE`（`packages/skill/tool-skill/src/index.ts:429`）用 `/(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g` 扫用户消息里的 `/name`，命中后取 `ctx.skills.get(name)`，只认 `userInvocable` 的那条，并把渲染后的正文追加成 injected instructions。斜杠后面跟着的文字仍然留在原 user 消息里，所以就是命令参数。也就是说**命令名 = skill 名**，要 `/video-prompt` 就得把 skill 改名或再加一条同正文的 skill——两条描述都会常驻会话目录，模型还要在两条路由描述之间做一次无意义的区分。权衡后保留 `video-prompting` 这个名字，命令就是 `/video-prompting`。
+
+### 22.2 参考文档不进 skill 列表
+
+`assets/skills/prompting/` 只是打包目录（`package.json#files` 已含 `assets`），不是 `SKILLS` 数组里的条目。模型拿到的 `<skill_resources>` 会给出 skill 基目录，正文里写清"目标模型是 H3 时必须先读 `prompting/minimax-h3.md`"，读的动作走通用 read 工具。这样 H3 规范的成本只在真用 H3 时发生。
+
+代价：`test/guide-consistency.test.ts` 原来只 `readdir` 顶层，移到子目录的正文会掉出扫描范围。已改成就地递归的 `skillBodies()`，断言不变（每个 `video_*` 必须是真工具；`video_export` / `视频工坊` / `workbench` / `工作台` 不得出现）。
+
+### 22.3 与官方资料的对应关系
+
+- 规范来源：`github.com/MiniMax-AI/MiniMax-H3` 的 `skills/h3-prompt-writing/`（main 分支 2026-10-28，`199b7d0`），以及 <https://platform.minimax.cn/docs/api-reference/video-generation-v2-create>。仓库没有 LICENSE 文件，所以 `minimax-h3.md` 是自己重写的规范摘要加自写示例，没有拷贝官方正文。
+- H3 家族的硬事实按官方写进参考文档：原生 32 kHz 立体声、11 种对白语言、单 text ≤ 7000 字符、H3 768P/2K 与 4–15 s、H3-Max 480P/768P 与 5–15 s、`extra.prompt_expansion_mode`（disabled/balanced/quality）。
+- 参考模式（`<Subject N>` / `<Picture N>` / `<Video N>` / `<Audio N>` + 六段结构）只写插件真能用到的那部分：只送参考图，所以只解释 `<Subject N>` 与 `<Picture N>`，并明确说插件不送参考视频与参考音频。
+- 官方那套是给开源模型推理写的。插件的 `text` 字段是否原样吃这套结构，**没有实测**。参考文档末尾写明了这一点，并要求首次实跑做 A/B，结论回写本文。
+
+### 22.4 证据与未做
+
+- `pnpm check`：36 个测试文件、**525 例全绿**（改了 `test/skills.test.ts` 的 userInvocable 集合，新增一例"命令契约与参考文档可达"；`test/guide-consistency.test.ts` 改成递归扫描，用例数未变）。
+- **首次真实生成（2026-11-17，`v-20261117-0002`）**：用 `/video-prompting` 现场改写的一段"沙丘风光"（三段字段齐全、无切点、单镜头）走 `video_generate` 提交给 `minimax/MiniMax-H3`，768P / 16:9 / 5 s，成功出片 `renders/dune-sea/v001.mp4`。结论：
+  - **三段字段被原样接受**，没有报错也没有被截断；成片带 AAC 32 kHz 立体声音轨（`overall_soundscape` 与 `non_diegetic_music` 确实进了音频链路），h264 24 fps、5.167 s、1344×768。
+  - 听话的部分：构图与主体（单一沙海 + 黑色粗野主义巨构）、`pedestals up with small amplitude at slow speed`（5 秒内景别确有抬升）、负向清单（无文字、无飞鸟、无眩光）。
+  - 没听话的部分：沙色偏金黄而非 `ochre-ash`；"远处沙幕贴着地表移动"没有出现；巨构读作"立碑"而不是"半埋入沙"。这三项都是形容词密度高、缺少可数锚点的地方，符合"负面清单比形容词管用"的判断。
+  - 只是单臂，还不是 §22.3 要求的 A/B（同一需求再写一版散文做对照）。所以"官方格式比散文更听话"这个结论**仍然没有证据**。
+  - 附带一条工具事实：`MiniMax-H3` 必须显式传 `resolution`，不传直接报 `model "MiniMax-H3" requires resolution; MiniMax documents no default`；`16:9` 实际落到模型自己的 1344×768（1.75:1），不是精确的 1365×768。
+- **同一段提示词跨供应商对照组（2026-11-17，`v-20261117-0003`）**：把上面那段 H3 三段格式的提示词**一字不改**交给 `ark/doubao-seedance-2-5-260628`（720p / 16:9 / 5 s，t2v），成功出片 `renders/dune-sea-ark/v001.mp4`。结论：
+  - ARK adapter 把 prompt 原样塞进 `content[0].text`（`src/providers/ark-seedance.ts:59`，`buildArkContent`），插件不做任何改写，`sentPrompt` 仍是 `null`。所以"H3 格式能不能喂给别家"这个问题在插件侧没有闸门，只看厂商接不接受——1 100 字符的文本 ARK 收下了，没有报错。
+  - 这一版在**风格保真**上反而比 H3 更接近需求：沙色是灰褐而不是金黄；"贴着地表移动的沙幕"真的出现了（背景一条横贯画面的沙墙）；巨构读作独立的黑色板状碑。`pedestals up` 同样执行了。
+  - 参数面差异：Seedance 精确落在 1280×720（1.778:1），H3 落到 1344×768（1.75:1）；两家都是 h264 24 fps + AAC 32 kHz 立体声，Seedance 音频更响（mean −29.7 dB vs H3 −37.0 dB）。
+  - 成本面：Seedance 2.5 这条 108 900 token（5 s / 720p），按 70 元/M token ≈ **¥7.6**；同一条 H3 768P 按 ¥0.50/s ≈ **¥2.5**。同样的字，三倍价，换来的是运镜与沙幕的执行度。
+  - 判断：三段字段名对 Seedance 是死词（它当普通散文读），真正起作用的是里面的具体描述与负向清单。所以 `assets/skills/video-prompting.md:53` 补了一句"照抄能出片，但建议抹掉字段名合成一段"。
+- **未做**：隔离实例里 `/video-prompting` 的真实触发没有跑（命令识别逻辑简单，风险低，但按 §13 的纪律该在隔离实例里点一次）。留到下次动技能正文时一起做。
+- **能力缺口（单独立项，不混入本次）**：① `MINIMAX_MODELS` 只注册 H3 与 H3-Max，缺 H3-Highspeed / H3-Lite；② presets 注释里 `generateAudio: false` 与"两家都没写音频开关"的判断和官方"H3 原生立体声"不符；③ 方舟 `buildArkContent` 只有三种图片 role，没有 reference_video / reference_audio。

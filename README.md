@@ -80,6 +80,9 @@ host's credential service first and the environment second
 - "Did it finish?" after a timeout or a restart → `video_status`. A task the
   plugin had to take over after a restart also announces itself to the
   conversation once it is done.
+- `/video-prompting a courier who cannot find the door at night, tense and
+  quick` → rewrites the brief into what the target model wants (three sections
+  and a `[Shot N]` timeline for MiniMax H3) and returns the prompt only.
 
 ## Tools
 
@@ -119,13 +122,13 @@ and a changed one is let through.
 ## Bundled skills
 
 Five skills ship with the plugin (loaded by the model with the `skill` tool, or
-three of them as `/name` commands). They guide the workflow; the tools stay
+four of them as `/name` commands). They guide the workflow; the tools stay
 self-contained and never depend on a skill having been loaded.
 
 | Skill | What it covers |
 |---|---|
 | `video-project` (`/video-project`) | Workspace layout and `video-project.yaml`: paths, defaults, style, characters, version numbering |
-| `video-prompting` | Writing and revising prompts (subject, motion, camera, style), duration and aspect ratio, provider differences |
+| `video-prompting` (`/video-prompting`) | Writing and revising prompts: generic structure, duration and aspect ratio, provider differences; MiniMax H3 gets its official format (three sections, `[Shot N]` timeline, image-mode instruction line) |
 | `video-storyboard` (`/video-storyboard`) | Breaking a script into `storyboard/shots.yaml` and generating it one shot at a time |
 | `video-iterate` | Redo vs continue (`from`), character consistency, and a last-frame self-check before delivery |
 | `video-guide` (`/video-guide`) | End-to-end usage: setup, what it can and cannot do, cost, where videos land |

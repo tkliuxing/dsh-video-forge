@@ -4,7 +4,8 @@
  * Five skills ship with the plugin and are registered through `ctx.skills`.
  * They are an optional dependency: the tools must work without them, so the
  * provider is mounted only when the `skills` service exists in the composition
- * (see `registerSkills`). The bodies live in `assets/skills/*.md`, packaged via
+ * (see `registerSkills`). The bodies live in `assets/skills/*.md` (plus the
+ * per-model references under `assets/skills/prompting/`), packaged via
  * `package.json#files`, and are read at load time relative to `import.meta.url`.
  */
 
@@ -42,9 +43,9 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-prompting',
     description:
-      '如何为 dsh-video-forge 撰写和修改视频生成提示词（主体、动作、镜头、光线、风格），以及挑选时长/分辨率/画幅（含供应商差异）。在撰写或修改 video_generate 的提示词、或生成效果不对且提示词可能是原因时使用。',
+      '如何为 dsh-video-forge 撰写和修改视频生成提示词（主体、动作、镜头、光线、风格），以及挑选时长/分辨率/画幅（含供应商差异）；目标模型是 MiniMax H3 时按官方格式改写（三段字段、[Shot N] 时间轴、图生固定指令行）。在撰写或修改 video_generate 的提示词、或生成效果不对且提示词可能是原因时使用；也可以用 /video-prompting 把一段需求改写成提示词。',
     file: 'video-prompting.md',
-    userInvocable: false,
+    userInvocable: true,
   },
   {
     name: 'video-storyboard',

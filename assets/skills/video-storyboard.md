@@ -39,7 +39,7 @@ shots:
 **每次 `video_generate` 只生成一个镜头**——工具收一条 prompt、出条一条视频。按顺序走：
 
 1. 读这个镜头的描述。
-2. 用 video-prompting 技能把它扩成完整 prompt（加上运动、镜头、光线、风格；清单 `style` 会自动追加）。
+2. 用 video-prompting 技能把它扩成完整 prompt（加上运动、镜头、光线、风格；清单 `style` 会自动追加）。目标模型是 MiniMax H3 时按它里面的 H3 规范改写，不要压成一段散文。
 3. 调 `video_generate`，带 `shot: <id>` 和 prompt。
 4. 等结果（或查 `video_status`），再进下一个镜头。
 
