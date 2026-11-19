@@ -323,8 +323,8 @@ function setupText(setup: ReturnType<typeof setupValue>): string {
       chip.aspect_ratio,
     ].filter((part): part is string => part !== null)
   lines.push(chosen.length === 0
-    ? 'this conversation\'s video chip chooses nothing: your arguments decide first, then video-project.yaml, then the plugin settings'
-    : `this conversation's video chip: ${chosen.join(', ')} — it outranks video-project.yaml and the plugin settings, and an argument you pass outranks it`)
+    ? 'this conversation\'s video chip chooses nothing: your arguments decide the length, resolution and ratio first, then the defaults in video-project.yaml (the plugin settings only choose the default provider and model)'
+    : `this conversation's video chip: ${chosen.join(', ')} — it outranks the defaults in video-project.yaml, and an argument you pass outranks it`)
   const workspace = setup.workspace
   if (workspace.state === 'none') lines.push('no workspace: videos stay in the plugin\'s own folder')
   else if (workspace.state === 'unavailable' || workspace.state === 'invalid-manifest') lines.push(`workspace ${workspace.folder ?? ''}: ${workspace.problem ?? workspace.state}`)
@@ -399,7 +399,7 @@ export function registerTools(runtime: VideoForgeRuntime): void {
       'Returns immediately with a task id and a background job id; the generation continues while you work, and its completion is delivered to you as a notice. Use video_status to check on it.',
       'Inputs: prompt (required), optional provider/model, mode t2v (text only), i2v (first_frame), flf2v (first_frame + last_frame) or s2v (reference_images).',
       'A local image is a path relative to the workspace (or absolute) that already exists; verify it with the read tool first.',
-      'When this call leaves provider, model, duration_seconds, resolution or aspect_ratio out, the video chip beside the composer may supply them (the user\'s per-conversation choice), and after that video-project.yaml, then the plugin settings. An argument always wins; the result names what the chip set, and video_status setup reports the current choice.',
+      'When this call leaves provider, model, duration_seconds, resolution or aspect_ratio out, the video chip beside the composer may supply them (the user\'s per-conversation choice), and after that the defaults in video-project.yaml. The plugin settings choose the default provider and model only: they carry no length, resolution or aspect ratio, so leaving one out with nothing above it hands the choice to the vendor. An argument always wins; the result names what the chip set, and video_status setup reports the current choice.',
       'shot names the take\'s folder under renders/. from continues an earlier take (its task id or video path): its last frame becomes the first frame and its shot carries over — only providers that return a last frame (ARK) can be continued.',
       'characters names characters registered in video-project.yaml: their descriptions are added to the prompt and their reference images are sent (mode s2v when you set no mode). The project style from video-project.yaml is added to every prompt.',
       'Never re-submit the same prompt to work around a timeout: call video_status instead. A duplicate submission inside the dedupe window is refused.',

@@ -291,7 +291,7 @@ describe('video_status / video_cancel', () => {
       aspect_ratio: null,
     })
     const text = (status?.output.render?.({}, value as never) as { text: string }[])[0]?.text ?? ''
-    expect(text).toMatch(/this conversation's video chip: ark\/doubao-seedance-fixture, 5s — it outranks video-project\.yaml/)
+    expect(text).toMatch(/this conversation's video chip: ark\/doubao-seedance-fixture, 5s — it outranks the defaults in video-project\.yaml/)
   })
 
   it('explains an unknown task id', async () => {

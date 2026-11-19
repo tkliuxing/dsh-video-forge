@@ -1193,6 +1193,10 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 
 **为什么这么啰嗦**：会话级时长默认值是"5 秒默认悄悄把 10 秒镜头截短"的那类陷阱。所以三层都点名：结果里说 chip 给了什么，拒绝时说清是 chip 还是清单（`defaultSourceText`：`the video chip in this conversation` / `the defaults in video-project.yaml`）。模型是这两句话的读者。
 
+**最后一层对几何参数是空的（2026-11-19 核对）**：`Config`（`src/config.ts:24-40`）只有 `defaultProvider`/`defaultModel`，没有时长/分辨率/画幅的默认项。所以"插件设置默认"这一档只对供应商和模型成立；三个几何参数实际是三层（参数 > chip > 清单 `defaults`），三层都没给就不进请求体，交由供应商默认（§7.1 表格里那列"默认"）。`assertGeometry`（`src/settings.ts:182`）只在某层真的给了值时才校验，模型声明为空列表表示"供应商决定"。为此把几处把它写成"再落到插件设置"的文案改成实情：`src/tools.ts` 的工具描述与 `setupText`、`src/operations.ts` 的 `selectionProblem`、`src/client/locales.ts` 的 `chip.autoHint`、README 中英两版、`assets/skills/video-guide.md` 与 `video-prompting.md`。
+
+**抓包级回归（2026-11-19 补）**：`test/workspace-project.test.ts` 新增六条用例，直接读 fixture 收到的创建请求体，确认三层给的值逐字进入 body：chip 选的 `10`/`4k`/`adaptive`（`4k` 与 `adaptive` 必须原样透传，不能被"安全默认"改写）、清单 `defaults` 的 `5`/`1080p`/`9:16`、参数覆盖 chip 时其余字段仍来自 chip；未设过的字段在 body 里**不存在**（不是 `null`）；超出声明范围的时长与 `-1` 都在 POST 之前被拒且 `posts === 0`。
+
 ### 20.3 失效、冲突与"不许说谎"
 
 用户选的规则是"按当前模型过滤 + 切换时清掉不兼容项并提示"：
@@ -1206,7 +1210,8 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 ### 20.4 为什么参数里没有 `mode`，也没有自由输入
 
 - `mode`（t2v/i2v/flf2v/s2v）由**素材**决定：把它做成会话默认，等于埋一个"没传 `first_frame` 却按 s2v 提交"的坑。它继续由参数与素材决定。
-- 参数值只用模型声明的列表，**不做自由文本**：模型什么都没声明时，chip 说"该模型没有声明这一项，由供应商决定"（对话里传参仍然可以）。给一个不能校验的输入框，代价是提交时才发现不合法。
+- 参数值只用模型声明的列表，**不做自由文本**：模型什么都没声明时，chip 说"该模型没有声明这一项，由供应商决定"（对话里传参仍然可以）。内置预设认识的模型 id 不算这一列：配置里没写也会按预设声明显示，见 §20.9。给一个不能校验的输入框，代价是提交时才发现不合法。
+- **时长用滑动条**：滑块以声明值列表的**索引**步进（`min=0`、`max=值个数-1`），拖动取 `values[index]`，所以 `[5, 10]` 这种不连续的列表照样能用；只声明一个值的模型仍是单值按钮，不做一个只有一格的滑条。分辨率与画幅保持按钮。没选时长时读数与 `aria-valuetext` 都写"不设"：滑块停在起点只是操作位置，不能被读成一个具体秒数；清空仍靠旁边的"不设"按钮，因为滑条本身回不到 null。
 
 ### 20.5 写边界（§16.4 不变）
 
@@ -1219,11 +1224,12 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 | 文件 | 内容 |
 |---|---|
 | `src/selection.ts` | 会话选择的类型、校验（provider/model 成对、时长上界）、`SelectionStore`（共享实例、原子写、上限淘汰、读失败拒写） |
-| `src/operations.ts` | `withSessionSelection` / `withProjectDefaults` / `mergeFilled` / `defaultSourceText` / `fieldsClause` / `chipContribution`；`describeSetup` 的 `selection`；`estimateGeneration` 接受 chip（估算与实际请求走同一条链） |
+| `src/provider-presets.ts` | 内置模型目录；`capabilityFallback` 提供共享的"空声明 → 预设"解析（§20.9） |
+| `src/operations.ts` | `withSessionSelection` / `withProjectDefaults` / `mergeFilled` / `defaultSourceText` / `fieldsClause` / `chipContribution`；`describeSetup` 的 `selection`；`estimateGeneration` 接受 chip（估算与实际请求走同一条链）；`describeProviders` 的空声明回退与 `capabilitiesFrom`（§20.9） |
 | `src/panel-api.ts` | `selection` 的 GET/POST/DELETE、`?session=` 校验、`SelectionError → 400` |
 | `src/tools.ts` | `SETUP_SCHEMA.selection`、`setupText` 一行、两个工具描述 |
 | `src/client/panel-api.ts` | chip 的类型与三个调用 |
-| `src/client/model-chip.ts` | 纯判断：目标解析、可用值（模型/并集）、淘汰、标签与警告、摘要 |
+| `src/client/model-chip.ts` | 纯判断：目标解析、可用值（模型/并集）、淘汰、标签与警告、摘要；`resolveModelCapabilities` 对旧宿主的空声明套内置预设（§20.9） |
 | `src/client/model-chip.tsx` | 控件：`popover` 顶层菜单（不支持时降级成内联，靠 React 的 display 控制）、两段菜单、保存后回写本地状态、错误与提示就地显示 |
 | `src/client/index.ts` | 注册 `conversation.input.right` |
 | `assets/skills/*.md` | `video-guide` / `video-project` / `video-prompting` 写明优先级与 chip 的边界 |
@@ -1264,6 +1270,22 @@ V3 手风琴：按 `renders/<shot>` 分组，**最新一条成片默认展开但
 **真浏览器抓到的一个缺陷（已修）**：菜单**一加载就是打开的**。`popover` 的"关闭即 `display:none`"来自 UA 样式表，而本控件的 `.dvf-chip-panel { display:flex }` 以类选择器把它盖掉了，于是面板在没点开时也常驻显示、把触发器压在下面。修法是补一条 `.dvf-chip-panel[popover]:not(:popover-open) { display:none }`（只作用于真的带 `popover` 属性的元素，降级路径仍由 React 的 `open` 控制）。这一条 jsdom 覆盖不到——jsdom 没有 popover API，走的是降级分支。
 
 **真浏览器没能覆盖的**：宿主侧"chip → 生成"的整条链（隔离实例没有 LLM key，无法让模型真的调一次 `video_generate`）。这条链由 fixture 供应商的真实 socket 集成测试覆盖：`test/workspace-project.test.ts` 里五条新用例断言了 chip 压过清单、参数压过 chip、chip 值不被模型声明时**不花钱就拒绝并点名 chip**、chip 的模型消失时拒绝而不是回落、以及 chip 不跨会话串味。
+
+### 20.9 能力声明的来源与回退（2026-11-19）
+
+**现场**：`~/.dsh/profiles/web/cordis.patch.yml` 里 ark 的两行模型（`doubao-seedance-2-5-260628`、`doubao-seedance-2-0-260128`）有自定义 `label`，三个能力数组都是空的。schema 把数组默认成 `[]`，读作"供应商决定"（§7.1），于是 chip 三项全显示"该模型没有声明这一项"，一个按钮也没有；而 `src/provider-presets.ts` 对这两个 id 是有完整声明的。配置卡只把预设填进"`label` 为空且三数组全空"的行，这两行因此永远补不上。
+
+**决定**（用户 2026-11-19）：不改用户配置，改成读取时回退。`ProviderStatus` / `ChipModel` 增加 `capabilitiesFrom: 'config' | 'preset'`：
+
+- 只在精确命中 `(protocol, id)` 的内置预设、且预设至少声明三者之一时回退。未知 id 保持空，不编造；`sora-2` 这种预设本身三数组皆空的也不假装声明。
+- 只回退**三个数组全空**的行。用户填了其中一两个的"部分声明"原样保留，这是有意的保守选择：那已经是人工判断，不能拿预设盖掉。
+- `label` / `modes` / `cancelable` / `generateAudio` 的既有语义不变。
+- host（`describeProviders`）回退并标记来源；client（`resolveModelCapabilities`）对旧宿主返回的空数组套同一份预设，所以宿主端还没升级时客户端也能补。不过 client bundle 由宿主在启动时读进内存（`packages/client/modules/src/index.ts:1112`），要拿到新代码仍需重启宿主，单刷新页面不算。能力来自预设时，chip 在参数区说明这几项是按内置模型声明补的，配置里并没写。
+- 参数没选时请求仍然不写这三个键（§7.1、§20.2），供应商默认行为不变。
+
+**配置卡**：`changeId` 判断"什么都没声明"时不再要求 `label` 为空，`label` 仅在为空时才补；旧行或手输 id 的行改了 id 也能带上能力。已经声明过任何一项的行照旧不覆盖。
+
+**为什么不写回配置**：`~/.dsh` 下是用户的真实配置。插件没有理由替用户把空数组改成具体值：那会把"供应商决定"悄悄变成一组硬编码选项，以后预设更新时旧值还会继续生效。
 
 ## 21. 价格表远端化：直接消费 LiteLLM（2026-10-21 设计并实施）
 

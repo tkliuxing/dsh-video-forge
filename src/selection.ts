@@ -4,13 +4,17 @@
  * read.
  *
  * Scope is the **conversation**, not the workspace. A new conversation starts
- * on whatever `video-project.yaml` and the plugin settings say, so a choice made
- * for one film does not silently follow the next one. The resolution chain is
+ * on whatever `video-project.yaml` and, for the provider and model, the plugin
+ * settings say, so a choice made for one film does not silently follow the next
+ * one. The resolution chain is
  *
  *   tool arguments > this selection > video-project.yaml defaults > plugin settings
  *
- * and every layer that supplies a field is named in the tool result, because a
- * quiet default is exactly how a 10-second shot becomes 5 seconds.
+ * The last rung is the provider and model only: the plugin settings declare no
+ * default length, resolution or ratio, so a geometry field nothing above set is
+ * left to the vendor. Every layer that does supply a field is named in the tool
+ * result, because a quiet default is exactly how a 10-second shot becomes 5
+ * seconds.
  *
  * The file lives in the plugin's own directory under `$DSH_HOME`
  * (`selections.json`), never in the workspace. That is what keeps DESIGN §16.4
