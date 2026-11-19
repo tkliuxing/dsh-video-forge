@@ -9,3 +9,5 @@ coverage/
 # in the repository, and a contributor's machine may not have the global
 # ignore rule that used to cover it.
 .omc/
+
+.cybernetics/
