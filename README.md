@@ -20,8 +20,38 @@ models only.
 - An account and API key with at least one supported provider (Volcengine ARK
   Seedance, MiniMax, or an OpenAI-Videos-compatible gateway). Nothing is
   generated (and nothing is billed) before you configure one.
-- No ffmpeg, no model weights, no GPU: the vendor renders, and this plugin moves
-  the bytes.
+- No ffmpeg, no model weights, no GPU for **generated** videos: the vendor
+  renders, and this plugin moves the bytes.
+- **Teaching videos** (the four `video_teach_*` tools) render on this machine
+  instead of at a vendor, so they need local tools. The list is tiered, and only
+  the first tier is needed for every manuscript:
+  - **Every teaching video**: `ffmpeg` and `ffprobe` on `PATH`. Without them
+    `video_teach_plan` reports a blocker, and `video_teach_render` refuses to
+    start either.
+  - **Slide segments** (`engine: slides`): a Chromium. `playwright-core` ships
+    with the plugin but the browser itself does not, so either let Playwright's
+    cache answer or point `TEACH_CHROMIUM` at a binary. This tier never blocks:
+    the steps before recording work without it, and the failure only shows up
+    when a deck is actually recorded.
+  - **Manim segments** (`engine: manim`): a Python with the `manim` module, plus
+    `latex` and `dvisvgm`. Only a manuscript with real manim sentences needs
+    this, and when it does, a missing tool is refused before anything is
+    narrated or rendered, with two ways out. There is one trap here.
+    **BasicTeX ships `latex` but not `dvisvgm`**, so a BasicTeX-only install
+    fails with `latex error converting to dvi`. Use TinyTeX, or install
+    `dvisvgm` separately.
+
+  Three environment variables say where those tools live on your machine. They
+  describe topology, not secrets:
+  - `TEACH_PYTHON`: the interpreter that has `manim` (a dedicated venv is fine).
+  - `TEACH_TEXBIN`: a bin directory holding **both** `latex` and `dvisvgm`.
+  - `TEACH_CHROMIUM`: the Chromium executable.
+
+  **Manim is optional.** Without it, set every segment to `engine: slides` and
+  the route needs only ffmpeg and a Chromium. The `video-teach-storyboard` skill
+  covers the manuscript format, and `video-teach-manim` covers the install steps
+  and when animation is worth the trouble. Generated videos never touch any of
+  this.
 
 ## Install
 
@@ -65,6 +95,32 @@ Models are referenced as `providerId::modelId`. Credentials resolve through the
 host's credential service first and the environment second
 (`<PROVIDER>_API_KEY`); a loopback gateway may run without one.
 
+The teaching route's narration uses a credential that is not a provider key.
+Its reference is the `teachVoiceAuthRef` setting (default `ARK_VOICE_API_KEY`),
+stored through the same credential service, or exported under that name.
+`ARK_API_KEY` cannot drive speech, and the endpoint rejects it with a 401 that
+reads like an unactivated model.
+
+Two speech providers are supported, and the manuscript picks one with
+`meta.voice.provider`:
+
+- `deepseek` (default): the official DeepSeek speech endpoint, and the voice a
+  blind listening test preferred on the same script: sentences held together as
+  one speaker, and the un-padded joins still sounded natural. Two voices
+  (`stella`, `tide`), no speed control, **no word timestamps** — the picture is
+  therefore driven by page: one slide page per sentence, with beats inside it
+  placed by `at_progress` (a 0–1 share of the sentence's measured length). Those
+  beats ride on meaning, not on syllables. Credential reference
+  `DEEPSEEK_API_KEY`.
+- `volcengine`: the only provider that returns word-level timestamps, so the
+  only one that can fire a fragment on the word that is being spoken
+  (`at_word`). Credential reference `ARK_VOICE_API_KEY`. Reach for it when a
+  line needs "say this word, change that picture".
+
+The settings card's teaching section also holds the three machine paths
+(`teachPythonPath`, `teachTexBinPath`, `teachChromiumPath`); a setting wins over
+its environment variable, which wins over discovery.
+
 ## In a conversation
 
 - "Make a 5-second shot of a lighthouse at dusk" → `video_generate`; the card in
@@ -91,6 +147,37 @@ host's credential service first and the environment second
 | `video_generate` | Submit one generation (t2v / i2v / flf2v / s2v) and return at once with a task id and a background job id. `shot` names the folder under `renders/`; `from` continues an earlier take; `characters` applies characters registered in `video-project.yaml`. Refusals (read-only conversation, remote workspace, bad manifest, duplicate request) happen before anything is paid for |
 | `video_status` | The recovery entry point: recent tasks, progress, where each video is, failures, content-review refusals, provider-reported usage. Without a task id it also reports the setup: providers, whether their keys are set, models and modes, and this workspace's manifest, permission mode and characters. Check here after a timeout; never re-submit |
 | `video_cancel` | Ask the provider to stop (distinct from `job_kill`, which only stops watching while the provider keeps working and billing) |
+| `video_teach_plan` | Validate a teaching manuscript (`storyboard.yaml`), estimate its spoken length, and report which local tools are missing. Free and offline |
+| `video_teach_narrate` | Synthesize the narration (DeepSeek speech by default, `DEEPSEEK_API_KEY`; volcengine optionally, the only provider with word timings) and write `timings.json`; `sentences` re-synthesizes only those lines |
+| `video_teach_render` | Render one segment per sentence from reveal.js slides and/or Manim scenes, then assemble `renders/<shot>/vNNN.mp4`; `sentences` re-records only those lines and leaves the other segments untouched |
+| `video_teach_export` | Write the SRT (timed by the word timings), `timeline.json`, and the decks under `deck/` |
+
+### Teaching videos
+
+A teaching video is narrated by TTS and drawn on this machine, so it needs no
+provider key and costs nothing to render. The narration is the clock: each
+sentence's audio sets that sentence's length, and slide fragments fire on the
+words the manuscript names.
+
+| Use it for | Do not use it for |
+|---|---|
+| formula derivations, coordinate systems, numbers accumulating step by step | live-action feel, camera work, character performance |
+| slide-style explanation where points appear one at a time | complex scene blocking and lighting changes |
+| a re-recordable script where changing one line re-renders one line | anything that has to look photographed |
+
+`video_teach_plan` checks more than the file format: every slide sentence has to
+bring at least one picture change, the average gap between changes must stay
+under 8 s, a sentence should run 2 to 8 s, cue numbers must fit the deck's real
+fragment count, and two sentences must not share one Manim scene (the animation
+would repeat). Findings name the sentence; only a cue beyond the deck's
+fragments is refused outright.
+
+Artifacts: the film lands at `renders/<shot>/vNNN.mp4` with `vNNN.json` beside
+it, and appears in the video panel. The manuscript (`storyboard.yaml`),
+`slides/<segment>/`, `scenes/*.py`, `timings.json` and `audio/` belong to the
+project and are worth committing; `.dsh-video/`, `deck/` and `renders/` are
+regenerable. The `video-teach-*` skills cover the manuscript format, the
+per-engine rules, and how to re-record one line.
 
 ## Cost, and what leaves your machine
 

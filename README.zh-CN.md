@@ -17,7 +17,29 @@
 - **Node** `^22.19.0 || >=24.0.0`。
 - 至少一家受支持供应商的账号与 API key（火山方舟 ARK Seedance、MiniMax，或任意
   OpenAI-Videos 兼容网关）。没配置之前不会生成，也不会产生费用。
-- 不需要 ffmpeg、模型权重或 GPU：渲染在供应商侧，本插件只搬字节。
+- **生成式**视频不需要 ffmpeg、模型权重或 GPU：渲染在供应商侧，本插件只搬字节。
+- **教学视频**（四个 `video_teach_*` 工具）的渲染在这台机器上，因此需要本地工具。
+  清单按等级分，只有第一级是任何稿件都需要的：
+  - **任何教学视频**：`PATH` 上有 `ffmpeg` 与 `ffprobe`。缺了 `video_teach_plan`
+    直接报阻塞，`video_teach_render` 也会拒绝动手。
+  - **slides 段**（`engine: slides`）：一个 Chromium。`playwright-core` 随插件装，
+    浏览器本身不随包，可以让 Playwright 的缓存回答，或用 `TEACH_CHROMIUM` 指定
+    可执行文件。这一级**永不阻塞**：录制之前的步骤没有它照样能跑，要等真正开始
+    录制才会失败。
+  - **manim 段**（`engine: manim`）：装了 `manim` 模块的 Python，以及 `latex` 与
+    `dvisvgm`。只有稿件里真有 manim 句子才需要；缺了会在 `plan` 或 `render` 动手前
+    就被拒绝，并给出两条出路。这里有个坑。**BasicTeX 有 `latex` 但没有 `dvisvgm`**，
+    只装 BasicTeX 会报 `latex error converting to dvi`，要么用 TinyTeX，要么单独把
+    `dvisvgm` 补上。
+
+  三个环境变量说明这些工具在这台机器上的位置。它们是拓扑，不是密钥：
+  - `TEACH_PYTHON`：装了 `manim` 的解释器，用专用 venv 也可以。
+  - `TEACH_TEXBIN`：同时有 `latex` 与 `dvisvgm` 的 bin 目录。
+  - `TEACH_CHROMIUM`：Chromium 的可执行文件。
+
+  **不装 Manim 也能做完**：把段落都设成 `engine: slides`，整条路线只需要 ffmpeg
+  与一个 Chromium。稿件怎么写见 `video-teach-storyboard` skill，安装步骤与"什么时候
+  值得上动画"见 `video-teach-manim`。生成式视频完全用不到这些。
 
 ## 安装
 
@@ -58,6 +80,19 @@ OpenAI-Videos 兼容网关，并自动填好 Base URL、凭据引用与厂商文
 模型按 `providerId::modelId` 引用。凭据先走宿主凭据服务，再走环境变量
 （`<PROVIDER>_API_KEY`）；回环网关可以不带 key。
 
+教学路线的旁白用的是另一项凭据，它不是供应商 key。引用名是设置项
+`teachVoiceAuthRef`，同样走宿主的凭据服务或环境变量。`ARK_API_KEY` 不能用于语音，
+那个端点会用一条很像"模型未激活"的 401 拒绝它。
+
+语音有两个供应商，由稿件的 `meta.voice.provider` 选择：
+
+- `deepseek`（默认）：DeepSeek 官方语音。同一段稿子盲听对比里它最像同一个人，原样拼接
+  的气口也最自然。两个音色（`stella`、`tide`），不能调语速，**没有词级时间戳** ——
+  所以画面按页驱动：一句一页，页内节拍用 `at_progress`（该句实测时长的 0–1 比例）摆放。
+  节拍跟着语义走，不对齐单字发音。凭据引用 `DEEPSEEK_API_KEY`。
+- `volcengine`：唯一返回字级时间戳的供应商，也是唯一能做"讲到这个词、画面动一下"
+  （`at_word`）的。凭据引用 `ARK_VOICE_API_KEY`。需要逐词联动时再换它。
+
 ## 在对话里怎么用
 
 - "做一个黄昏灯塔的 5 秒镜头" → 调用 `video_generate`；聊天卡片跟着任务实时更新，
@@ -80,6 +115,31 @@ OpenAI-Videos 兼容网关，并自动填好 Base URL、凭据引用与厂商文
 | `video_generate` | 提交一次生成（t2v / i2v / flf2v / s2v），立刻返回任务 id 与后台 job id。`shot` 决定 `renders/` 下的目录名；`from` 接着上一版拍；`characters` 应用 `video-project.yaml` 里注册的角色。拒绝（只读对话、远端工作区、清单写坏、重复请求）都发生在**花钱之前** |
 | `video_status` | 恢复入口：最近的任务、进度、每部片在哪、失败原因、内容审核拒绝、供应商上报的用量。不给任务 id 时还会报告当前设置：有哪些供应商、key 是否配好、模型与模式，以及本工作区的清单、权限模式与角色。超时之后先查这里，**不要重新提交** |
 | `video_cancel` | 请供应商停下（与 `job_kill` 不同：后者只是停止盯守，供应商照旧干活照旧计费） |
+| `video_teach_plan` | 校验教学稿 `storyboard.yaml`、估时、检查内容与时间线的配合（哪句没有画面变化、fragment 是否越界、场景有没有被复用），并报告本机缺哪个外部程序。免费、不联网 |
+| `video_teach_narrate` | 合成旁白（默认 DeepSeek 语音 `DEEPSEEK_API_KEY`；火山 `volcengine` 可选，唯一带字级时间戳），写 `timings.json`；`sentences` 只重合成指定句 |
+| `video_teach_render` | 一句一段地从 reveal.js 幻灯片与/或 Manim 场景渲染，再拼成 `renders/<镜头>/vNNN.mp4`；`sentences` 只重录指定句，其余段不动。渲染后抽样帧颜色，把可疑静帧点名 |
+| `video_teach_export` | 写按词定时的 SRT、`timeline.json`，并把 deck 导出到 `deck/` |
+
+### 教学视频
+
+教学视频的旁白由 TTS 合成、画面在这台机器上画出来，所以不需要供应商 key，渲染不花钱。
+时间轴由旁白决定：每句音频的长度就是那句的长度，幻灯片的 fragment 按稿件里写的词触发。
+
+| 适合 | 不适合 |
+|---|---|
+| 公式推导、坐标系、数字逐步累积 | 真人质感、镜头调度、角色表演 |
+| 要点逐条出现的幻灯片式讲解 | 复杂场景调度与光影变化 |
+| 改一句只重录一句的返工节奏 | 任何需要"看起来像实拍"的内容 |
+
+`video_teach_plan` 不只检查格式：每句幻灯必须至少带来一次画面变化，平均每 8 秒至少变一次
+画面，一句的时长应在 2 到 8 秒之间，cue 的 fragment 不能超过 deck 实际拥有的数量，
+两句话不能共用一个 Manim 场景（否则同一段动画会重复播）。问题会点名到句子 id，
+只有 fragment 越界是直接拒绝。
+
+产物：成片在 `renders/<镜头>/vNNN.mp4`，旁边 `vNNN.json`，并出现在视频面板里。
+`storyboard.yaml`、`slides/<段>/`、`scenes/*.py`、`timings.json`、`audio/` 属于项目、值得进版本库；
+`.dsh-video/`、`deck/`、`renders/` 可以重建。稿子格式、两种引擎的约定、只重录一句的做法见
+`video-teach-*` 系列 skill。
 
 ## 费用，以及什么离开了你的机器
 

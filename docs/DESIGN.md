@@ -1546,3 +1546,54 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
   - 判断：三段字段名对 Seedance 是死词（它当普通散文读），真正起作用的是里面的具体描述与负向清单。所以 `assets/skills/video-prompting.md:53` 补了一句"照抄能出片，但建议抹掉字段名合成一段"。
 - **未做**：隔离实例里 `/video-prompting` 的真实触发没有跑（命令识别逻辑简单，风险低，但按 §13 的纪律该在隔离实例里点一次）。留到下次动技能正文时一起做。
 - **能力缺口（单独立项，不混入本次）**：① `MINIMAX_MODELS` 只注册 H3 与 H3-Max，缺 H3-Highspeed / H3-Lite；② presets 注释里 `generateAudio: false` 与"两家都没写音频开关"的判断和官方"H3 原生立体声"不符；③ 方舟 `buildArkContent` 只有三种图片 role，没有 reference_video / reference_audio。
+
+## 23. 教学视频路线（规划，2026-11-20）
+
+在线模型生成之外的第二条制作路线：旁白驱动的教学视频（3b1b 式数学动画 + 幻灯片讲解）。完整规划写在 [`docs/TEACH-VIDEO.md`](TEACH-VIDEO.md)，本节只记与本设计文档其余各节的接口。
+
+**已定决策**（用户 2026-11-20 拍板）：Manim CE 与 reveal.js 两个画面引擎同片混用；时间轴权威是音频，逐句 TTS 出词级时间戳；语音走火山/豆包，复刻音色未开通，先用系统音色；HTML 出帧用 Playwright 实时录屏并按句分段；`storyboard.yaml` 是唯一手写入口；集成形态是插件加工具加中文 skill，与在线生成路线共存；首个真验收是 3 分钟混合样片。
+
+**与既有各节的接缝**：
+
+- §4 工具面：新增四个工具，副作用同样只写 `operations.ts` 一份。**命名要用 `video_teach_*` 前缀**，因为 `test/guide-consistency.test.ts` 用 `/video_[a-z_]+/` 扫 skill 正文并要求命中真实工具名，`teach_video_*` 会被扫成不存在的 `video_*`。
+- §6 长任务：教学渲染是分钟的本地任务，同样挂 `ctx.jobs`，同样可被 `job_kill`。
+- §9 产物与播放 / §17.2 落点：成片复用 `destination.ts` 的 `renders/<shot>/vNNN.*` 与旁描述文件，不自拼路径。
+- §17.1 工作区写入：沿用既有纪律，读与小文本写走 `ctx.fs`，二进制用 Node `fs` 在同样的检查之后写。
+- §19 视频面板：面板行的唯一来源是 `operations.listTasks`（台账）。本地渲染的片子要出现在面板，就必须有一条台账行，因此 `VideoTask` 需要一个显式的来源标记（方案 A：`origin` / `provider: 'local'` 哨兵），并在所有 `adapterFor` 调用点先判它。三个方案与取舍见 `TEACH-VIDEO.md` §8。
+- §22 skill 结构：新开一个 `teaching/` 参考子目录，做法与 `prompting/` 相同。
+
+**新增的外部依赖**（本机实测 2026-11-20）：ffmpeg 9.0.2 与 python3 3.11.12 现成；**Manim 与 LaTeX 未安装**；Playwright 浏览器已有缓存。插件目前全树没有 `child_process`，教学路线必须新增子进程能力，正路是宿主的 `ctx.subprocess`，并按可选依赖写（缺失时明确报错，不静默降级）。
+
+**第二轮问答补定（2026-11-20）**：面板集成选方案 A（台账加显式来源标记，本地成片上面板）；Manim 走本机 pip、LaTeX 用 BasicTeX + `tlmgr`，插件只检查外部可执行是否齐备；TTS 鉴权两种都支持（豆包 appid + access token，或 Ark 单一 API Key），按配置显式选类型。
+
+**第三轮定（2026-11-20）**：预置音色确认可获取——火山的音色表是静态清单、没有公开的列音色接口，`www.volcengine.com/docs/6561/1257544` 是 SPA 抓下来只有壳，但同一 doc id 在 `docs.volcengine.com` 上是服务端渲染全文（实测 5.5 MB、8 张表、去重 601 个 `voice_type`，中文 180 个），所以插件内置精选清单、整表刷新做成可选手动动作；默认音色取「流畅女声 2.0」`zh_female_liuchangnv_uranus_bigtts`，男声备选「儒雅逸辰 2.0」。样片选题定 π²/6。四个工具命名定 `video_teach_*`（不动 `guide-consistency` 测试）。发布节奏定"样片跑通后再发"，届时 README 的 Requirements 要写清 `python3` / `ffmpeg` / `latex` 与 Manim 安装方式。
+
+**第四轮实测（2026-11-20）：现有的 `ARK_API_KEY` 做不了 TTS。** 这把 key 对标准 Ark 有效（`GET /api/v3/models` 200，但模型域里没有 speech 类），`/api/v3/audio/speech` 与 `/api/v3/tts` 都是 404；把它发给 Agent Plan 的 TTS 网关 `openspeech.bytedance.com/api/v3/plan/tts/unidirectional` 得到 `45000010`（网关转给 Ark 校验后 401，说明它不是 plan 专属 key），换 `seed-tts-1.0` 得到 `45000030 requested resource not granted`。语音合成不在标准 Ark 统一 API 里，是单独产品线：要么 Agent Plan 专属 API Key，要么豆包语音的 appid + access token。插件里必须做成独立供应商条目，`authRef` 不能指向 `ARK_API_KEY`。证据表在 `TEACH-VIDEO.md` §10.2。
+
+**第五轮实测（2026-11-20）：TTS 通了，用的是 `ARK_VOICE_API_KEY` + 非 plan 端点。** `POST https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key: $ARK_VOICE_API_KEY`、`X-Api-Resource-Id: seed-tts-2.0`，响应是 NDJSON（音频在 `data` 的 base64，末行 `code 20000000`）。**字级时间戳靠 `audio_params.enable_subtitle: true`**（布尔，传 `2` 报 unmarshal 错误），打开后每句带 `sentence.words[]`，每字有 `word` / `startTime` / `endTime`（该句音频内的秒）/ `confidence`，因此不需要 ASR 对齐。三个坑：响应里会混一条 `text` 为全文累积、`words` 为空的句子（必须跳过）；标点会并进相邻词，字符数≠词数；句尾有约 0.5 s 静音，段长取音频真实时长而非末词 `endTime`。2.0（uranus）候选音色全部直接可用，1.0（mars）音色配 `seed-tts-2.0` 报 `55000000 resource ID is mismatched with speaker related resource`。插件里语音是独立供应商条目，`authRef = ARK_VOICE_API_KEY`。完整证据与请求示例在 `TEACH-VIDEO.md` §10.2。
+
+**M0/M1 已落地（2026-11-20 实测）**：`src/teach/` 下六个模块（storyboard / voice / slides / manim / ffmpeg / pipeline）。实测一句旁白 4440 ms，录屏段与整片都是 4433 ms（差 7 ms，验收线 50 ms），Manim 段重定时后 4032 ms、超长 0 ms。四个由实测逼出来的决定：cue 支持短语（中文 tokenizer 是单字词）、段短于音频必须用 `tpad` 补而不只靠 `fps`、concat 清单要落文件（`-i -` 不成立）、录屏走 CDP `Page.startScreencast`（`playwright-core@1.61.1` 没有 `page.screencast`）。工具链最终是 **TinyTeX** 而非 BasicTeX：brew 的 basictex 无 `dvisvgm` 且 `tlmgr` 需 root，brew 的 dvisvgm 会拖 5GB texlive。明细在 `TEACH-VIDEO.md` §13。
+
+**工具化已落地（2026-11-20）**：四个工具 `video_teach_plan` / `narrate` / `render` / `export` 注册在 `src/teach/tools.ts`，`src/index.ts` 在 `registerTools` 之后接入；四份中文 skill 随包注册（`video-teach-storyboard` 可作 `/` 命令）。工具层只做 schema、散文与拒绝，动作全在 `pipeline.ts`，与 §4 的分法一致。五条拒绝在离线测试里钉住（只读/权限未知、路径逃逸、缺语音凭据、未知句子 id、缺前置步骤）。`guide-consistency` 测试扩为扫 `src/tools.ts` 与 `src/teach/tools.ts` 两个文件，并发现 skill 正文里 `video_teach_*` 通配写法会被扫成不存在的 `video_teach_`，正文只写具体工具名。`pnpm test` 590 passed / 6 skipped，`pnpm run build` 通过，打包产物可直接 import。明细在 `TEACH-VIDEO.md` §15。
+
+**台账与面板已接（2026-11-20）**：`VideoTask` 加 `origin?: 'provider' | 'local'`（缺省读作 provider，旧行不受影响），判断收敛成 `isLocalRender()`；`recordLocalRender()` 在成片落盘后写行（`provider: 'local'`、`protocol: 'local-render'`、`model: 'teach-video'`、`providerTaskId: null`、`status: 'succeeded'`、workspace 形状的 `location`）；`TaskRow` 加 `origin`，面板按既有 `placementOf`/`toneOf` 就把它当工作区内的成片显示，**客户端代码零改动**。所有按 provider 取适配器的路径先判 `isLocalRender`：对账的两处过滤跳过、`video_cancel` 拒绝并说明无物可取消、成本汇总按无 `billing` 的既有规则天然跳过。`README` 与 `README.zh-CN.md` 的 Requirements 与工具表补上了外部可执行、Manim/TinyTeX 装法与四个工具。测试 `test/teach-ledger.test.ts`（6 例）；`pnpm test` 596 passed / 6 skipped，构建通过。
+
+**隔离实例已验收（2026-11-20）**：`dsh plugin --profile web add <repo>`（profile 名必须是宿主实际启动的那个）→ `dsh web --port 34798`，插件面板接口 `GET /video-forge/api/overview?token=…` 返回 `ok:true` 且 `outputRoot` 落在 `/tmp/teach-verify/home/dsh-video-forge/outputs`，说明打包产物在真实宿主里加载、`apply()` 跑完（四个工具与四份 skill 就在这段注册代码里），真实 `~/.dsh` 未被触碰。
+
+**3 分钟混合样片已产出（2026-11-20）**：`fixtures/teach/sample/`（19 句 / 876 字 / 16 个 fragment / 1 个 Manim 场景），live 测试实测旁白 174 264 ms → 成片 174 233 ms（差 31 ms），1920×1080、3.0 MB、25 段，整条管线 202 s。这是 M5 的真验收：稿子→音频→画面→成片在仓库内可复跑。
+
+**合并合成与标点停顿（2026-11-20，按用户试听判定）**：默认 `merge: 'auto'`，相邻且被选中的句子合并成一次 TTS 请求（用 `。` 连接，字符偏移映射回各句），`merge: 'none'` 保留逐句请求。停顿由句末标点决定（`。` 400 ms / `？！` 480 ms / `，、；` 170 ms / 无 120 ms），取 `max(语音气口, 标称值)`；上一版统一裁到 180 ms 正是“断句处停留不足”的直接原因。切段边界改为「下一句首词」，停顿留在段内；`speech_rate` 固定为整数并在本地校验。新增 `test/teach-narration.test.ts`（20 例，含 ffmpeg 实测裁切与补静音）。明细在 `TEACH-VIDEO.md` §19。人工复核项：句间停顿是否够、语气是否还漂。
+
+**Manim 可选（2026-11-20）**：教学路线的依赖分三档——`ffmpeg`/`ffprobe` 必需，Chromium 仅幻灯片段需要（永不阻塞），`python3`/`manim`/`latex`/`dvisvgm` 只在稿件有 `engine: manim` 时参与判定；`assessDependencies()` 是纯函数，`video_teach_plan` 与 `render` 在缺依赖时**动手前拒绝**，给出安装命令与「改用 slides」两条出路。纯 `engine: slides` 的工程不装 Manim 也能出片。明细见 `TEACH-VIDEO.md` §20。
+
+**仍未决**：宿主内真的调用一次 `video_teach_*`（需会话与模型，属付费验证）、把样片放进工作区 `renders/` 后在面板里点开看一次；以及只能实测才知道的：长文本上限与并行合成限流、录屏真实丢帧率（目前只跑过单句）、Manim 首渲染耗时（3.8 s，未预热缓存）。逐条列在 `TEACH-VIDEO.md` §11。
+
+**内容与时间线的规则化（2026-11-20）**：`src/teach/rules.ts` 把"每句话都必须带来一次画面变化"落成可执行检查——句子时长 2–8 秒（语速按实测 5 字/秒）、slides 段每句至少一个 cue、fragment 不得超过 deck 实际数量（结构性拒绝）、同一 deck 内跨句递增、平均 ≤8 秒一次变化、一个 Manim 场景只服务一句、场景自身时长应为旁白的 70%–100%。`video_teach_plan` 在花钱前调用它并点名句子 id；`video_teach_render` 渲染后对每个新段抽 4 帧数颜色，flat（≤64 色）/ unchanged（四帧色数相同）作为启发式提示写进返回消息，不失败。没有新增 `video_teach_inspect`：自检已并入 render，export 负责字幕与 deck，独立工具会让"检查哪一版"说不清。细节在 `TEACH-VIDEO.md` §17。
+
+**教学路线的语音凭据与路径进了设置页（2026-11-20）**：新增 `teachVoiceAuthRef`（默认 `ARK_VOICE_API_KEY`）、`teachPythonPath`、`teachTexBinPath`、`teachChromiumPath` 四个 volatile 设置。密钥本身仍走 `ctx.credentials`，配置里只有引用名；解析优先级是设置 → 环境变量 → 自动发现（环境变量是宿主启动的快照，GUI 用户改不动，所以设置必须赢）。设置卡片新增默认折叠的「教学视频」小节，凭据行只显示掩码状态，路径旁可以「探测这台机器」，数据来自独立的 `GET /video-forge/api/teach`（探测要 spawn Python，不能挂在轮询的 `overview` 上）。
+
+**DeepSeek 官方 TTS 已核实并接为第二供应商（2026-11-20）**：`POST https://api.deepseek.com/v1/tools/tts`，Bearer `DEEPSEEK_API_KEY`，body `{text, voice_id?, format?, filter_markdown?}`，返回 `audio/wav`（24 kHz 单声道）或 PCM；实测 200、1.84 s、`pcm_s16le`。**没有字级时间戳、不能调语速**，所以它只能做整句驱动的画面：`video_teach_narrate` 逐句合成并在 `timings.json` 里写 `voice.timestamps: none`，`video_teach_render` 看到 cue 就直接拒绝并说明原因，绝不猜时刻。计费每万字符 3 元但汉字按 2 字符计，中文实际约 6 元/万汉字，比火山贵。
+
+**教学路线的语音默认切到 DeepSeek（2026-11-20）**：用户盲听 A/B 后判定 DeepSeek 跨句更像同一个人、原样拼接更自然、语速更适合讲解。因此 `DEFAULT_VOICE_PROVIDER = 'deepseek'`、`DEFAULT_VOICE_SPEAKER.deepseek = 'stella'`；停顿策略进代码（`pausePolicyFor`：deepseek `natural` 不补、volcengine `punctuation` 只补不裁）；"无词时间戳"从降级分支升为一等公民——deck 契约加 `teachPage(n)`，一句一页，cue 新增 `at_progress`（0–1 比例 × 实测时长），`at_word` 在 DeepSeek 下解析期即拒绝，`at_progress` 20%–80% 之外与"一句超过 3 个节拍"给 warning。`volcengine` 保留为唯一能做逐词联动的 provider。明细在 `TEACH-VIDEO.md` §21。
+
+**独立验收运行的十个缺陷已处理完（2026-11-20）**：不继承上下文的子智能体照文档从零跑了一遍 DeepSeek 页模式，结论是"能跑通，但默认跑不通"。断流的三个当轮修好（`timings.json` 写读键不一致、CDP `metadata.timestamp` 秒被当毫秒导致句内节拍全丢、默认路线 SRT 空文件却报 word-timed；第二条同时改判了"40 秒冻结"的原归属，真实主因是时钟单位而非版式溢出）。这轮又清掉七个：`plan`/`render` 对 cue 的表述互相反对、依赖报告用裸引用名而非 `voiceAuthRefFor()`（DeepSeek 稿件下报 `ARK_VOICE_API_KEY`）、`assemble: false` + 部分 `sentences` 被 `planSegments` 卡死（现在 `requireAll` 只在拼片时强制，缺段作为 `pending` 报回）、抽帧阈值 64 误报 57 色的合法稀疏帧（阈值降到 16，判据改为"每一帧都没画东西"）、每段首帧闪 deck 首页（先 `teachPage` 并等过场再开录）、页模式 deck 契约只在 render 期才发现（新增 `auditDecks()`：plan 期检查 `teachReady`/`teachCue`/`teachPage`、页数、页内 fragment 数）、`-shortest` 让成片音轨比旁白短 72 ms（去掉，长度取较长流）。同时统一了一条契约：**页模式下 fragment 编号按页从 1 起**（reveal.js 的 fragment 本来就是页内概念，模板的 `teachCue` 现把 `n` 夹在本页 fragment 数内，一次 cue 永不翻页），`fixtures/teach/page-mode/` 随之改编号。`timings` 的写读放回同一模块（`serializeTimings`）并加了往返测试。`pnpm test` 692 passed / 7 skipped，构建通过。细节在 `TEACH-VIDEO.md` §23；仍未做的四条（DeepSeek 真跑一次、GUI 设置页与面板目视、样片按规则返工、听感复核）同处列出。
