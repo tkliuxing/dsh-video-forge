@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-forge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Online-model video generation for DeepSeek Harness: model tools and live chat cards, long-running provider tasks tracked in a durable ledger, artifacts served over a token-gated Range-capable route.",
   "icon": "icon.svg",
   "license": "MIT",
