@@ -77,6 +77,11 @@
 3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。渲染完会抽样帧颜色，把"看着像静帧"的段点名。
 4. `video_teach_export`：写 SRT、`timeline.json`，并把 deck 导出到 `deck/`。
 
+**两条出片经验**（细节见 `video-teach-storyboard` / `video-teach-iterate`）：
+
+- **句内节拍按"这页有几次变化"算**：一页 n 个 fragment → n+1 次画面变化（换页算第一次），第 k 次落在说话时长的 k/(n+1)。所有动作在念完之前播完，不要手写固定比例。
+- **页尾停留约 1 秒**：画面长度等于音频长度，DeepSeek 不补停顿；要让最后一屏停住，得给每句音频尾部补静默再重渲染（插件没有这个参数），并同步重算 cues。
+
 **外部依赖分三档，只有用到的才装**（在线生成路线一样都不需要）：
 
 - **任何工程都要**：`ffmpeg`、`ffprobe`。

@@ -64,14 +64,14 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-storyboard',
     description:
-      '教学视频的分镜怎么写：storyboard.yaml 的结构、一句一个录制单元、cues 用词触发、字数与 id 规则。在规划旁白驱动的教学视频（3b1b 式动画 + 幻灯片讲解）时使用。',
+      '教学视频的分镜怎么写：storyboard.yaml 的结构、一句一个录制单元、页内节拍怎么算（按每页变化次数铺开、换页算一次变化）、页尾停留与宣传片结构、字数与 id 规则。在规划旁白驱动的教学视频（3b1b 式动画 + 幻灯片讲解）时使用。',
     file: 'video-teach-storyboard.md',
     userInvocable: true,
   },
   {
     name: 'video-teach-slides',
     description:
-      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 时使用。',
+      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 时使用。',
     file: 'video-teach-slides.md',
     userInvocable: false,
   },
@@ -85,7 +85,7 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-iterate',
     description:
-      '教学视频的返工规程：改台词 / 改 cues / 改版面 / 换音色各自要重跑什么，以及只重录一句为什么成立。在修改已生成的讲解视频或追查音画错位时使用。',
+      '教学视频的返工规程：改台词 / 改 cues / 改版面 / 换音色 / 加页尾停留各自要重跑什么，以及只重录一句为什么成立、尾停留补静音与 timings.json 的硬约束。在修改已生成的讲解视频或追查音画错位时使用。',
     file: 'video-teach-iterate.md',
     userInvocable: false,
   },

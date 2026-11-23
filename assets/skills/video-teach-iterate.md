@@ -2,18 +2,19 @@
 
 教学视频的迭代规则只有一条：**音频是时间轴的权威，句子是重录的单位**。任何改动都先问"这会动到哪几句"，再决定重跑多少。
 
-**一个例外要知道**：`volcengine` 合成默认把相邻的几句**合并成一次请求**（为了语气连贯，见下面“合并合成改变了什么”），“重做一句话”会连带重做它所在的那一次请求。**默认的 `deepseek` 则是逐句请求**，所以它反而是最细的粒度：改一句只重合成那一句。画面侧的粒度两种都一样，永远是一句一段。
+**一个例外要知道**：`volcengine` 合成默认把相邻的几句**合并成一次请求**（为了语气连贯，见下面“合并合成改变了什么”），“重做一句话”会连带重做它所在的那一次请求。**默认的 `deepseek` 则是逐句请求**，所以它反而是最细的粒度：改一句只重合成那一句。画面侧的粒度两种都一样，永远是一句一段。**另一个例外是页尾停留**：项目给音频尾部补过静默之后，改台词要全量重录（`video_teach_narrate` 会重新量所有句子的时长，已补静默的句子会被再补一次），见「页尾停留」。
 
-## 四种改动，四种代价
+## 五种改动，五种代价
 
 | 你改了什么 | 要重跑 | 代价 |
 |---|---|---|
-| 某句的 `say`（台词） | `video_teach_narrate sentences: [<id>]` → `video_teach_render sentences: [<id>]` | 一句语音（`deepseek`）或它所在的那次合并请求（`volcengine`）+ 一句画面 |
+| 某句的 `say`（台词） | `video_teach_narrate` 全量重录 → 补尾停留 → 重算 cues → `video_teach_render` | 全片语音 + 全片画面（已补过静默时不能只重录一句，见「页尾停留」） |
 | 某句的 `cues`（画面切换点） | 只 `video_teach_render sentences: [<id>]` | 一句画面，**不用重新合成语音** |
+| 页尾停留（每页切页前约 1 秒无声） | 给每句音频尾部补静默 → 重渲染全片（`durationMs` 变了） | 本机免费；不重录旁白，但**补过的音频再补会叠加** |
 | 某个 deck / scene 的排版 | 该段所有句子的 `render`（画面变了就要重录） | 只画面 |
 | 音色、`speed_ratio` | 全量 `narrate` → 全量 `render` | 全片重来，因为每个词的偏移都变了 |
 
-第三条容易被忽略：同一个 deck 被多句共用时，改版面只影响它自己那句；但如果你在 deck 里改了**跨句共享的状态**（比如第二句要看到第一句留下的元素），就要把这一段从头录。
+改版面那一条容易被忽略：同一个 deck 被多句共用时，改版面只影响它自己那句；但如果你在 deck 里改了**跨句共享的状态**（比如第二句要看到第一句留下的元素），就要把这一段从头录。
 
 ## 合并合成改变了什么
 
@@ -35,21 +36,53 @@
 - 组装时插件按稿件顺序把"这次渲染的"和"还在磁盘上的"合起来，缺哪句会直接报出句子 id，不会静默少一截。
 - 段落文件在 `.dsh-video/teach/<句子 id>/segment.mp4`，可以整个删掉重来。
 
+## 页尾停留：让最后一屏停住约 1 秒
+
+教学路线里**画面长度严格等于该句音频长度**（`timings.json` 的 `durationMs`），插件没有"尾停留"参数。DeepSeek 语音是 `natural` 策略、不补停顿，所以一句念完画面立刻切页，最后一个节拍几乎不停留。
+
+正确的做法是给音频补静默，不要改渲染器：
+
+1. 对每句 `audio/<id>.wav`（默认 provider 逐句合成）或 `audio/<id>.mp3`（`volcengine` 合并合成）用 `ffmpeg -af apad=pad_dur=<秒>` 追加静默，保持原采样率与声道。
+2. 用 `ffprobe` **实测**补齐后的长度改写 `timings.json` 的 `durationMs`；不要用算术相加，避免舍入累积。
+3. 按新的 `durationMs` 重算 cues（分母变了），再 `video_teach_render`（本机、免费）；`video_teach_export` 重出 SRT 与 timeline。
+
+三条硬约束：
+
+- **`timings.json` 是严格白名单**：只认 `voice` / `sentences` / `sampleRate` / `merge`。往里加自定义键（比如 `tailHoldMs`）会被 `video_teach_render` 拒绝（`unknown key`）。"是否已补过"的标记放旁车文件，例如 `script/.page-hold.json`。
+- **别用 mtime 判断是否已补过**：写文件与 `st_mtime` 的精度差会让刚写完的文件被判成"更旧"，于是重复补一次。改成比对 `timings.json` 的 **sha256**；内容变了（重录过）才重新补。
+- **改了台词要全量重录，不要只重录单句**：`video_teach_narrate sentences: [<id>]` 会从所有音频重新量时长，已经补过静默的句子会带着旧静默再被补一次，各页停留变成 2 秒。全量重录后再跑一次补静默，然后按新时长重算 cues。
+
+补静默之后 `at_progress` 的分母变长，**必须重算 cues**（见 `video-teach-storyboard` 的「页内节拍」）；否则动作会整体后移，最后一拍贴到句尾。顺序固定为：定稿 → narrate → 补停留 → 重算 cues → render → export。
+
 ## 常见坑
 
 - **改了台词却没重跑 narrate**：`video_teach_render` 会比对稿件与 `timings.json`，句子对不上就拒绝，并说明是哪一句 —— 别绕过它，绕过就会得到一条音画错位的片子。
 - **只改 `say` 不改 `cues`**：词变了，`at_word` 指向的词可能消失，校验会拒绝。改台词时顺手看一眼 cues。
 - **音色改了却只重录一句**：`timings.json` 里记着合成用的音色，`video_teach_plan` 会报 `stale`。音色是整片的，别半途换。
 - **重录后忘了 export**：SRT 与 `timeline.json` 是按成片时间轴生成的外部字幕，改了片子要重新 `video_teach_export`，否则字幕对不上新版。
+- **加了页尾停留却没重算 cues**：`at_progress` 的分母变长，动作整体后移、最后一拍贴到句尾。先补停留，再按变化次数重算。
+- **往 `timings.json` 里塞自定义键**：会被 render 拒绝（`unknown key`）；标记放旁车文件。
+- **用 mtime 判断补静默是否执行过**：精度差会重复补；用 `timings.json` 的 sha256。
+- **已补过尾停留时只重录一句**：那一句会带着旧静默再被补一次，各页停留不一致。改台词全量重录。
 
 ## 一次典型的返工
 
 ```
 video_teach_plan                                    # 看是哪句、哪行出错
-video_teach_narrate  sentences: [s02-1]             # 只重合成那一句
-video_teach_render   sentences: [s02-1]             # 只重录那一段
-video_teach_render   assemble: true                 # 拼成新版本 v00N
+video_teach_narrate                                 # 改了台词就全量重录（已补过尾停留时尤其别只重录单句）
+# 给每句音频补尾静默，并改写 timings.json 的 durationMs（做法见「页尾停留」）
+# 按每页变化次数重算 cues（做法见 video-teach-storyboard「页内节拍」）
+video_teach_render                                  # 全片重渲染（免费）
 video_teach_export                                  # 重新出字幕与 deck
+```
+
+只改某一页的版面、台词与节拍都没变时，仍可按句重录：
+
+```
+video_teach_plan
+video_teach_render   sentences: [s02-1]
+video_teach_render   assemble: true                 # 拼成新版本 v00N
+video_teach_export
 ```
 
 版本号每次成片 +1，旧版留着对比，不要手删。
@@ -62,7 +95,7 @@ video_teach_export                                  # 重新出字幕与 deck
 | `slides/<段>/`（含 reveal 运行时） | 手写版面、自包含 | **要** |
 | `scenes/*.py` | 手写场景 | **要** |
 | `timings.json` | 旁白产物，时间轴权威 | 要（它决定改动后是否要重录） |
-| `audio/*.mp3` | 旁白产物 | 建议要（丢了就得重新花钱合成） |
+| `audio/*`（`.wav` 逐句 / `.mp3` 合并） | 旁白产物 | 建议要（丢了就得重新花钱合成） |
 | `deck/` | `video_teach_export` 导出的可交互版 | 不要，导出物 |
 | `.dsh-video/teach/*/segment.mp4` | 逐句中间段，随时可重建 | 不要 |
 | `renders/<shot>/vNNN.mp4` | 成片 | 不要（大文件），需要留档就另存 |

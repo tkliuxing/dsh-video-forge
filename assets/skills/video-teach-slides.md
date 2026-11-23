@@ -19,7 +19,7 @@
 
 两种驱动模式对应两种 provider：
 
-- **页模式 + 页内节拍（默认，`deepseek`）**：一句一页，句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(句序号)`，再按时长比例调 `teachCue(fragment)`。
+- **页模式 + 页内节拍（默认，`deepseek`）**：一句一页，句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(句序号)`，再按时长比例调 `teachCue(fragment)`。一页 n 个 fragment → n+1 次画面变化（换页算第一次），节拍比例由这个数算出（见 `video-teach-storyboard` 的「页内节拍」）。
 - **纯 cue 模式（`volcengine`）**：全片一个或少数几页，`teachCue` 按词触发（`at_word`）。
 
 页模式下 deck 的结构就是"一个 `<section>` 对应一句"，顺序必须与稿件一致，页数不能少于该段的句数（少了后面几句会停在最后一页，`video_teach_plan` 会点名）。
@@ -53,26 +53,30 @@ window.teachCue = function teachCue(n) {
 ## 与时间轴的关系
 
 - 有词时间戳（`volcengine`）时，`teachCue` 按**词**触发：稿子里 `at_word` 写哪个词，画面就在那个词发音时切换。
-- 没有词时间戳（`deepseek`，默认）时，节拍按 `at_progress` × 该句实测时长触发。它与发音不是逐字对齐的关系，只是作者按语义给的节拍，**不要**据此承诺"讲到哪个字画面动到哪"。
-- 一句话结束后画面**停住**，直到下一句的第一帧，所以每句结尾的版面要是"能看一秒多"的状态，不要留半截动画。
-- 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`，不会重录别的句子。
+- 没有词时间戳（`deepseek`，默认）时，节拍按 `at_progress` × 该句实测时长触发。这个比例不是随手写的：一页 n 个 fragment → n+1 次变化（换页算第一次），第 k 次落在说话时长的 k/(n+1)，并且分母含尾停留（算法见 `video-teach-storyboard`「页内节拍」）。它与发音不是逐字对齐的关系，**不要**据此承诺"讲到哪个字画面动到哪"。
+- **所有动作要在这一句念完之前播完**，不要靠句尾去补。画面长度严格等于该句音频长度（`timings.json` 的 `durationMs`），DeepSeek 默认不补停顿；要让最后一屏停住约 1 秒，得给音频尾部补静默（见 `video-teach-iterate` 的「页尾停留」），再按新时长重算 cues。
+- 每句结尾的版面必须是**完整构图**，不要留半截动画或空位；最后一屏要能独立看 1 秒以上。
+- 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`，不会重录别的句子（补过页尾停留的项目要全量重录，见 `video-teach-iterate`）。
 
 ## 检查清单
 
 - `teachReady` 确实被置为 true（放在 `initialize()` 的 `then` 里，不要放在 `DOMContentLoaded`）。
 - 首屏（`teachCue` 还没被调用时）就是可以直接开录的版面，不要空白页。
 - 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍时）、检查 `teachPage`（页模式下），缺了在**录音之前**就拒绝。
+- 每页的 fragment 数与稿件里这一句的 cue 数一一对应；多出来的 fragment 永远不显示（页末夹住）。页内节拍数 = fragment 数 + 1（换页算第一次变化）。
+- 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
 
 ## 让每句话都改变画面
 
 `volcengine` 下录屏器按 cue 推进，**一句话没有 cue 就等于这句话期间画面完全不动**。`deepseek` 下每句自动换页，句子之间一定有变化，需要注意的变成页内节拍。上一版样片就是这么出现四十秒静帧的：十六行正文塞在一页，后七句没有 cue，加上 `teachCue` 的下标算错，最后两档被裁成同一张画面。
 
-写 deck 时守住四条：
+写 deck 时守住五条：
 
 1. **一句至少一个 fragment**。一句话讲三个要点就拆三个 fragment，别让一句只停在一个静态版面上。
 2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。
 3. **同一页别塞超过 5 个 fragment**。reveal 会缩放适配，行数一多字号就被压到看不清；正文超过 10 行就该换页。
 4. **`teachCue(n)` 是"显示到第 n 步"**，`Reveal.getIndices().f` 是零基下标，两者差一。模板里已经处理，自己写 deck 时注意别再把 `f` 直接当目标值。
+5. **改了这一页的 fragment 数，就重算这一句的 cues**。节拍比例由变化次数算出（见 `video-teach-storyboard`「页内节拍」），重算后只需要重渲染，不用重录旁白。
 
 改完跑 `video_teach_plan`：它会报出"哪句没有 cue""平均几秒才变一次画面"，这些都能在下一次录音之前发现。
