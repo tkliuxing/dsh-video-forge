@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { registerSkills } from '../src/skills.ts'
 
 describe('video-forge skills', () => {
-  it('registers the five bundled skills when the skills service is present', async () => {
+  it('registers the bundled skills when the skills service is present', async () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
     const fiber = registerSkills(ctx)
@@ -19,11 +19,21 @@ describe('video-forge skills', () => {
       'video-project',
       'video-prompting',
       'video-storyboard',
+      'video-teach-iterate',
+      'video-teach-manim',
+      'video-teach-slides',
+      'video-teach-storyboard',
     ])
 
     // Four are reachable as `/name` commands; one is model-only.
     const userInvocable = summaries.filter(skill => skill.invocation.userInvocable).map(skill => skill.name)
-    expect(userInvocable.sort()).toEqual(['video-guide', 'video-project', 'video-prompting', 'video-storyboard'])
+    expect(userInvocable.sort()).toEqual([
+      'video-guide',
+      'video-project',
+      'video-prompting',
+      'video-storyboard',
+      'video-teach-storyboard',
+    ])
     expect(summaries.every(skill => skill.invocation.modelInvocable)).toBe(true)
 
     // Each body loads, is non-trivial, and carries the packaged resource base.

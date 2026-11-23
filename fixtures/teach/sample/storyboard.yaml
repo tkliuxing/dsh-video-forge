@@ -1,0 +1,92 @@
+meta:
+  title: 为什么 1 + 1/4 + 1/9 + … = π²/6
+  voice:
+    # Cue-driven example: `at_word` needs a provider that reports word timings.
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+  video:
+    size: [1920, 1080]
+    fps: 30
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 我们要解释一个看起来有点奇怪的等式：把每个完全平方数的倒数加起来，结果等于六分之圆周率的平方。
+        cues: [{ fragment: 1, at_word: 我们要 }]
+      - id: s01-2
+        say: 先看前几项：一、四分之一、九分之一、十六分之一，每一项都比上一项小得多。
+        cues: [{ fragment: 2, at_word: 先看 }]
+      - id: s01-3
+        say: 因为分母是平方增长，所以后面的项衰减得很快，直觉上这个和应该是有限的。
+        cues: [{ fragment: 3, at_word: 因为 }]
+      - id: s01-4
+        say: 但有限到多少并不明显，前一百项加起来大约是一点六三，离极限还差一点。
+        cues: [{ fragment: 4, at_word: 但 }]
+      - id: s01-5
+        say: 欧拉在一七三四年给出了精确答案：六分之圆周率的平方，约等于一点六四四九。
+        cues: [{ fragment: 5, at_word: 欧拉 }]
+      - id: s01-6
+        say: 这个结果把圆周率这个几何常数，和整数平方这样纯算术的东西连在了一起。
+        cues: [{ fragment: 6, at_word: 这个结果 }]
+      - id: s01-7
+        say: 一种经典证明从正弦函数的无穷乘积展开出发，把函数看成它所有零点的乘积。
+        cues: [{ fragment: 7, at_word: 一种 }]
+      - id: s01-8
+        say: 把乘积展开成幂级数，再和正弦函数本身的级数逐项比较，平方项的系数就对上了。
+        cues: [{ fragment: 8, at_word: 把乘积 }]
+      - id: s01-9
+        say: 比较之后，所有平方倒数之和自然出现，圆周率平方除以六由此得到。
+        cues: [{ fragment: 9, at_word: 比较 }]
+      - id: s01-10
+        say: 如果只看前几项，你会以为它停在一点六左右，但后面的项仍在慢慢累积。
+        cues: [{ fragment: 10, at_word: 如果 }]
+      - id: s01-11
+        say: 这正是级数收敛的典型样子：加得越来越慢，却始终还有一个正的余量。
+        cues: [{ fragment: 11, at_word: 这正是 }]
+      - id: s01-12
+        say: 用积分估计可以看到，前 N 项之后的尾巴大约是一除以 N，所以收敛非常慢。
+        cues: [{ fragment: 12, at_word: 用积分 }]
+      - id: s01-13
+        say: 想要再多一位小数，就要多算几百倍的项，这也是它历史上难算的原因。
+        cues: [{ fragment: 13, at_word: 想要 }]
+      - id: s01-14
+        say: 换一个角度看，这个和也等于在所有整数上取平均的一种极限，所以它出现在很多看起来无关的问题里。
+        cues: [{ fragment: 14, at_word: 换一个角度 }]
+      - id: s01-15
+        say: 比如两根无限长导线的电场、黑体辐射的某些积分，最终都会回到六分之圆周率平方这个常数上。
+        cues: [{ fragment: 15, at_word: 比如 }]
+      - id: s01-16
+        say: 这也是为什么它被视为数学里最漂亮的结果之一：一个简单的级数，牵出一整片联系。
+        cues: [{ fragment: 16, at_word: 这也是 }]
+  - id: s02
+    engine: manim
+    scene: scenes/s02_partial_sums.py
+    sentences:
+      - id: s02-1
+        say: 下面把前六项的部分和画出来，横轴是项数，纵轴是当前的总和。
+      - id: s02-2
+        say: 折线上升得越来越慢，但每一步都是正的，所以总和一直在增加。
+      - id: s02-3
+        say: 这就是收敛的样子：一个无限的过程，却对应一个有限的长度。
+  - id: s03
+    engine: manim
+    scene: scenes/s03_limit_line.py
+    sentences:
+      - id: s03-1
+        say: 现在把它的极限画出来，一条高度等于六分之圆周率平方的水平虚线。
+      - id: s03-2
+        say: 折线越往后越贴近这条线，却始终不会碰到它。
+      - id: s03-3
+        say: 换句话说，这个和在逼近一个上界，而不是在无限地增长。
+  - id: s04
+    engine: manim
+    scene: scenes/s04_tail_bound.py
+    sentences:
+      - id: s04-1
+        say: 折线和虚线之间剩下的那道缝隙，就是我们截掉的尾巴。
+      - id: s04-2
+        say: 用积分估计可以看到，前 N 项之后的尾巴大约是一除以 N。
+      - id: s04-3
+        say: 最后留一个问题给你：如果分母是三次方，这个和还会是一个漂亮的常数吗。

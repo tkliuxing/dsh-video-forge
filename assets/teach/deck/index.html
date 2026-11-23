@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<link rel="stylesheet" href="./reveal.css">
+<link rel="stylesheet" href="./theme.css">
+<style>
+  /*
+   * reveal.js sizes its stage from the viewport, so the page has to actually
+   * have one: without `height: 100%` here, <body> collapses to 0 px tall, the
+   * stage computes a scale near 0.2, and the deck paints white text onto the
+   * white canvas — a screenshot of nothing. This is the fix for the sample's
+   * first 116 s of pure white (TEACH-VIDEO.md §16).
+   */
+  html, body { height: 100%; margin: 0; background: #191919; }
+  .reveal { width: 100%; height: 100%; }
+  /* Readable at 1080p: the theme's sizes assume a 960x700 stage. */
+  :root { --r-main-font: "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
+  .reveal .slides { text-align: left; }
+  .reveal h1 { font-size: 46px; text-transform: none; letter-spacing: 1px; }
+  .reveal .row { font-size: 40px; font-variant-numeric: tabular-nums; margin: 6px 0; }
+  .reveal .row .value { color: #8fb6ff; font-size: 32px; margin-left: 18px; }
+  .reveal .sum { font-size: 34px; color: #ffd479; }
+</style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+{{SLIDES}}
+  </div>
+</div>
+<script src="./reveal.js"></script>
+<script>
+// The contract the recorder drives (src/teach/slides.ts): `teachCue(n)` shows cue
+// step n, `teachReady` says the deck has finished laying out. A deck can be any
+// reveal.js document as long as it defines these two.
+//
+// reveal.js 6 exports a singleton: `Reveal`'s UMD build has no usable
+// constructor, and `new Reveal(config)` leaves the singleton uninitialised, so
+// the stage never lays out. Initialising the singleton is the documented path.
+Reveal.initialize({
+  hash: false, controls: false, progress: false, history: false,
+  keyboard: false, overview: false, touch: false, embedded: true,
+  transition: 'fade', transitionSpeed: 'fast', fragments: true,
+}).then(() => { window.teachReady = true })
+
+/**
+ * Show every fragment up to `index` on the current slide. Reveal exposes
+ * `nextFragment()`, not "go to fragment n", so the loop is the honest way to
+ * land on an absolute step — and it is idempotent: asking for a step that is
+ * already shown does nothing.
+ *
+ * The count is per slide, because reveal.js numbers fragments per slide: a
+ * page-mode deck numbers each page's beats from 1 again. `index` is therefore
+ * clamped to this slide's own fragment count — a cue must never change the
+ * slide, so a number that runs past the page shows the page's last beat instead
+ * of walking off it (a global numbering across pages is caught by
+ * `video_teach_plan` instead).
+ */
+window.teachCue = function teachCue(index) {
+  const available = Reveal.getCurrentSlide()?.querySelectorAll('.fragment').length ?? 0
+  const target = Math.min(Math.max(0, Number(index) || 0), available)
+  for (let guard = 0; guard < 256; guard += 1) {
+    // `getIndices().f` is the zero-based index of the last *shown* fragment, so
+    // the number of visible fragments is f + 1. Comparing it to the target
+    // directly revealed one extra row and made the last two cues identical
+    // (measured 2026-11-20 on the sample deck).
+    const shown = (Reveal.getIndices().f ?? -1) + 1
+    if (shown >= target) break
+    Reveal.nextFragment()
+  }
+}
+
+/**
+ * Page mode: show page `index` (0-based, horizontal) and stay there.
+ *
+ * This is the drive mode for a voice provider that reports no word timings
+ * (DeepSeek). One page per sentence: the recorder calls this once at the start of
+ * the sentence and holds the page for the sentence's measured length. There is
+ * no `teachCue` in this mode, because a cue would be a moment nobody measured.
+ *
+ * A deck for this mode has one `<section>` per sentence, in manuscript order.
+ */
+window.teachPage = function teachPage(index) {
+  Reveal.slide(Math.max(0, Number(index) || 0), 0, 0)
+}
+</script>
+</body>
+</html>

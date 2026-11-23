@@ -29,6 +29,7 @@ import { adapterFor, cancelSupported } from './providers/index.ts'
 import { isSessionId, parseSelectionInput, SelectionError } from './selection.ts'
 import { ConfigError, resolveTarget } from './settings.ts'
 import { isTrustedRequest } from './trust.ts'
+import { probeDependencies, teachPaths } from './teach/probe.ts'
 import type { VideoTask } from './types.ts'
 
 /** Route prefix for the panel API family. */
@@ -178,6 +179,22 @@ export function panelHandler(
           active: list.active,
           /** What this host can do for the browser half (M5): the Range-capable stream route. */
           features: features(),
+        })
+        return
+      }
+
+      // What the teaching route would find on this machine, for the settings card:
+      // paths come from the settings, versions from an actual probe. Kept as its
+      // own action because probing spawns a Python, and the video panel polls the
+      // overview far more often than anyone opens the settings.
+      if (action === 'teach') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'method not allowed')
+        const settings = runtime.settings()
+        const paths = teachPaths(settings)
+        sendJson(res, 200, {
+          ok: true,
+          paths,
+          dependencies: await probeDependencies(settings),
         })
         return
       }

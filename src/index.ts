@@ -32,6 +32,7 @@ import { HOME_DIRECTORY, MEDIA_ROUTE_PREFIX } from './settings.ts'
 import { requireLedger } from './operations.ts'
 import { sharedSelections } from './selection.ts'
 import { registerSkills } from './skills.ts'
+import { registerTeachTools } from './teach/tools.ts'
 import { registerTools } from './tools.ts'
 import type { TaskBilling, VideoArtifact, VideoTask } from './types.ts'
 import { startInProcessWatch, startWatch, type WatchLogger } from './watch.ts'
@@ -236,6 +237,10 @@ export function apply(ctx: Context, config: VideoForgeConfig): void {
   })
 
   registerTools(runtime)
+  // The teaching route (DESIGN §23): four tools with their own pipeline. A local
+  // render is not a provider task, so its ledger row carries origin: 'local' and
+  // is never reconciled or billed as one (TEACH-VIDEO.md §8).
+  registerTeachTools(runtime)
   // The five `video-*` skills are an optional dependency: they mount only when
   // the composition carries the `skills` service, and the tools never rely on
   // one having been loaded.

@@ -1,0 +1,29 @@
+# Page-mode example: the default voice (DeepSeek) reports no word timings, so each
+# sentence owns one page and its beats are placed by `at_progress` — a share of the
+# sentence's measured length. Nothing here is aligned to a spoken syllable.
+#
+# Beats are numbered inside their own page (1..n per page), because `teachCue(n)`
+# counts fragments on the current page. Page 2's only beat is 1 again, not 4.
+meta:
+  title: 部分和为什么停在 π²/6
+  voice:
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 先看前三项部分和，它们一次比一次更接近这个值。
+        cues:
+          - { fragment: 1, at_progress: 0.25 }
+          - { fragment: 2, at_progress: 0.55 }
+          - { fragment: 3, at_progress: 0.8 }
+      - id: s01-2
+        say: 再加上更多项，折线只是贴得更近，不会越过去。
+        cues:
+          - { fragment: 1, at_progress: 0.5 }
+      - id: s01-3
+        say: 这条水平线就是六分之圆周率平方，约等于一点六四四九。
+        cues:
+          - { fragment: 1, at_progress: 0.45 }

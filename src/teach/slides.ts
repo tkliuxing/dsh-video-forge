@@ -1,0 +1,286 @@
+/**
+ * The slide half of the picture: drive a reveal.js deck on a clock and record it.
+ *
+ * Two rules decide everything here (docs/TEACH-VIDEO.md §4):
+ *
+ * 1. **The audio is the clock.** The recorder never plays sound; it advances the
+ *    deck to the offsets that `timings.json` says the words happen at. The
+ *    narration is mixed in later, so the recording process and the audio
+ *    playback cannot drift against each other.
+ * 2. **One sentence, one recording.** Each sentence gets its own capture and its
+ *    own segment, so a drift can only spoil one line and re-recording a line
+ *    costs one line.
+ *
+ * Frames come from CDP's `Page.startScreencast`, which the page drives: it emits
+ * a frame when the page repaints and nothing during a hold. Those frames are
+ * turned into a constant-frame-rate segment by `ffmpeg.encodeFrames`, which is
+ * why an idle slide still produces 30 fps of picture.
+ *
+ * The deck contract is three globals — `window.teachCue(index)`,
+ * `window.teachPage(index)` and `window.teachReady`. Keeping it that small is
+ * deliberate: a deck can be plain reveal.js with a few lines of glue, and this
+ * module never needs to know how the deck is built.
+ */
+
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { chromium, type Browser, type CDPSession } from 'playwright-core'
+import { countFrameColors, encodeFrames, probe, type MediaProbe, type MediaTools } from './ffmpeg.ts'
+
+/**
+ * The globals a deck must expose.
+ *
+ * Two drive modes, one deck:
+ *
+ * - `teachCue(n)` — show cue step n inside the current page. Both modes use it:
+ *   in cue mode a cue names a spoken word, in page mode an `at_progress` share of
+ *   the sentence's own length.
+ * - `teachPage(n)` — show page n. Page mode (a provider with no word timings,
+ *   DeepSeek by default) starts one page per sentence, then fires the sentence's
+ *   beats inside that page.
+ *
+ * `teachReady` is required by both.
+ */
+export interface DeckGlobals {
+  teachReady?: boolean
+  teachCue?: (index: number) => void
+  teachPage?: (index: number) => void
+}
+
+/** One reveal.js fragment advance, at a moment measured from the sentence's start. */
+export interface CueAt {
+  /** Milliseconds from the start of the sentence audio. */
+  atMs: number
+  /** Which cue step to show, counted inside the current page (1-based, as in storyboard.yaml). */
+  fragment: number
+}
+
+/**
+ * How long to let a page switch finish before the capture starts, in ms.
+ *
+ * The templates animate a page change (`transitionSpeed: 'fast'`, about 200 ms),
+ * so starting the screencast immediately would record the tail of that
+ * transition. t=0 of the segment is the first frame *after* this wait, so the
+ * value costs nothing in timing.
+ */
+const PAGE_TRANSITION_MS = 300
+
+export interface RecordDeckOptions {
+  /** Absolute path of the deck's HTML entry. */
+  deckPath: string
+  /**
+   * Page mode: show this page (0-based, reveal.js horizontal index) first, then
+   * the cues run inside it. Set when the narration has no word timings, where a
+   * page belongs to a sentence and the cues are timed by `at_progress` rather
+   * than by a word.
+   */
+  page?: number | null
+  /** Cue mode: fragment advances on measured word moments. Empty in page mode. */
+  cues: readonly CueAt[]
+  /** The sentence audio's real duration: the segment is cut to this. */
+  durationMs: number
+  width: number
+  height: number
+  fps: number
+  /** Directory for the capture's intermediate files; created if missing. */
+  workDir: string
+  /** Chromium binary; defaults to Playwright's own lookup. */
+  chromiumPath?: string | null
+  /** Extra settle time after navigation, for fonts and typeset math. */
+  settleMs?: number
+  signal?: AbortSignal
+}
+
+export interface RecordedSegment {
+  /** The encoded, silent, constant-frame-rate mp4. */
+  path: string
+  /** Frame count the capture produced; useful when a deck turned out to be static. */
+  frames: number
+  /** What the encoder says the segment is, measured after the fact. */
+  media: MediaProbe
+}
+
+/** A capture that could not be produced. */
+export class DeckRecordError extends Error {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(message)
+    this.name = 'DeckRecordError'
+    if (options.cause !== undefined) this.cause = options.cause
+  }
+}
+
+interface ScreencastFrame {
+  data: string
+  metadata: { timestamp?: number }
+  sessionId: number
+}
+
+/** Find the first installed Playwright Chromium, for hosts that have the browser cache but not a `playwright` install. */
+export function bookmarkedChromiumPath(cacheRoot: string): string[] {
+  return [join(cacheRoot, 'chromium-1243', 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')]
+}
+
+/**
+ * Record one sentence of a deck.
+ *
+ * The capture is driven from the same offsets the words carry: at each cue the
+ * deck steps one fragment, and the segment is cut to `durationMs` afterwards.
+ */
+export async function recordDeckSegment(options: RecordDeckOptions, tools: MediaTools = {}): Promise<RecordedSegment> {
+  await mkdir(options.workDir, { recursive: true })
+  const framesDir = join(options.workDir, 'frames')
+  await mkdir(framesDir, { recursive: true })
+
+  let browser: Browser | null = null
+  try {
+    browser = await chromium.launch({
+      ...(options.chromiumPath === undefined || options.chromiumPath === null ? {} : { executablePath: options.chromiumPath }),
+      args: ['--hide-scrollbars', '--force-device-scale-factor=1', '--disable-lcd-text'],
+    })
+    const context = await browser.newContext({
+      viewport: { width: options.width, height: options.height },
+      deviceScaleFactor: 1,
+      reducedMotion: 'no-preference',
+    })
+    const page = await context.newPage()
+    await page.goto(pathToFileURL(options.deckPath).href, { waitUntil: 'load' })
+    await page.waitForFunction(() => (globalThis as DeckGlobals).teachReady === true, undefined, { timeout: 15_000 })
+    if (options.settleMs !== undefined && options.settleMs > 0) await page.waitForTimeout(options.settleMs)
+
+    // Self-check before a single frame is recorded: a deck that never laid out
+    // paints one flat colour (the white canvas, with white text on it), and a
+    // recording of that is a white segment with narration over it. The first
+    // mixed sample shipped 116 s of exactly that because only the duration was
+    // ever asserted (docs/TEACH-VIDEO.md §16).
+    const probePath = join(options.workDir, 'first-frame.png')
+    await page.screenshot({ path: probePath })
+    const colors = await countFrameColors(probePath, {}, tools, options.signal)
+    if (colors <= 1) {
+      throw new DeckRecordError(
+        `the deck at ${options.deckPath} painted a single flat colour (${colors} distinct colour${colors === 1 ? '' : 's'}); `
+        + 'the stage did not lay out, so this segment would be blank. Check that the deck loads its stylesheets and that reveal.js reports ready (window.teachReady).',
+      )
+    }
+
+    // Page mode switches the page BEFORE the capture starts. Starting the
+    // screencast first shipped one frame of the deck's first page at the head of
+    // every sentence but the first (measured 2026-11-20: the opening frame of
+    // s01-5 was pixel-identical to the opening frame of s01-1), which reads as a
+    // flash of the cover slide between sentences. The switch is also given time to
+    // finish its transition, so t=0 is the settled page; the capture clock starts
+    // at the first frame afterwards, so the settle never shortens the segment.
+    if (options.page !== undefined && options.page !== null) {
+      await page.evaluate(index => {
+        const deck = globalThis as DeckGlobals
+        if (typeof deck.teachPage !== 'function') {
+          throw new Error('deck is missing window.teachPage(index), which the page mode needs (see the scaffolded template)')
+        }
+        deck.teachPage(index)
+      }, options.page)
+      await page.waitForTimeout(PAGE_TRANSITION_MS)
+    }
+
+    const cdp: CDPSession = await context.newCDPSession(page)
+    const frames: { file: string, atMs: number }[] = []
+    let startedAt: number | null = null
+
+    cdp.on('Page.screencastFrame', (event: unknown) => {
+      const frame = event as ScreencastFrame
+      const timestamp = typeof frame.metadata.timestamp === 'number' ? frame.metadata.timestamp : Date.now() / 1000
+      if (startedAt === null) startedAt = timestamp
+      const file = join(framesDir, `f${String(frames.length).padStart(6, '0')}.jpg`)
+      // `metadata.timestamp` is `MonotonicTime` in **seconds** (epoch-based, e.g.
+      // 1795167705.32). Keeping the difference as-is produced "milliseconds" of
+      // 0–5 for a four-second capture, so every frame's duration collapsed to
+      // ~1 ms and the segment showed only its last frame for the whole sentence:
+      // the picture never moved inside a sentence, on either drive mode
+      // (found 2026-11-20 by the page-mode acceptance run; the frames are correct,
+      // their clock was not).
+      frames.push({ file, atMs: Math.max(0, Math.round((timestamp - startedAt) * 1000)) })
+      void writeFile(file, Buffer.from(frame.data, 'base64')).catch(() => {})
+      void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {})
+    })
+
+    await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, everyNthFrame: 1, maxWidth: options.width, maxHeight: options.height })
+
+    // The cue clock starts at the first painted frame, so t=0 of the segment is
+    // the deck's state at the moment the sentence starts — the page switch in page
+    // mode has already happened by here.
+    const t0 = await waitForFirstFrame(() => frames.length > 0, options.signal)
+    // Beats run on the sentence's own clock in both modes: in page mode they are
+    // `at_progress` cues (resolved to milliseconds against the measured length),
+    // in cue mode `at_word` ones. `teachCue(n)` counts fragments inside the current
+    // page, so a page-mode manuscript numbers its beats per page.
+    for (const cue of options.cues) {
+      const wait = cue.atMs - (Date.now() - t0)
+      if (wait > 0) await page.waitForTimeout(wait)
+      await page.evaluate(index => {
+        const deck = globalThis as DeckGlobals
+        if (typeof deck.teachCue !== 'function') throw new Error('deck is missing window.teachCue(index)')
+        deck.teachCue(index)
+      }, cue.fragment)
+    }
+    // Hold to the audio's full length; the encoder cuts the tail anyway, but a
+    // capture shorter than the audio would leave the last frame frozen mid-cut.
+    const holdMs = options.durationMs - (Date.now() - t0)
+    if (holdMs > 0) await page.waitForTimeout(holdMs)
+
+    await cdp.send('Page.stopScreencast')
+    await page.close()
+    await context.close()
+
+    if (frames.length === 0) throw new DeckRecordError('the screencast produced no frames at all')
+    await settleFiles(frames.map(frame => frame.file))
+
+    const listPath = join(options.workDir, 'frames.txt')
+    const list = frames
+      .map((frame, index) => {
+        const next = frames[index + 1]
+        const seconds = ((next === undefined ? options.durationMs : next.atMs) - frame.atMs) / 1000
+        return `file '${frame.file.replaceAll("'", "'\\''")}'\nduration ${Math.max(seconds, 0.001).toFixed(4)}`
+      })
+      .join('\n')
+    await writeFile(listPath, `${list}\nfile '${frames[frames.length - 1]!.file}'\n`, 'utf8')
+
+    const path = join(options.workDir, 'segment.mp4')
+    await encodeFrames(
+      { listPath, output: path, durationMs: options.durationMs, width: options.width, height: options.height, fps: options.fps },
+      tools,
+      options.signal,
+    )
+    return { path, frames: frames.length, media: await probe(path, tools, options.signal) }
+  } catch (error: unknown) {
+    if (error instanceof DeckRecordError) throw error
+    throw new DeckRecordError(`could not record the deck (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+  } finally {
+    await browser?.close().catch(() => {})
+  }
+}
+
+/** Wait until `ready()` holds, polling briefly; the capture cannot start without a first frame. */
+async function waitForFirstFrame(ready: () => boolean, signal?: AbortSignal): Promise<number> {
+  const startedAt = Date.now()
+  while (!ready()) {
+    if (signal?.aborted === true) throw new DeckRecordError('recording was cancelled')
+    if (Date.now() - startedAt > 10_000) throw new DeckRecordError('the deck painted no frame within 10 s')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  return Date.now()
+}
+
+/** Wait until every frame file has been written; the event handler writes them asynchronously. */
+async function settleFiles(paths: readonly string[]): Promise<void> {
+  const { stat } = await import('node:fs/promises')
+  for (const path of paths) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        const info = await stat(path)
+        if (info.size > 0) break
+      } catch {
+        // not yet
+      }
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+}

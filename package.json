@@ -125,6 +125,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.18.4",
+    "playwright-core": "1.61.1",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
@@ -162,6 +163,7 @@
     "jsdom": "29.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "reveal.js": "6.0.2",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

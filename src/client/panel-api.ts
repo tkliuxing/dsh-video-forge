@@ -109,6 +109,26 @@ export interface PanelOverview {
 /** Either a value or a message the UI can show verbatim (with the HTTP status, when there was an answer). */
 export type PanelResult<T> = { ok: true; value: T } | { ok: false; error: string; status?: number }
 
+/** What the teaching route finds on this machine; versions are strings as probed. */
+export interface TeachOverview {
+  ok: true
+  paths: {
+    voiceAuthRef: string
+    pythonPath: string | null
+    texBinPath: string | null
+    chromiumPath: string | null
+  }
+  dependencies: {
+    ffmpeg: string
+    ffprobe: string
+    chromium: string
+    python3: string
+    manim: string
+    latex: string
+    dvisvgm: string
+  }
+}
+
 const BASE = 'video-forge/api'
 
 /** Resolve one document-relative API endpoint against the document base. */
@@ -161,6 +181,11 @@ export async function fetchTask(taskId: string): Promise<PanelResult<{ task: Liv
   // Only the row asked for: a host that ignored the filter must not put another task's video on this card.
   const task = (tasks as LiveTask[]).find(entry => typeof entry === 'object' && entry !== null && entry.taskId === taskId) ?? null
   return { ok: true, value: { task, active: typeof result.value.active === 'number' ? result.value.active : 0 } }
+}
+
+/** The teaching dependencies and the paths in effect, for the configuration card. */
+export function fetchTeach(): Promise<PanelResult<TeachOverview>> {
+  return call<TeachOverview>('teach', { method: 'GET' })
 }
 
 export function cancelGeneration(taskId: string): Promise<PanelResult<{ cancelled: boolean; message: string; status: string }>> {

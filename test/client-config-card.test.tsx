@@ -225,3 +225,49 @@ describe('shared card helpers', () => {
     expect(formatBytes(5_242_880)).toBe('5.0 MiB')
   })
 })
+
+describe('configuration card: teaching route', () => {
+  it('keeps the teaching fields behind a toggle and writes them as config ops', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b, t)} />)
+
+    // Collapsed by default: a slides-only operator never sees (or probes) this.
+    expect(screen.queryByText(en['config.pythonPath'])).toBeNull()
+
+    fireEvent.click(screen.getByText(en['config.teach']))
+
+    const python = await screen.findByLabelText(en['config.pythonPath'])
+    const tex = screen.getByLabelText(en['config.texBinPath'])
+    const chromium = screen.getByLabelText(en['config.chromiumPath'])
+    fireEvent.change(python, { target: { value: '/opt/teach/python3' } })
+    fireEvent.change(tex, { target: { value: '/opt/teach/texbin' } })
+    fireEvent.change(chromium, { target: { value: '/opt/teach/chromium' } })
+    fireEvent.click(screen.getByText(en['config.save']))
+
+    await waitFor(() => { expect(b.save).toHaveBeenCalledTimes(1) })
+    expect(b.save.mock.calls[0]?.[0]).toEqual([
+      { op: 'set', path: ['teachPythonPath'], value: '/opt/teach/python3' },
+      { op: 'set', path: ['teachTexBinPath'], value: '/opt/teach/texbin' },
+      { op: 'set', path: ['teachChromiumPath'], value: '/opt/teach/chromium' },
+    ])
+  })
+
+  it('offers the voice credential as a reference plus a stored key, never as config text', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b, t)} />)
+    fireEvent.click(screen.getByText(en['config.teach']))
+
+    // The label also carries the hint line, so the field is found by its value.
+    const ref = await screen.findByDisplayValue('ARK_VOICE_API_KEY')
+    // The field carries the reference name, not a key, and defaults to this build's.
+    expect((ref as HTMLInputElement).value).toBe('ARK_VOICE_API_KEY')
+    fireEvent.change(ref, { target: { value: 'MY_VOICE_KEY' } })
+
+    // The credential row follows the edited reference and stores through the service.
+    const key = await screen.findByLabelText(`${en['config.keyLabel']} · MY_VOICE_KEY`)
+    fireEvent.change(key, { target: { value: 'voice-secret' } })
+    fireEvent.click(screen.getAllByText(en['config.keySave']).at(-1)!)
+    await waitFor(() => { expect(b.setCredential).toHaveBeenCalledWith('MY_VOICE_KEY', 'voice-secret') })
+    expect(b.save).not.toHaveBeenCalled()
+  })
+})

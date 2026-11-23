@@ -84,6 +84,36 @@ export interface ProviderSetting {
   endpoints: EndpointSetting
 }
 
+/**
+ * Machine topology and the voice credential for the teaching route (DESIGN §23).
+ *
+ * None of this is a secret: a path says where a program lives, and the voice
+ * credential is named by reference, never carried by value. That split is why
+ * these settings are ordinary config fields while the key itself goes through
+ * the credentials service.
+ */
+export interface TeachSettings {
+  /** Credential reference the narrator resolves; empty falls back to {@link DEFAULT_VOICE_AUTH_REF}. */
+  voiceAuthRef: string
+  /** Python interpreter that has Manim; empty means `TEACH_PYTHON`, then `python3` on PATH. */
+  pythonPath: string
+  /** TeX bin directory holding both `latex` and `dvisvgm`; empty means `TEACH_TEXBIN`, then discovery. */
+  texBinPath: string
+  /** Chromium executable; empty means `TEACH_CHROMIUM`, then Playwright's own lookup. */
+  chromiumPath: string
+}
+
+/** The credential reference the teaching route reads when the setting names none. */
+export const DEFAULT_VOICE_AUTH_REF = 'ARK_VOICE_API_KEY'
+
+/** Defaults for {@link TeachSettings}: the reference this build has always used, and no paths. */
+export const DEFAULT_TEACH_SETTINGS: TeachSettings = {
+  voiceAuthRef: DEFAULT_VOICE_AUTH_REF,
+  pythonPath: '',
+  texBinPath: '',
+  chromiumPath: '',
+}
+
 export interface VideoForgeSettings {
   enabled: boolean
   providers: readonly ProviderSetting[]
@@ -108,6 +138,21 @@ export interface VideoForgeSettings {
     url: string
     refreshHours: number
     info: PriceSourceInfo
+  }
+  /** The teaching route's paths and credential reference; absent means {@link DEFAULT_TEACH_SETTINGS}. */
+  teach?: TeachSettings
+}
+
+/** The teaching settings in effect, with defaults filled in. */
+export function teachSettings(settings: VideoForgeSettings): TeachSettings {
+  const raw = settings.teach
+  if (raw === undefined) return { ...DEFAULT_TEACH_SETTINGS }
+  const pick = (value: string | undefined, fallback: string): string => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+  return {
+    voiceAuthRef: pick(raw.voiceAuthRef, DEFAULT_VOICE_AUTH_REF),
+    pythonPath: pick(raw.pythonPath, ''),
+    texBinPath: pick(raw.texBinPath, ''),
+    chromiumPath: pick(raw.chromiumPath, ''),
   }
 }
 

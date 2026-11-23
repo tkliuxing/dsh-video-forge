@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest'
 // `video_*` name they mention has to be a real tool, and the removed surface
 // (video_export, the old page) must never come back (DESIGN §16.6). The scan
 // descends into `prompting/`, where the per-model references live.
-const TOOLS_SOURCE = fileURLToPath(new URL('../src/tools.ts', import.meta.url))
+/** Every file that can register a tool: the generation tools and the teaching tools. */
+const TOOLS_SOURCES = [
+  fileURLToPath(new URL('../src/tools.ts', import.meta.url)),
+  fileURLToPath(new URL('../src/teach/tools.ts', import.meta.url)),
+]
 const SKILLS_DIR = fileURLToPath(new URL('../assets/skills/', import.meta.url))
 
 /** Every packaged skill body, including the per-model references under `prompting/`. */
@@ -25,11 +29,19 @@ const REMOVED = ['video_export', '视频工坊', 'workbench', '工作台']
 
 describe('bundled skills stay consistent with the tools', () => {
   it('only mentions tool names that actually exist', async () => {
-    const toolsSource = await readFile(TOOLS_SOURCE, 'utf8')
-    const realTools = new Set([...toolsSource.matchAll(/name: '([a-z0-9_]+)'/g)].map(match => match[1] ?? ''))
+    const realTools = new Set<string>()
+    for (const source of TOOLS_SOURCES) {
+      const text = await readFile(source, 'utf8')
+      for (const match of text.matchAll(/name: '([a-z0-9_]+)'/g)) realTools.add(match[1] ?? '')
+    }
     expect(realTools.has('video_generate')).toBe(true)
     expect(realTools.has('video_status')).toBe(true)
     expect(realTools.has('video_cancel')).toBe(true)
+    // The teaching route registers its four tools in src/teach/tools.ts; a skill
+    // naming one of them must find it there too.
+    for (const name of ['video_teach_plan', 'video_teach_narrate', 'video_teach_render', 'video_teach_export']) {
+      expect(realTools.has(name), `${name} must be a registered tool`).toBe(true)
+    }
 
     for (const { file, body } of await skillBodies()) {
       const mentioned = [...body.matchAll(/video_[a-z_]+/g)].map(match => match[0])

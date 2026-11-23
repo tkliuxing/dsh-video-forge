@@ -28,7 +28,7 @@ import {
   type DraftProblem,
   type ProviderDraft,
 } from '../provider-presets.ts'
-import { fetchOverview, type PanelOverview, type PanelProvider } from './panel-api.ts'
+import { fetchOverview, fetchTeach, type PanelOverview, type PanelProvider, type TeachOverview } from './panel-api.ts'
 import { ProvidersEditor, credentialSummary } from './providers-editor.tsx'
 import type { Translate } from './locales.ts'
 
@@ -48,6 +48,11 @@ export interface ClientConfigShape {
   maxTasks: number
   maxGiB: number
   requestTimeoutMs: number
+  /** Teaching route: the credential *reference* (never a key) and three machine paths. */
+  teachVoiceAuthRef?: string
+  teachPythonPath?: string
+  teachTexBinPath?: string
+  teachChromiumPath?: string
 }
 
 /** One settings-form op, matching `SettingsPathOpView`. */
@@ -125,6 +130,7 @@ const OK: CSSProperties = { fontSize: '0.85em', color: 'var(--dsw-alias-success,
 const HEADING: CSSProperties = { margin: 0, fontSize: '0.95em' }
 const BUTTON: CSSProperties = { ...INPUT, cursor: 'pointer', flex: '0 0 auto' }
 const SUMMARY: CSSProperties = { cursor: 'pointer', fontSize: '0.85em', opacity: 0.8 }
+const headlessButton: CSSProperties = { background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', font: 'inherit', textAlign: 'left' }
 
 /** The configuration card. */
 export function SettingsCard(props: SettingsCardProps): ReactNode {
@@ -145,6 +151,11 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({})
   const [keyBusy, setKeyBusy] = useState<string | null>(null)
   const [keyNotice, setKeyNotice] = useState<string | null>(null)
+  const [teach, setTeach] = useState<TeachOverview | null>(null)
+  const [teachError, setTeachError] = useState<string | null>(null)
+  // The teaching route is optional, so its body (and its Python probe) waits until
+  // someone opens it: a slides-only operator should not pay a probe on every visit.
+  const [teachOpen, setTeachOpen] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -158,6 +169,19 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
       }
     })
     return () => { live = false }
+  }, [])
+
+  // Probing spawns a Python, so it is one request for this card rather than part
+  // of the overview the video panel polls.
+  const probeTeach = useCallback(() => {
+    void fetchTeach().then(result => {
+      if (result.ok) {
+        setTeach(result.value)
+        setTeachError(null)
+      } else {
+        setTeachError(result.error)
+      }
+    })
   }, [])
 
   // --- the provider list, in whichever view is live -------------------------
@@ -204,11 +228,22 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   // The key rows follow the *edited* list, so a provider that was just added
   // already offers its key. An empty reference means "no key needed", which is
   // why the refs are collected rather than rendered per row.
+  // Read from the stored value and the pending draft together: the reference must
+  // follow the field while it is being edited, not only after a save.
+  const voiceAuthRef = String(draft.teachVoiceAuthRef ?? config?.teachVoiceAuthRef ?? 'ARK_VOICE_API_KEY').trim()
+  // Provider rows only: the voice credential has its own row inside the teaching
+  // section, so folding it in here would render the same reference twice.
   const credentialRefs = useMemo(() => authRefs(drafts), [drafts])
 
   useEffect(() => {
     if (credentialRefs.length > 0) void refreshCredentials(credentialRefs)
   }, [credentialRefs, refreshCredentials])
+
+  // The voice reference is only shown when the teaching section is open, so it is
+  // asked for then (and again if the reference itself is edited).
+  useEffect(() => {
+    if (teachOpen && voiceAuthRef !== '') void refreshCredentials([voiceAuthRef])
+  }, [teachOpen, voiceAuthRef, refreshCredentials])
 
   // --- derived values -------------------------------------------------------
 
@@ -553,6 +588,127 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
             />
           </label>
         </div>
+      </section>
+
+      <section style={SECTION}>
+        <button
+          type="button"
+          style={{ ...headlessButton, display: 'flex', alignItems: 'baseline', gap: '8px' }}
+          onClick={() => {
+            const next = !teachOpen
+            setTeachOpen(next)
+            if (next) probeTeach()
+          }}
+        >
+          <strong style={HEADING}>{t('config.teach')}</strong>
+          <span style={MUTED}>{teachOpen ? t('config.teachCollapse') : t('config.teachExpand')}</span>
+        </button>
+        {teachOpen ? (<>
+        <div style={MUTED}>{t('config.teachHint')}</div>
+        <div style={ROW}>
+          <label style={{ ...FIELD, flex: '2 1 260px' }}>
+            <span style={MUTED}>{t('config.voiceAuthRef')}</span>
+            <input
+              style={INPUT}
+              value={effective.teachVoiceAuthRef ?? 'ARK_VOICE_API_KEY'}
+              disabled={readOnly}
+              onChange={event => { setField('teachVoiceAuthRef', event.target.value) }}
+            />
+            <span style={MUTED}>{t('config.voiceAuthRefHint')}</span>
+          </label>
+        </div>
+        {voiceAuthRef === ''
+          ? null
+          : (
+              <CredentialRow
+                ref_={voiceAuthRef}
+                t={t}
+                state={credentials[voiceAuthRef]}
+                draft={keyDraft[voiceAuthRef] ?? ''}
+                busy={keyBusy === voiceAuthRef}
+                onDraft={value => {
+                  setKeyNotice(null)
+                  setKeyDraft(current => ({ ...current, [voiceAuthRef]: value }))
+                }}
+                onSave={async () => {
+                  const value = (keyDraft[voiceAuthRef] ?? '').trim()
+                  if (value === '') {
+                    setKeyNotice(t('config.keyRequired'))
+                    return
+                  }
+                  setKeyBusy(voiceAuthRef)
+                  const failure = await setCredential(voiceAuthRef, value)
+                  setKeyBusy(null)
+                  if (failure !== null) {
+                    setKeyNotice(failure)
+                    return
+                  }
+                  setKeyDraft(current => ({ ...current, [voiceAuthRef]: '' }))
+                  setKeyNotice(t('config.keyStored'))
+                  await refreshCredentials([voiceAuthRef])
+                }}
+                onClear={async () => {
+                  setKeyBusy(voiceAuthRef)
+                  const failure = await unsetCredential(voiceAuthRef)
+                  setKeyBusy(null)
+                  if (failure !== null) {
+                    setKeyNotice(failure)
+                    return
+                  }
+                  setKeyNotice(t('config.keyRemoved'))
+                  await refreshCredentials([voiceAuthRef])
+                }}
+              />
+            )}
+        <div style={ROW}>
+          <label style={{ ...FIELD, flex: '2 1 240px' }}>
+            <span style={MUTED}>{t('config.pythonPath')}</span>
+            <input
+              style={INPUT}
+              placeholder="/Users/you/.local/venvs/teach-video/bin/python3"
+              value={effective.teachPythonPath ?? ''}
+              disabled={readOnly}
+              onChange={event => { setField('teachPythonPath', event.target.value) }}
+            />
+          </label>
+          <label style={{ ...FIELD, flex: '2 1 240px' }}>
+            <span style={MUTED}>{t('config.texBinPath')}</span>
+            <input
+              style={INPUT}
+              placeholder="$HOME/Library/TinyTeX/bin/universal-darwin"
+              value={effective.teachTexBinPath ?? ''}
+              disabled={readOnly}
+              onChange={event => { setField('teachTexBinPath', event.target.value) }}
+            />
+          </label>
+          <label style={{ ...FIELD, flex: '2 1 240px' }}>
+            <span style={MUTED}>{t('config.chromiumPath')}</span>
+            <input
+              style={INPUT}
+              placeholder="Chromium executable (empty: Playwright\'s own lookup)"
+              value={effective.teachChromiumPath ?? ''}
+              disabled={readOnly}
+              onChange={event => { setField('teachChromiumPath', event.target.value) }}
+            />
+          </label>
+        </div>
+        <div style={MUTED}>{t('config.teachPathOrder')}</div>
+        <div style={ROW}>
+          <button type="button" style={BUTTON} onClick={probeTeach}>{t('config.teachProbe')}</button>
+          {teachError === null ? null : <span style={ERROR}>{teachError}</span>}
+        </div>
+        {teach === null ? null : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {(['ffmpeg', 'ffprobe', 'chromium', 'python3', 'manim', 'latex', 'dvisvgm'] as const).map(name => {
+              const state = teach.dependencies[name]
+              const missing = state === 'missing' || state.startsWith('not installed')
+              return (
+                <span key={name} style={missing ? ERROR : MUTED}>{`${name}: ${state}`}</span>
+              )
+            })}
+          </div>
+        )}
+        </>) : null}
       </section>
 
       <section style={SECTION}>

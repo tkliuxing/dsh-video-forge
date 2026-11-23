@@ -261,7 +261,7 @@ export async function workspaceRefusal(fs: WorkspaceFs, cwd: string): Promise<st
   return null
 }
 
-type RootCheck =
+export type RootCheck =
   | { kind: 'local'; path: string }
   | { kind: 'missing'; detail: string }
   | { kind: 'remote'; detail: string }
@@ -272,7 +272,7 @@ type RootCheck =
  * The same test the host's session controller makes: the host path must map
  * into the filesystem's world and resolve back to the same file.
  */
-async function localRoot(fs: WorkspaceFs, cwd: string): Promise<RootCheck> {
+export async function localRoot(fs: WorkspaceFs, cwd: string): Promise<RootCheck> {
   if (fs.processPathFromHostPath === undefined || fs.processPath === undefined) {
     return { kind: 'unverifiable', detail: 'this DSH version cannot say whether the workspace is on this machine' }
   }

@@ -50,10 +50,51 @@
 
 只有当卡片显示"已从保存位置移走或删除"时，才说明文件被用户动过了，需要处理。
 
+## 教学视频（Manim + HTML）
+
+除了在线模型生成，这个插件还有第二条路线：**旁白驱动的教学视频**，画面由 reveal.js 幻灯片与 Manim 数学动画画出来，渲染就在这台机器上。3b1b 式的公式推导、逐条出现的要点、坐标系动画都属于这条路线。
+
+**和生成路线的分工**：要真人感的场景、镜头运动、角色表演，用在线模型（`video_generate`）；要公式、坐标系、逐步累积的动画，用教学路线。两条路线都落在 `renders/<镜头>/vNNN.mp4`，但互不共享状态。
+
+**四个工具，按顺序**：
+
+1. `video_teach_plan`：校验 `storyboard.yaml`，估时，检查内容与时间线的配合（哪句没有画面变化、fragment 超没超、场景有没有被复用），读 deck HTML 核对录制器要用的三个全局（`teachReady` / `teachCue` / 页模式下的 `teachPage`）与页数，并报告本机缺哪个外部程序。**免费、不联网**，先跑它：它拦下的错误都出现在花钱之前。
+2. `video_teach_narrate`：逐句合成旁白，写 `timings.json`。这一步**按字符计费**，凭据引用名可在设置的「教学视频」里改，`sentences` 可以只重录指定句。
+   语音有两个 provider，按需要选：
+
+   | | `deepseek`（默认） | `volcengine` |
+   |---|---|---|
+   | 凭据 | `DEEPSEEK_API_KEY` | `ARK_VOICE_API_KEY` |
+   | 音色 | `stella` / `tide` | 一堆 `*_bigtts` 音色 |
+   | 调语速 | 不支持 | 整数语速 |
+   | 词级时间戳 | **没有** | 有 |
+   | 画面驱动 | 一句一页 + 页内 `at_progress` 节拍 | 可按词（`at_word`）触发 fragment |
+   | 合成方式 | 逐句请求 | 相邻句合并成一次请求 |
+   | 停顿 | 保留语音自带的气口 | 按标点补齐、只补不裁 |
+   | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 逐句合成时语气会漂 |
+
+   默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**只有需要"讲到某个词、画面动一下"时才换 volcengine** —— 那是它唯一不可替代的能力。
+3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。渲染完会抽样帧颜色，把"看着像静帧"的段点名。
+4. `video_teach_export`：写 SRT、`timeline.json`，并把 deck 导出到 `deck/`。
+
+**外部依赖分三档，只有用到的才装**（在线生成路线一样都不需要）：
+
+- **任何工程都要**：`ffmpeg`、`ffprobe`。
+- **只画幻灯片才要**：Chromium。`playwright-core` 随插件装，浏览器本身可用 `TEACH_CHROMIUM` 指定，或用 Playwright 自己的缓存。
+- **只有 `engine: manim` 的句子才要**：装 Manim 的 Python（`pip install manim`，用 `TEACH_PYTHON` 指过去）、TeX（推荐 TinyTeX）、以及 `dvisvgm`。**BasicTeX 有 `latex` 但没有 `dvisvgm`**，只装它会报 `latex error converting to dvi`；把 `TEACH_TEXBIN` 指到含两者的 bin 目录。
+
+**Manim 是可选的**。整份稿件用 `engine: slides` 是合法路线，上面第三档一样都不用装。要公式又不想装 TeX 时，把公式做成图片或纯 HTML（插件没有内置 MathJax/KaTeX）。`video_teach_plan` 会按这三档分组报告，缺 Manim 依赖时**在花钱前拒绝**并给出安装命令与「改用 slides」两条出路。
+
+**成本**：渲染免费（本机 CPU/GPU），唯一的钱是 TTS 按字符计。三分钟中文旁白约八百多字，按 5 元/万字符算约四毛，实际以账单为准。
+
+**成片与产物**：动态画面在 `renders/<镜头>/vNNN.mp4`，旁边的 `vNNN.json` 记录它由哪份稿件、哪几句构成；中间产物在项目根下（`audio/`、`timings.json`、`scenes/`、`slides/`、`.dsh-video/`），哪些该进版本库见 `video-teach-iterate`。
+
+**什么场景不该用这条路**：真人出镜、实拍质感的镜头、复杂场景调度与光影变化。这些是在线模型擅长的，教学路线做不了，硬做只会得到生硬的矢量画面。
+
 ## 做不到的事
 
 - 不能按分镜批量生成——一次一个镜头、一次一条视频。
-- 不能把多段拼接成片——没有剪辑/拼接，去插件外做。
+- 不能把多段拼接成片——这一条只针对在线生成路线：教学路线（`video_teach_render`）会把逐句分段拼成一条完整成片。
 - 不能用 `from` 续拍 MiniMax 或中转站的成片——只有方舟 Seedance 返回尾帧，改用 `first_frame` 传图。
 
 ## 相关要点（该提时再提）

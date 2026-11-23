@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>page-mode example</title>
+<!--
+  Page mode: one <section> per sentence, in manuscript order. The recorder calls
+  `teachPage(sentenceIndex)` at the start of each sentence and then advances the
+  beats inside that page on the manuscript's `at_progress` cues.
+
+  Beat numbers are counted INSIDE their page, exactly like reveal.js numbers
+  fragments per slide: the template's `teachCue(n)` walks the current page's
+  fragments to step n, so page 2's first beat is 1, not whatever came after the
+  previous page. Numbering them across the deck would run past the page and change
+  slides instead of revealing a row (this fixture used to do that).
+-->
+<style>
+  html, body { height: 100%; margin: 0; background: #11131a; color: #e8ecf4; font-family: "PingFang SC", system-ui, sans-serif; }
+  .page { height: 100vh; display: grid; place-items: center; }
+  .page h1 { font-size: 44px; margin: 0 0 28px; }
+  .row { font-size: 38px; margin: 10px 0; opacity: 0.12; transition: opacity 220ms ease; }
+  .row.on { opacity: 1; }
+  .value { color: #8fb6ff; margin-left: 16px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main id="deck">
+  <section class="page" data-page="0">
+    <h1>前几项部分和</h1>
+    <div class="row" data-beat="1">S₁ = 1.0000</div>
+    <div class="row" data-beat="2">S₂ = 1.2500</div>
+    <div class="row" data-beat="3">S₃ = 1.3611</div>
+  </section>
+  <section class="page hidden" data-page="1">
+    <h1>再加更多项</h1>
+    <div class="row" data-beat="1">S₁₀₀ ≈ 1.6350</div>
+  </section>
+  <section class="page hidden" data-page="2">
+    <h1>极限</h1>
+    <div class="row" data-beat="1">π²/6 ≈ 1.6449</div>
+  </section>
+</main>
+<script>
+// Minimal deck implementing the recorder contract without reveal.js: a page per
+// sentence, and beats numbered inside the page they belong to.
+const pages = [...document.querySelectorAll('[data-page]')]
+const beatsOf = (index) => [...pages[index].querySelectorAll('[data-beat]')]
+let current = 0
+
+window.teachCue = function teachCue(step) {
+  for (const beat of beatsOf(current)) {
+    beat.classList.toggle('on', Number(beat.dataset.beat) <= Number(step))
+  }
+}
+
+window.teachPage = function teachPage(index) {
+  current = Math.max(0, Number(index) || 0)
+  pages.forEach((page, at) => page.classList.toggle('hidden', at !== current))
+  // A new page starts with its own beats hidden; the sentence's cues reveal them.
+  for (const page of pages) for (const beat of page.querySelectorAll('[data-beat]')) beat.classList.remove('on')
+}
+
+window.teachPage(0)
+window.teachReady = true
+</script>
+</body>
+</html>
