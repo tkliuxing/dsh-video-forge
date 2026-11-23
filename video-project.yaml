@@ -1,0 +1,27 @@
+# Video project manifest (dsh-video-forge). Edit freely; every key is optional.
+version: 1
+
+# Used when a request leaves them out.
+defaults: {}
+#  provider: ark
+#  model: doubao-seedance-2-0-fast-260128
+#  resolution: 720p
+#  aspect_ratio: "16:9"
+#  duration_seconds: 5
+
+# Project-wide look, kept here rather than in every prompt.
+# style: warm film grain, soft daylight
+
+# Characters to keep consistent across shots.
+characters: {}
+#  alice:
+#    refs: [materials/alice/front.png]
+#    description: red scarf, short black hair
+
+# Where each kind of content lives, relative to this file.
+paths:
+  script: script
+  storyboard: storyboard
+  materials: materials
+  renders: renders
+  cache: .dsh-video
