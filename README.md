@@ -95,11 +95,13 @@ Models are referenced as `providerId::modelId`. Credentials resolve through the
 host's credential service first and the environment second
 (`<PROVIDER>_API_KEY`); a loopback gateway may run without one.
 
-The teaching route's narration uses a credential that is not a provider key.
-Its reference is the `teachVoiceAuthRef` setting (default `ARK_VOICE_API_KEY`),
-stored through the same credential service, or exported under that name.
-`ARK_API_KEY` cannot drive speech, and the endpoint rejects it with a 401 that
-reads like an unactivated model.
+The teaching route's narration uses a credential that is not a provider key, and
+each speech provider has its own: `DEEPSEEK_API_KEY` for DeepSeek and
+`ARK_VOICE_API_KEY` for volcengine. Both are ordinary credential references —
+store the key on the settings page (the collapsible "Teaching videos" section has
+one row per provider, and the header says whether each is set) or export it under
+that name. `ARK_API_KEY` cannot drive speech, and the endpoint rejects it with a
+401 that reads like an unactivated model.
 
 Two speech providers are supported, and the manuscript picks one with
 `meta.voice.provider`:

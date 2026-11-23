@@ -533,18 +533,21 @@ curl -sS https://openspeech.bytedance.com/api/v3/tts/unidirectional \
 
 用户要求把语音凭据和教学路线用到的路径放进插件设置页，理由很直接：插件设置页本来就能配 ARK / MiniMax 的供应商 key，语音没道理只能靠环境变量。
 
-**落地的四个设置项**（都是 `volatile`，改完下一次工具调用即生效，不用重启）：
+**落地的设置项**（都是 `volatile`，改完下一次工具调用即生效，不用重启）：
 
 | 设置项 | 默认 | 作用 |
 |---|---|---|
-| `teachVoiceAuthRef` | `ARK_VOICE_API_KEY` | 语音凭据的**引用名**。真正的 key 走宿主凭据服务，配置文件里没有明文 |
+| `teachVoiceAuthRefDeepseek` | `DEEPSEEK_API_KEY` | DeepSeek 语音凭据的**引用名**。真正的 key 走宿主凭据服务，配置文件里没有明文 |
+| `teachVoiceAuthRefVolcengine` | `ARK_VOICE_API_KEY` | 火山语音凭据的**引用名**，同上 |
 | `teachPythonPath` | 空 | 装了 Manim 的 Python；空则 `TEACH_PYTHON`，再退到 `PATH` 上的 `python3` |
 | `teachTexBinPath` | 空 | 同时有 `latex` 与 `dvisvgm` 的 bin 目录；空则 `TEACH_TEXBIN`，再走自动发现 |
 | `teachChromiumPath` | 空 | Chromium 可执行文件；空则 `TEACH_CHROMIUM`，再用 Playwright 自带查找 |
 
 **优先级是刻意的**：设置 → 环境变量 → 自动发现。环境变量是宿主启动那一刻的快照，GUI 用户改不动它，这次的 TeX 缺失就是被这条卡住的；所以设置必须赢。解析集中在一个函数里（`src/teach/probe.ts` 的 `teachPaths`），工具、探测、面板接口共用。
 
-**界面**：设置卡片里新增一个折叠的「教学视频」小节（默认收起，所以纯生成式用户不会被它干扰）。展开后是引用名输入框 + 凭据行（只显示已配置/未配置与掩码尾，保存后立刻清空输入框）、三个路径输入框、一个「探测这台机器」按钮。探测结果来自新增的 `GET /video-forge/api/teach`，返回 `ffmpeg` / `ffprobe` / `chromium` / `python3` / `manim` / `latex` / `dvisvgm` 的实际状态与版本；它单独成一个接口而不是塞进 `overview`，因为探测要 spawn 一次 Python，而视频面板轮询 `overview` 的频率远高于有人打开设置。
+**界面**：设置卡片里新增一个折叠的「教学视频」小节（默认收起，所以纯生成式用户不会被它干扰）。标题行即使在折叠状态下也显示两个 provider 的凭据状态（`语音凭据：DeepSeek 已配置 · volcengine 未配置`），否则"键到底配没配"要展开才知道。展开后**每个 provider 一组**引用名输入框 + 凭据行（只显示已配置/未配置与掩码尾，保存后立刻清空输入框），下面是三个路径输入框与一个「探测这台机器」按钮。
+
+一组一个引用名是必须的：DeepSeek 的语音端点吃它的普通 API key，火山吃语音专用的 `ARK_VOICE_API_KEY`，一个引用名只可能对其中一个正确。早先只有一个字段时，DeepSeek 稿件（默认路线）显示的是火山的引用名（2026-11-20 修正，`voiceAuthRefFor()` 现在按 provider 取）。探测结果来自新增的 `GET /video-forge/api/teach`，返回 `ffmpeg` / `ffprobe` / `chromium` / `python3` / `manim` / `latex` / `dvisvgm` 的实际状态与版本；它单独成一个接口而不是塞进 `overview`，因为探测要 spawn 一次 Python，而视频面板轮询 `overview` 的频率远高于有人打开设置。
 
 **没有做的事**：密钥输入框不会写进配置——它调用现成的凭据服务；设置里也没有音色字段，音色属于稿件的 `meta.voice.speaker`。
 
@@ -671,3 +674,28 @@ cue 因此有两种时间写法：
 2. 在 GUI 里点开设置页看一次探测结果（需重载插件）、把样片放进工作区 `renders/` 后在视频面板点开一次。
 3. 按 §17 的规则返工那条 3 分钟样片（3 句超预算、平均 10.5 秒一次变化、场景复用、Manim 画面偏小）。
 4. 听感复核（句间停顿是否够、语气是否还漂）——只有人耳能判。
+
+## 24. 设置页的语音 key 修正：一个 provider 一个引用名（2026-11-23）
+
+用户指出「`ARK_VOICE_API_KEY` 在插件配置界面上可配置」这件事没有落实。查下来是两件事叠在一起：界面上那一行藏在默认折叠的「教学视频」小节里，而且**它只有一个引用名输入框**——DeepSeek 稿件（默认路线）跑起来要的是 `DEEPSEEK_API_KEY`，界面上却只会显示和写入 `ARK_VOICE_API_KEY`。所以严格说，DeepSeek 那个 key 从来没法在界面上配。
+
+### 改法
+
+- 设置拆成 `teachVoiceAuthRefDeepseek`（默认 `DEEPSEEK_API_KEY`）与 `teachVoiceAuthRefVolcengine`（默认 `ARK_VOICE_API_KEY`）。`voiceAuthRefFor(teach, provider)` 在 `probe.ts` 里按 provider 取，工具、依赖报告、设置卡片共用同一个答案。
+- 卡片里每个 provider 一组「引用名输入框 + 凭据行（保存 / 删除，只显示掩码与来源）」。改一个不影响另一个。
+- **折叠状态下标题行也显示两个 key 的状态**（`语音凭据: DeepSeek 已配置 · volcengine 未配置`）。这条是刻意的：用户来这个页面就是想知道「key 到底配没配」，藏在折叠里等于没有。
+
+### 渲染真实宿主时抓到的两个缺陷
+
+这轮按仓库既定做法起了一个隔离实例（`DSH_HOME=/tmp/teach-ui-verify`，端口 34799，`dsh plugin --profile web add <repo>`），用 Playwright 打开插件页截图并真的把两个 key 存进去。抓到两个只看代码看不出来的问题：
+
+1. **`refreshCredentials` 会清空其它行的状态**：保存一个 key 之后只重新查询那一个引用，`setCredentials(Object.fromEntries(...))` 把其余状态整张替换掉，标题行于是对另一个 provider 说"无法检查"。改成合并（`{ ...current, ...fresh }`）。
+2. **布局被撑开**：把一组字段塞进列方向的 flex 容器后，`FIELD` 上的 `flex: '2 1 260px'` 变成**高度**基准，模块之间拉开 260px 空白。改成让 label 落在 `ROW` 里（同一行内 flex 才按宽度算）。
+
+两条都有回归测试：`test/client-config-card.test.tsx` 里"保存一个 key 之后两行状态都还在"在旧实现上失败、在新实现上通过。
+
+### 验收
+
+隔离实例里实测：`DeepSeek 凭据引用名 → DEEPSEEK_API_KEY`、`volcengine 凭据引用名 → ARK_VOICE_API_KEY`，各填一次 key 点「保存密钥」，标题行变成 `语音凭据: DeepSeek 已配置 · volcengine 已配置`，宿主 `.credentials.yaml` 的 `refs` 里出现这两个名字（值不打印）。截图见 `renders/settings-ui/`（该目录被 `.gitignore` 忽略）。
+
+**给使用者的一句话**：这一节在插件配置卡片里、默认收起，标题行右侧就是两个 key 的状态；改完设置下一次工具调用即生效，但宿主进程必须重启过才能加载带这两个字段的构建。

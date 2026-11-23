@@ -59,7 +59,7 @@
 **四个工具，按顺序**：
 
 1. `video_teach_plan`：校验 `storyboard.yaml`，估时，检查内容与时间线的配合（哪句没有画面变化、fragment 超没超、场景有没有被复用），读 deck HTML 核对录制器要用的三个全局（`teachReady` / `teachCue` / 页模式下的 `teachPage`）与页数，并报告本机缺哪个外部程序。**免费、不联网**，先跑它：它拦下的错误都出现在花钱之前。
-2. `video_teach_narrate`：逐句合成旁白，写 `timings.json`。这一步**按字符计费**，凭据引用名可在设置的「教学视频」里改，`sentences` 可以只重录指定句。
+2. `video_teach_narrate`：逐句合成旁白，写 `timings.json`。这一步**按字符计费**，`sentences` 可以只重录指定句。两个 provider 的 key 都在设置的「教学视频」里配（每个 provider 一行，折叠时标题也会显示是否已配置）。
    语音有两个 provider，按需要选：
 
    | | `deepseek`（默认） | `volcengine` |

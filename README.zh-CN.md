@@ -80,9 +80,11 @@ OpenAI-Videos 兼容网关，并自动填好 Base URL、凭据引用与厂商文
 模型按 `providerId::modelId` 引用。凭据先走宿主凭据服务，再走环境变量
 （`<PROVIDER>_API_KEY`）；回环网关可以不带 key。
 
-教学路线的旁白用的是另一项凭据，它不是供应商 key。引用名是设置项
-`teachVoiceAuthRef`，同样走宿主的凭据服务或环境变量。`ARK_API_KEY` 不能用于语音，
-那个端点会用一条很像"模型未激活"的 401 拒绝它。
+教学路线的旁白用的是另一项凭据，它不是供应商 key，而且**每个语音供应商各有一个**：
+DeepSeek 用 `DEEPSEEK_API_KEY`，火山用 `ARK_VOICE_API_KEY`。两者都是普通的凭据引用名，
+可以在设置页里直接填（「教学视频」小节里每个 provider 一行，折叠状态下标题会显示
+是否已配置），也可以按同名环境变量导出。`ARK_API_KEY` 不能用于语音，那个端点会用一条
+很像"模型未激活"的 401 拒绝它。
 
 语音有两个供应商，由稿件的 `meta.voice.provider` 选择：
 

@@ -28,7 +28,7 @@ import { localRoot } from '../destination.ts'
 import { recordLocalRender } from '../operations.ts'
 import type { VideoForgeRuntime } from '../runtime.ts'
 import { sessionContextOf } from '../session-context.ts'
-import { ConfigError, DEFAULT_VOICE_AUTH_REF } from '../settings.ts'
+import { ConfigError, DEFAULT_VOICE_AUTH_REF, teachSettings } from '../settings.ts'
 import { workspaceFsOf } from '../workspace-fs.ts'
 import { countFrameColors } from './ffmpeg.ts'
 import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, judgeSamples, sampleTimes, type DeckInfo, type SuspectSegment } from './rules.ts'
@@ -44,7 +44,7 @@ import {
 } from './pipeline.ts'
 import { assessDependencies, type DependencyProbe } from './rules.ts'
 import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
-import { probeDependencies, teachPaths } from './probe.ts'
+import { probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
 
 /** Default manuscript file, relative to the workspace. */
 export const DEFAULT_STORYBOARD = 'storyboard.yaml'
@@ -56,17 +56,15 @@ export const VOICE_AUTH_REF = DEFAULT_VOICE_AUTH_REF
 const DEFAULT_SHOT = 'teach'
 
 /**
- * The credential reference a voice provider uses.
+ * The credential reference a voice provider uses, from the settings.
  *
- * The manuscript chooses the provider; the settings page can override the
- * reference. Empty in the settings means "this provider's own default", so
- * switching to DeepSeek in a manuscript does not also need a settings edit.
+ * The manuscript chooses the provider and the settings page owns the name a key
+ * is stored under — one name per provider, so the DeepSeek default route and the
+ * volcengine route are each configurable on their own (`voiceAuthRefFor` in
+ * `probe.ts`).
  */
-export function voiceAuthRefFor(configuredRef: string, provider: string): string {
-  const trimmed = configuredRef.trim()
-  const isDefault = trimmed === '' || trimmed === DEFAULT_VOICE_AUTH_REF
-  if (provider === 'deepseek') return isDefault ? 'DEEPSEEK_API_KEY' : trimmed
-  return isDefault ? DEFAULT_VOICE_AUTH_REF : trimmed
+function voiceRef(runtime: ToolRuntime, provider: string): string {
+  return voiceAuthRefFor(teachSettings(runtime.settings()), provider)
 }
 
 /** The runtime the teaching tools share with the generation tools: the ledger lives there. */
@@ -165,9 +163,8 @@ async function resolveVoice(runtime: ToolRuntime, board: Storyboard, speakerOver
   // The manuscript chooses the provider; only the reference can be overridden on
   // the settings page. Empty means "the provider's own default reference", so
   // switching provider in the manuscript does not also require editing a setting.
-  const configuredRef = teachPaths(runtime.settings()).voiceAuthRef
   const provider = board.voice?.provider ?? DEFAULT_VOICE.provider
-  const authRef = voiceAuthRefFor(configuredRef, provider)
+  const authRef = voiceRef(runtime, provider)
   const fallbackSpeaker = DEFAULT_VOICE_SPEAKER[provider] ?? ''
   const voice: VoiceSpec = {
     provider,
@@ -217,7 +214,7 @@ function selectedIds(board: Storyboard, only: readonly string[] | undefined): st
  * the page-mode acceptance run).
  */
 async function voiceState(runtime: ToolRuntime, provider: string): Promise<string> {
-  const authRef = voiceAuthRefFor(teachPaths(runtime.settings()).voiceAuthRef, provider)
+  const authRef = voiceRef(runtime, provider)
   const credentials = runtime.ctx.get('credentials' as never) as { resolve(ref: string): Promise<{ value?: string } | undefined> } | undefined
   if (credentials !== undefined) {
     // A service that answers `undefined` for a reference it does not hold is the
@@ -510,7 +507,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       if (manimBlocking.length > 0 && assessment.refusal !== null) throw new ConfigError(assessment.refusal)
 
       const provider = board.voice?.provider ?? DEFAULT_VOICE.provider
-      const authRef = voiceAuthRefFor(teachPaths(runtime.settings()).voiceAuthRef, provider)
+      const authRef = voiceRef(runtime, provider)
       const voice = await voiceState(runtime, provider)
       const dependencies = [
         ...assessment.entries.map(entry => ({ ...entry })),

@@ -7,8 +7,8 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { teachPaths } from '../src/teach/probe.ts'
-import { DEFAULT_TEACH_SETTINGS, DEFAULT_VOICE_AUTH_REF, teachSettings, type VideoForgeSettings } from '../src/settings.ts'
+import { teachPaths, voiceAuthRefFor } from '../src/teach/probe.ts'
+import { DEFAULT_TEACH_SETTINGS, DEFAULT_VOICE_AUTH_REF, DEFAULT_VOICE_AUTH_REFS, teachSettings, type VideoForgeSettings } from '../src/settings.ts'
 
 const settingsWith = (teach?: Partial<typeof DEFAULT_TEACH_SETTINGS>): VideoForgeSettings => ({
   enabled: true,
@@ -34,16 +34,36 @@ afterEach(() => {
 })
 
 describe('teachSettings', () => {
-  it('falls back to the reference this build has always used', () => {
+  it('gives each voice provider its own reference by default', () => {
     const resolved = teachSettings(settingsWith())
-    expect(resolved.voiceAuthRef).toBe(DEFAULT_VOICE_AUTH_REF)
+    expect(resolved.voiceAuthRefDeepseek).toBe('DEEPSEEK_API_KEY')
+    expect(resolved.voiceAuthRefVolcengine).toBe(DEFAULT_VOICE_AUTH_REF)
     expect(resolved.pythonPath).toBe('')
   })
 
-  it('ignores blank fields rather than accepting a whitespace path', () => {
-    const resolved = teachSettings(settingsWith({ pythonPath: '   ', voiceAuthRef: '  ' }))
+  it('ignores blank fields rather than accepting a whitespace path or reference', () => {
+    const resolved = teachSettings(settingsWith({ pythonPath: '   ', voiceAuthRefDeepseek: '  ', voiceAuthRefVolcengine: ' ' }))
     expect(resolved.pythonPath).toBe('')
-    expect(resolved.voiceAuthRef).toBe(DEFAULT_VOICE_AUTH_REF)
+    expect(resolved.voiceAuthRefDeepseek).toBe('DEEPSEEK_API_KEY')
+    expect(resolved.voiceAuthRefVolcengine).toBe(DEFAULT_VOICE_AUTH_REF)
+  })
+})
+
+describe('voice credential references', () => {
+  it('reads the reference belonging to the provider, never the other one', () => {
+    const teach = teachSettings(settingsWith({ voiceAuthRefDeepseek: 'MY_DEEPSEEK_KEY', voiceAuthRefVolcengine: 'MY_VOICE_KEY' }))
+    expect(voiceAuthRefFor(teach, 'deepseek')).toBe('MY_DEEPSEEK_KEY')
+    expect(voiceAuthRefFor(teach, 'volcengine')).toBe('MY_VOICE_KEY')
+  })
+
+  it('falls back per provider, so configuring one leaves the other alone', () => {
+    const teach = teachSettings(settingsWith({ voiceAuthRefDeepseek: 'MY_DEEPSEEK_KEY' }))
+    expect(voiceAuthRefFor(teach, 'deepseek')).toBe('MY_DEEPSEEK_KEY')
+    expect(voiceAuthRefFor(teach, 'volcengine')).toBe(DEFAULT_VOICE_AUTH_REFS.volcengine)
+  })
+
+  it('keeps the volcengine name as the fallback for a provider it does not know', () => {
+    expect(voiceAuthRefFor(teachSettings(settingsWith()), 'some-other-voice')).toBe(DEFAULT_VOICE_AUTH_REF)
   })
 })
 
@@ -71,8 +91,9 @@ describe('teachPaths precedence', () => {
     expect(paths.chromiumPath).toBeNull()
   })
 
-  it('carries the configured credential reference, not a hard-coded one', () => {
-    expect(teachPaths(settingsWith({ voiceAuthRef: 'MY_VOICE_KEY' })).voiceAuthRef).toBe('MY_VOICE_KEY')
-    expect(teachPaths(settingsWith()).voiceAuthRef).toBe(DEFAULT_VOICE_AUTH_REF)
+  it('carries one credential reference per voice provider, not a hard-coded one', () => {
+    const paths = teachPaths(settingsWith({ voiceAuthRefDeepseek: 'MY_DEEPSEEK_KEY', voiceAuthRefVolcengine: 'MY_VOICE_KEY' }))
+    expect(paths.voiceAuthRefs).toEqual({ deepseek: 'MY_DEEPSEEK_KEY', volcengine: 'MY_VOICE_KEY' })
+    expect(teachPaths(settingsWith()).voiceAuthRefs).toEqual({ deepseek: 'DEEPSEEK_API_KEY', volcengine: DEFAULT_VOICE_AUTH_REF })
   })
 })

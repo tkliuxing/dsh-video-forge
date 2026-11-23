@@ -113,7 +113,8 @@ export type PanelResult<T> = { ok: true; value: T } | { ok: false; error: string
 export interface TeachOverview {
   ok: true
   paths: {
-    voiceAuthRef: string
+    /** The name each voice provider's key is stored under, as the settings resolve it. */
+    voiceAuthRefs: { deepseek: string, volcengine: string }
     pythonPath: string | null
     texBinPath: string | null
     chromiumPath: string | null

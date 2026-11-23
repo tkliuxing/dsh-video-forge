@@ -19,7 +19,7 @@
  * save ever writes a mix of the two.
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   authRefs,
   readProviders,
@@ -33,6 +33,20 @@ import { ProvidersEditor, credentialSummary } from './providers-editor.tsx'
 import type { Translate } from './locales.ts'
 
 export type { Translate }
+
+/**
+ * Where each voice provider's key is stored when the config names no other
+ * reference. Each provider has its own name: a DeepSeek speech key is DeepSeek's
+ * normal API key, while volcengine's speech endpoint takes the speech-only
+ * `ARK_VOICE_API_KEY`. Both are ordinary credential references — the key itself
+ * goes to the host credential service and never into this config.
+ */
+const VOICE_KEY_DEFAULTS = { deepseek: 'DEEPSEEK_API_KEY', volcengine: 'ARK_VOICE_API_KEY' } as const
+
+/** The two voices a manuscript can ask for, in the order the card lists them. */
+const VOICE_PROVIDERS = ['deepseek', 'volcengine'] as const
+
+type VoiceProvider = typeof VOICE_PROVIDERS[number]
 
 /** Persisted plugin config as the browser sees it. */
 export interface ClientConfigShape {
@@ -48,8 +62,12 @@ export interface ClientConfigShape {
   maxTasks: number
   maxGiB: number
   requestTimeoutMs: number
-  /** Teaching route: the credential *reference* (never a key) and three machine paths. */
-  teachVoiceAuthRef?: string
+  /**
+   * Teaching route: one credential *reference* per voice provider (never a key),
+   * and three machine paths.
+   */
+  teachVoiceAuthRefDeepseek?: string
+  teachVoiceAuthRefVolcengine?: string
   teachPythonPath?: string
   teachTexBinPath?: string
   teachChromiumPath?: string
@@ -67,6 +85,20 @@ export interface ConfigSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   value: ClientConfigShape | undefined
   writable: boolean
+}
+
+/** Product names, which do not translate; the card labels them for a human. */
+const VOICE_LABELS: Record<VoiceProvider, string> = { deepseek: 'DeepSeek', volcengine: 'volcengine' }
+
+/** The product name for one voice provider, as the card writes it. */
+function providerLabel(provider: VoiceProvider): string {
+  return VOICE_LABELS[provider]
+}
+
+/** One word for whether a voice key resolves, for the collapsed header line. */
+function voiceTone(state: CredentialState | undefined, t: Translate): string {
+  if (state === undefined || state.error !== null) return t('config.credentialUnreadable')
+  return state.configured ? t('config.teachVoiceConfigured') : t('config.credentialMissing')
 }
 
 /** Host-reported credential state for one reference; never carries a value. */
@@ -220,30 +252,48 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
 
   // Credential state comes from the host's own authority on the question, not
   // from the cached overview: only the host knows whether a key now exists.
+  //
+  // The result is merged into what is already known, because a refresh is often
+  // asked for one reference only (right after saving it). Replacing the record
+  // dropped every other row's state, and the teaching header then said "could not
+  // be checked" about the other provider's key (found 2026-11-23 by rendering the
+  // card in a real host).
   const refreshCredentials = useCallback(async (refs: readonly string[]) => {
     const entries = await Promise.all(refs.map(async ref => [ref, await describeCredential(ref)] as const))
-    setCredentials(Object.fromEntries(entries))
+    setCredentials(current => ({ ...current, ...Object.fromEntries(entries) }))
   }, [describeCredential])
 
   // The key rows follow the *edited* list, so a provider that was just added
   // already offers its key. An empty reference means "no key needed", which is
   // why the refs are collected rather than rendered per row.
   // Read from the stored value and the pending draft together: the reference must
-  // follow the field while it is being edited, not only after a save.
-  const voiceAuthRef = String(draft.teachVoiceAuthRef ?? config?.teachVoiceAuthRef ?? 'ARK_VOICE_API_KEY').trim()
-  // Provider rows only: the voice credential has its own row inside the teaching
-  // section, so folding it in here would render the same reference twice.
+  // follow the field while it is being edited, not only after a save. One
+  // reference per voice provider, since the two products take different keys.
+  const voiceRefs = useMemo(() => {
+    const of = (provider: VoiceProvider): string => {
+      const field = provider === 'deepseek' ? 'teachVoiceAuthRefDeepseek' : 'teachVoiceAuthRefVolcengine'
+      const edited = (draft as Record<string, unknown>)[field]
+      const stored = (config as Record<string, unknown> | undefined)?.[field]
+      const value = typeof edited === 'string' ? edited : typeof stored === 'string' ? stored : ''
+      const trimmed = value.trim()
+      return trimmed === '' ? VOICE_KEY_DEFAULTS[provider] : trimmed
+    }
+    return { deepseek: of('deepseek'), volcengine: of('volcengine') }
+  }, [draft, config])
+
+  // Provider rows only: the voice keys have their own rows inside the teaching
+  // section, and folding them in here would render the same reference twice.
   const credentialRefs = useMemo(() => authRefs(drafts), [drafts])
+  // Every reference this card reports on: the provider rows plus the two voice
+  // keys, so the collapsed teaching header can say whether each key is stored.
+  const allRefs = useMemo(
+    () => [...new Set([...credentialRefs, voiceRefs.deepseek, voiceRefs.volcengine])].filter(ref => ref !== ''),
+    [credentialRefs, voiceRefs],
+  )
 
   useEffect(() => {
-    if (credentialRefs.length > 0) void refreshCredentials(credentialRefs)
-  }, [credentialRefs, refreshCredentials])
-
-  // The voice reference is only shown when the teaching section is open, so it is
-  // asked for then (and again if the reference itself is edited).
-  useEffect(() => {
-    if (teachOpen && voiceAuthRef !== '') void refreshCredentials([voiceAuthRef])
-  }, [teachOpen, voiceAuthRef, refreshCredentials])
+    if (allRefs.length > 0) void refreshCredentials(allRefs)
+  }, [allRefs, refreshCredentials])
 
   // --- derived values -------------------------------------------------------
 
@@ -602,64 +652,75 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         >
           <strong style={HEADING}>{t('config.teach')}</strong>
           <span style={MUTED}>{teachOpen ? t('config.teachCollapse') : t('config.teachExpand')}</span>
+          {/* Kept visible while the section is collapsed: whether a voice key is
+              stored is the thing an operator comes here to check, and hiding it
+              behind a fold is what made the row look missing. */}
+          <span style={MUTED}>
+            {`${t('config.teachVoice')}: ${VOICE_PROVIDERS.map(provider => `${providerLabel(provider)} ${voiceTone(credentials[voiceRefs[provider]], t)}`).join(' · ')}`}
+          </span>
         </button>
         {teachOpen ? (<>
         <div style={MUTED}>{t('config.teachHint')}</div>
-        <div style={ROW}>
-          <label style={{ ...FIELD, flex: '2 1 260px' }}>
-            <span style={MUTED}>{t('config.voiceAuthRef')}</span>
-            <input
-              style={INPUT}
-              value={effective.teachVoiceAuthRef ?? 'ARK_VOICE_API_KEY'}
-              disabled={readOnly}
-              onChange={event => { setField('teachVoiceAuthRef', event.target.value) }}
-            />
-            <span style={MUTED}>{t('config.voiceAuthRefHint')}</span>
-          </label>
-        </div>
-        {voiceAuthRef === ''
-          ? null
-          : (
+        {VOICE_PROVIDERS.map(provider => {
+          const field = provider === 'deepseek' ? 'teachVoiceAuthRefDeepseek' : 'teachVoiceAuthRefVolcengine'
+          const ref_ = voiceRefs[provider]
+          const stored = String((effective as Record<string, unknown>)[field] ?? VOICE_KEY_DEFAULTS[provider])
+          return (
+            <Fragment key={provider}>
+              <div style={ROW}>
+                <label style={{ ...FIELD, flex: '2 1 260px', minWidth: '260px' }}>
+                  <span style={MUTED}>{t('config.voiceAuthRefFor', { provider: providerLabel(provider) })}</span>
+                  <input
+                    style={INPUT}
+                    value={stored}
+                    disabled={readOnly}
+                    onChange={event => { setField(field, event.target.value) }}
+                  />
+                </label>
+              </div>
+              <div style={MUTED}>{t('config.voiceAuthRefHint')}</div>
               <CredentialRow
-                ref_={voiceAuthRef}
+                ref_={ref_}
                 t={t}
-                state={credentials[voiceAuthRef]}
-                draft={keyDraft[voiceAuthRef] ?? ''}
-                busy={keyBusy === voiceAuthRef}
+                state={credentials[ref_]}
+                draft={keyDraft[ref_] ?? ''}
+                busy={keyBusy === ref_}
                 onDraft={value => {
                   setKeyNotice(null)
-                  setKeyDraft(current => ({ ...current, [voiceAuthRef]: value }))
+                  setKeyDraft(current => ({ ...current, [ref_]: value }))
                 }}
                 onSave={async () => {
-                  const value = (keyDraft[voiceAuthRef] ?? '').trim()
+                  const value = (keyDraft[ref_] ?? '').trim()
                   if (value === '') {
                     setKeyNotice(t('config.keyRequired'))
                     return
                   }
-                  setKeyBusy(voiceAuthRef)
-                  const failure = await setCredential(voiceAuthRef, value)
+                  setKeyBusy(ref_)
+                  const failure = await setCredential(ref_, value)
                   setKeyBusy(null)
                   if (failure !== null) {
                     setKeyNotice(failure)
                     return
                   }
-                  setKeyDraft(current => ({ ...current, [voiceAuthRef]: '' }))
+                  setKeyDraft(current => ({ ...current, [ref_]: '' }))
                   setKeyNotice(t('config.keyStored'))
-                  await refreshCredentials([voiceAuthRef])
+                  await refreshCredentials([ref_])
                 }}
                 onClear={async () => {
-                  setKeyBusy(voiceAuthRef)
-                  const failure = await unsetCredential(voiceAuthRef)
+                  setKeyBusy(ref_)
+                  const failure = await unsetCredential(ref_)
                   setKeyBusy(null)
                   if (failure !== null) {
                     setKeyNotice(failure)
                     return
                   }
                   setKeyNotice(t('config.keyRemoved'))
-                  await refreshCredentials([voiceAuthRef])
+                  await refreshCredentials([ref_])
                 }}
               />
-            )}
+            </Fragment>
+          )
+        })}
         <div style={ROW}>
           <label style={{ ...FIELD, flex: '2 1 240px' }}>
             <span style={MUTED}>{t('config.pythonPath')}</span>

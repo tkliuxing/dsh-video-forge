@@ -19,14 +19,34 @@ import { spawn } from 'node:child_process'
 import { delimiter, join } from 'node:path'
 import type { DependencyProbe } from './rules.ts'
 import { discoverTex } from './tex.ts'
-import { teachSettings, type VideoForgeSettings } from '../settings.ts'
+import { DEFAULT_VOICE_AUTH_REFS, DEFAULT_VOICE_AUTH_REF, teachSettings, type TeachSettings, type VideoForgeSettings } from '../settings.ts'
 
 /** The teaching paths in effect: settings first, environment second. */
 export interface TeachPaths {
-  voiceAuthRef: string
+  /** The credential reference each voice provider resolves; one name per provider, never a key. */
+  voiceAuthRefs: { deepseek: string, volcengine: string }
   pythonPath: string | null
   texBinPath: string | null
   chromiumPath: string | null
+}
+
+/**
+ * The credential reference a voice provider uses.
+ *
+ * Each provider has its own name, because a key stored for one product is not a
+ * key for the other: DeepSeek answers `DEEPSEEK_API_KEY` as a bearer token,
+ * volcengine answers the speech-only `ARK_VOICE_API_KEY` as `X-Api-Key`. The
+ * setting for the provider wins when it names something; otherwise the provider's
+ * own default applies. An unknown provider gets the voice reference this build
+ * has always used, and will fail at narration with that name in the message.
+ */
+export function voiceAuthRefFor(teach: TeachSettings, provider: string): string {
+  const configured = provider === 'deepseek'
+    ? teach.voiceAuthRefDeepseek
+    : provider === 'volcengine' ? teach.voiceAuthRefVolcengine : ''
+  const fallback = DEFAULT_VOICE_AUTH_REFS[provider] ?? DEFAULT_VOICE_AUTH_REF
+  const trimmed = configured.trim()
+  return trimmed === '' ? fallback : trimmed
 }
 
 /** Resolve the four teaching inputs from settings, falling back to the environment. */
@@ -38,7 +58,10 @@ export function teachPaths(settings: VideoForgeSettings): TeachPaths {
     return ambient === '' ? null : ambient
   }
   return {
-    voiceAuthRef: teach.voiceAuthRef,
+    voiceAuthRefs: {
+      deepseek: voiceAuthRefFor(teach, 'deepseek'),
+      volcengine: voiceAuthRefFor(teach, 'volcengine'),
+    },
     pythonPath: pick(teach.pythonPath, 'TEACH_PYTHON'),
     texBinPath: pick(teach.texBinPath, 'TEACH_TEXBIN'),
     chromiumPath: pick(teach.chromiumPath, 'TEACH_CHROMIUM'),

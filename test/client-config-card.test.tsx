@@ -10,7 +10,7 @@
  * the pure ones the configuration card shares with the chat cards.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsCard, type ClientConfigShape, type ConfigPatch, type CredentialState } from '../src/client/settings-card.tsx'
 import { formatBytes, resolveMediaUrl as safeUrl } from '../src/client/video-card-model.ts'
@@ -70,6 +70,31 @@ function bench(over: {
     unsetCredential,
     useConfig: () => ({ status: 'ready', value: CONFIG, writable: over.writable ?? true }),
   }
+}
+
+/**
+ * The credential row for one reference.
+ *
+ * The card now offers a key row for every provider *and* one per voice provider,
+ * so "the last save button" is not a stable way to reach a row; a row is found
+ * from the field its label names and then searched inside.
+ */
+const keyLabel = (ref: string) => (content: string): boolean => content.includes(`${en['config.keyLabel']} · ${ref}`)
+
+/** The key field for one reference (its label also carries the stored state, so it is a prefix match). */
+function keyField(ref: string): HTMLInputElement {
+  return screen.getByLabelText(keyLabel(ref)) as HTMLInputElement
+}
+
+async function findKeyField(ref: string): Promise<HTMLInputElement> {
+  return await screen.findByLabelText(keyLabel(ref)) as HTMLInputElement
+}
+
+/** The credential row for one reference. */
+function keyRow(ref: string): HTMLElement {
+  const row = keyField(ref).closest('label')?.parentElement
+  if (row === null || row === undefined) throw new Error(`no row around the key field for ${ref}`)
+  return row
 }
 
 /** Props for one render, so each test states only what it varies. */
@@ -151,9 +176,9 @@ describe('configuration card: API keys', () => {
     const b = bench()
     const { container } = render(<SettingsCard {...props(b, t)} />)
 
-    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
+    const field = await findKeyField('ARK_API_KEY')
     fireEvent.change(field, { target: { value: 'sk-super-secret-value' } })
-    fireEvent.click(screen.getByText(en['config.keySave']))
+    fireEvent.click(within(keyRow('ARK_API_KEY')).getByText(en['config.keySave']))
 
     await waitFor(() => { expect(b.setCredential).toHaveBeenCalledWith('ARK_API_KEY', 'sk-super-secret-value') })
     await waitFor(() => { expect(screen.getByText(en['config.keyStored'])).toBeTruthy() })
@@ -167,49 +192,54 @@ describe('configuration card: API keys', () => {
   it('refuses to send an empty value and says why', async () => {
     const b = bench()
     render(<SettingsCard {...props(b, t)} />)
-    fireEvent.click(await screen.findByText(en['config.keySave']))
+    const field = await findKeyField('ARK_API_KEY')
+    fireEvent.click(within(keyRow('ARK_API_KEY')).getByText(en['config.keySave']))
     await waitFor(() => { expect(screen.getByText(en['config.keyRequired'])).toBeTruthy() })
+    expect((field as HTMLInputElement).value).toBe('')
     expect(b.setCredential).not.toHaveBeenCalled()
   })
 
   it('shows a refusal from the host verbatim', async () => {
     const b = bench({ setCredential: async () => 'credential/rejected: read-only source shadows this reference' })
     render(<SettingsCard {...props(b, t)} />)
-    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
+    const field = await findKeyField('ARK_API_KEY')
     fireEvent.change(field, { target: { value: 'x' } })
-    fireEvent.click(screen.getByText(en['config.keySave']))
+    fireEvent.click(within(keyRow('ARK_API_KEY')).getByText(en['config.keySave']))
     await waitFor(() => { expect(screen.getByText(/read-only source shadows this reference/)).toBeTruthy() })
   })
 
   it('disables entry for a credential the host reports as read-only', async () => {
     const b = bench({ credential: { configured: true, source: 'file', writable: false } })
     render(<SettingsCard {...props(b, t)} />)
-    const field = await screen.findByLabelText(`${en['config.keyLabel']} · ARK_API_KEY`)
-    await waitFor(() => { expect((field as HTMLInputElement).disabled).toBe(true) })
-    expect(screen.getByText(en['config.keyReadOnly'])).toBeTruthy()
+    const field = await findKeyField('ARK_API_KEY')
+    await waitFor(() => { expect(field.disabled).toBe(true) })
+    expect(within(keyRow('ARK_API_KEY')).getByText(en['config.keyReadOnly'])).toBeTruthy()
   })
 
   it('offers removal only when a key is actually configured', async () => {
     const present = bench({ credential: { configured: true, source: 'user-env' } })
     render(<SettingsCard {...props(present, t)} />)
-    const remove = await screen.findByText(en['config.keyClear'])
-    await waitFor(() => { expect((remove as HTMLButtonElement).disabled).toBe(false) })
+    await findKeyField('ARK_API_KEY')
+    const remove = within(keyRow('ARK_API_KEY')).getByText(en['config.keyClear']) as HTMLButtonElement
+    await waitFor(() => { expect(remove.disabled).toBe(false) })
     fireEvent.click(remove)
     await waitFor(() => { expect(present.unsetCredential).toHaveBeenCalledWith('ARK_API_KEY') })
 
     cleanup()
     const absent = bench()
     render(<SettingsCard {...props(absent, t)} />)
-    const disabled = await screen.findByText(en['config.keyClear'])
-    await waitFor(() => { expect((disabled as HTMLButtonElement).disabled).toBe(true) })
+    await findKeyField('ARK_API_KEY')
+    const disabled = within(keyRow('ARK_API_KEY')).getByText(en['config.keyClear']) as HTMLButtonElement
+    await waitFor(() => { expect(disabled.disabled).toBe(true) })
   })
 
   it('shows no key row for a provider that needs no credential', async () => {
     const b = bench()
     const keyless = { ...CONFIG, providers: [{ ...CONFIG.providers[0]!, authRef: '' }] }
     render(<SettingsCard {...props({ ...b, useConfig: () => ({ status: 'ready' as const, value: keyless, writable: true }) }, t)} />)
-    await waitFor(() => { expect(screen.queryByText(en['config.keySave'])).toBeNull() })
-    expect(b.describeCredential).not.toHaveBeenCalled()
+    // The voice rows are always offered; the keyless provider is the one that has none.
+    await waitFor(() => { expect(screen.queryByLabelText(keyLabel('ARK_API_KEY'))).toBeNull() })
+    expect(b.describeCredential).not.toHaveBeenCalledWith('ARK_API_KEY')
   })
 })
 
@@ -252,21 +282,49 @@ describe('configuration card: teaching route', () => {
     ])
   })
 
-  it('offers the voice credential as a reference plus a stored key, never as config text', async () => {
+  it('reports the state of both voice keys after one of them is saved', async () => {
+    // Saving one key asks the host about that reference only, so the other row's
+    // state has to survive the refresh rather than be replaced by it.
     const b = bench()
     render(<SettingsCard {...props(b, t)} />)
     fireEvent.click(screen.getByText(en['config.teach']))
+    const field = await findKeyField('ARK_VOICE_API_KEY')
+    fireEvent.change(field, { target: { value: 'voice-secret' } })
+    fireEvent.click(within(keyRow('ARK_VOICE_API_KEY')).getByText(en['config.keySave']))
+    await waitFor(() => { expect(b.setCredential).toHaveBeenCalledWith('ARK_VOICE_API_KEY', 'voice-secret') })
+    await waitFor(() => {
+      const header = screen.getByText(new RegExp(`${en['config.teachVoice']}:`))
+      expect(header.textContent).toContain('DeepSeek')
+      expect(header.textContent).toContain('volcengine')
+      expect(header.textContent).not.toContain(en['config.credentialUnreadable'])
+    })
+  })
 
-    // The label also carries the hint line, so the field is found by its value.
-    const ref = await screen.findByDisplayValue('ARK_VOICE_API_KEY')
-    // The field carries the reference name, not a key, and defaults to this build's.
-    expect((ref as HTMLInputElement).value).toBe('ARK_VOICE_API_KEY')
-    fireEvent.change(ref, { target: { value: 'MY_VOICE_KEY' } })
+  it('offers one key row per voice provider, named by a reference, never as config text', async () => {
+    const b = bench()
+    render(<SettingsCard {...props(b, t)} />)
 
-    // The credential row follows the edited reference and stores through the service.
-    const key = await screen.findByLabelText(`${en['config.keyLabel']} · MY_VOICE_KEY`)
+    // Both keys are reachable without opening the teaching section: the collapsed
+    // header says whether each is stored, which is the question this row answers.
+    await waitFor(() => {
+      expect(b.describeCredential).toHaveBeenCalledWith('DEEPSEEK_API_KEY')
+      expect(b.describeCredential).toHaveBeenCalledWith('ARK_VOICE_API_KEY')
+    })
+    expect(screen.getByText(new RegExp(`${en['config.teachVoice']}.*DeepSeek`))).toBeTruthy()
+
+    fireEvent.click(screen.getByText(en['config.teach']))
+
+    // Each row carries its own reference, defaulting to that provider's own name.
+    expect((await screen.findByDisplayValue('DEEPSEEK_API_KEY') as HTMLInputElement).value).toBe('DEEPSEEK_API_KEY')
+    const volcengineRef = screen.getByDisplayValue('ARK_VOICE_API_KEY')
+    fireEvent.change(volcengineRef, { target: { value: 'MY_VOICE_KEY' } })
+
+    // Renaming one leaves the other alone: a key stored for one product is not a
+    // key for the other.
+    expect((screen.getByDisplayValue('DEEPSEEK_API_KEY') as HTMLInputElement).value).toBe('DEEPSEEK_API_KEY')
+    const key = await findKeyField('MY_VOICE_KEY')
     fireEvent.change(key, { target: { value: 'voice-secret' } })
-    fireEvent.click(screen.getAllByText(en['config.keySave']).at(-1)!)
+    fireEvent.click(within(keyRow('MY_VOICE_KEY')).getByText(en['config.keySave']))
     await waitFor(() => { expect(b.setCredential).toHaveBeenCalledWith('MY_VOICE_KEY', 'voice-secret') })
     expect(b.save).not.toHaveBeenCalled()
   })

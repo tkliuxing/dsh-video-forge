@@ -93,8 +93,13 @@ export interface ProviderSetting {
  * the credentials service.
  */
 export interface TeachSettings {
-  /** Credential reference the narrator resolves; empty falls back to {@link DEFAULT_VOICE_AUTH_REF}. */
-  voiceAuthRef: string
+  /**
+   * Credential reference for the DeepSeek voice; empty falls back to
+   * {@link DEFAULT_VOICE_AUTH_REFS}.
+   */
+  voiceAuthRefDeepseek: string
+  /** Credential reference for the volcengine voice; empty falls back to {@link DEFAULT_VOICE_AUTH_REFS}. */
+  voiceAuthRefVolcengine: string
   /** Python interpreter that has Manim; empty means `TEACH_PYTHON`, then `python3` on PATH. */
   pythonPath: string
   /** TeX bin directory holding both `latex` and `dvisvgm`; empty means `TEACH_TEXBIN`, then discovery. */
@@ -103,12 +108,29 @@ export interface TeachSettings {
   chromiumPath: string
 }
 
-/** The credential reference the teaching route reads when the setting names none. */
-export const DEFAULT_VOICE_AUTH_REF = 'ARK_VOICE_API_KEY'
+/**
+ * Where each voice provider's key is expected to be stored, when no setting
+ * names another name.
+ *
+ * One reference per provider, because the two products take different keys under
+ * different names: DeepSeek's speech endpoint takes its normal API key
+ * (`DEEPSEEK_API_KEY`, sent as a bearer token), while volcengine's takes the
+ * speech-only `ARK_VOICE_API_KEY` (`X-Api-Key`). A single reference field could
+ * only ever be right for one of them, and it was the volcengine name that got
+ * shown for DeepSeek manuscripts, which is the default route (found 2026-11-20).
+ */
+export const DEFAULT_VOICE_AUTH_REFS: Readonly<Record<string, string>> = {
+  deepseek: 'DEEPSEEK_API_KEY',
+  volcengine: 'ARK_VOICE_API_KEY',
+}
 
-/** Defaults for {@link TeachSettings}: the reference this build has always used, and no paths. */
+/** The volcengine reference, kept as a named constant for the messages that still point at it. */
+export const DEFAULT_VOICE_AUTH_REF = DEFAULT_VOICE_AUTH_REFS.volcengine!
+
+/** Defaults for {@link TeachSettings}: each provider's own reference, and no paths. */
 export const DEFAULT_TEACH_SETTINGS: TeachSettings = {
-  voiceAuthRef: DEFAULT_VOICE_AUTH_REF,
+  voiceAuthRefDeepseek: DEFAULT_VOICE_AUTH_REFS.deepseek!,
+  voiceAuthRefVolcengine: DEFAULT_VOICE_AUTH_REFS.volcengine!,
   pythonPath: '',
   texBinPath: '',
   chromiumPath: '',
@@ -149,7 +171,8 @@ export function teachSettings(settings: VideoForgeSettings): TeachSettings {
   if (raw === undefined) return { ...DEFAULT_TEACH_SETTINGS }
   const pick = (value: string | undefined, fallback: string): string => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
   return {
-    voiceAuthRef: pick(raw.voiceAuthRef, DEFAULT_VOICE_AUTH_REF),
+    voiceAuthRefDeepseek: pick(raw.voiceAuthRefDeepseek, DEFAULT_VOICE_AUTH_REFS.deepseek!),
+    voiceAuthRefVolcengine: pick(raw.voiceAuthRefVolcengine, DEFAULT_VOICE_AUTH_REFS.volcengine!),
     pythonPath: pick(raw.pythonPath, ''),
     texBinPath: pick(raw.texBinPath, ''),
     chromiumPath: pick(raw.chromiumPath, ''),

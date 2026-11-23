@@ -17,7 +17,7 @@ import { DEFAULT_PRICE_SOURCE_URL } from './price-source.ts'
 import type { PriceTable } from './prices.ts'
 import { SUPPORTED_PROTOCOLS } from './provider-presets.ts'
 import type { ProviderSetting, VideoForgeSettings } from './settings.ts'
-import { DEFAULT_ENDPOINTS, DEFAULT_VOICE_AUTH_REF } from './settings.ts'
+import { DEFAULT_ENDPOINTS, DEFAULT_VOICE_AUTH_REFS } from './settings.ts'
 import { VIDEO_MODES } from './types.ts'
 
 /** The live reference-valued config DSH hands to `apply`. */
@@ -37,7 +37,8 @@ export interface Config {
   priceTable: Volatile<PriceTable>
   priceSourceUrl: Volatile<string>
   priceRefreshHours: Volatile<number>
-  teachVoiceAuthRef: Volatile<string>
+  teachVoiceAuthRefDeepseek: Volatile<string>
+  teachVoiceAuthRefVolcengine: Volatile<string>
   teachPythonPath: Volatile<string>
   teachTexBinPath: Volatile<string>
   teachChromiumPath: Volatile<string>
@@ -136,8 +137,10 @@ export const Config = z.object({
     .description('Public price feed to read (DESIGN §21); empty disables the remote source'),
   priceRefreshHours: z.number().min(0).default(24).volatile()
     .description('Hours between price refreshes; 0 fetches once on start'),
-  teachVoiceAuthRef: z.string().default(DEFAULT_VOICE_AUTH_REF).volatile()
-    .description('Credential reference the teaching narrator resolves (stored through the credential service, never here)'),
+  teachVoiceAuthRefDeepseek: z.string().default(DEFAULT_VOICE_AUTH_REFS.deepseek!).volatile()
+    .description('Credential reference for the DeepSeek voice (the key itself is stored through the credential service, never here)'),
+  teachVoiceAuthRefVolcengine: z.string().default(DEFAULT_VOICE_AUTH_REFS.volcengine!).volatile()
+    .description('Credential reference for the volcengine voice (the key itself is stored through the credential service, never here)'),
   teachPythonPath: z.string().default('').volatile()
     .description('Python with Manim, for engine: manim segments; empty tries TEACH_PYTHON, then python3 on PATH'),
   teachTexBinPath: z.string().default('').volatile()
@@ -166,7 +169,8 @@ export function snapshot(config: Config): VideoForgeSettings {
     requestTimeoutMs: config.requestTimeoutMs.get(),
     priceTable: userPriceTable(config.priceTable.get()),
     teach: {
-      voiceAuthRef: config.teachVoiceAuthRef.get(),
+      voiceAuthRefDeepseek: config.teachVoiceAuthRefDeepseek.get(),
+      voiceAuthRefVolcengine: config.teachVoiceAuthRefVolcengine.get(),
       pythonPath: config.teachPythonPath.get(),
       texBinPath: config.teachTexBinPath.get(),
       chromiumPath: config.teachChromiumPath.get(),

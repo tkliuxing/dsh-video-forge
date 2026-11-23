@@ -10,8 +10,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { synthesizeDeepseek, VoiceError } from '../src/teach/voice.ts'
-import { voiceAuthRefFor } from '../src/teach/tools.ts'
-import { DEFAULT_VOICE_AUTH_REF } from '../src/settings.ts'
+import { voiceAuthRefFor } from '../src/teach/probe.ts'
+import { DEFAULT_TEACH_SETTINGS, DEFAULT_VOICE_AUTH_REF, DEFAULT_VOICE_AUTH_REFS } from '../src/settings.ts'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
@@ -68,12 +68,13 @@ describe('DeepSeek TTS', () => {
 
 describe('voice credential reference', () => {
   it('falls back to each provider\'s own default reference', () => {
-    expect(voiceAuthRefFor('', 'volcengine')).toBe(DEFAULT_VOICE_AUTH_REF)
-    expect(voiceAuthRefFor(DEFAULT_VOICE_AUTH_REF, 'deepseek')).toBe('DEEPSEEK_API_KEY')
+    expect(voiceAuthRefFor(DEFAULT_TEACH_SETTINGS, 'volcengine')).toBe(DEFAULT_VOICE_AUTH_REF)
+    expect(voiceAuthRefFor(DEFAULT_TEACH_SETTINGS, 'deepseek')).toBe('DEEPSEEK_API_KEY')
   })
 
-  it('keeps an explicit override for either provider', () => {
-    expect(voiceAuthRefFor('MY_VOICE_KEY', 'volcengine')).toBe('MY_VOICE_KEY')
-    expect(voiceAuthRefFor('MY_VOICE_KEY', 'deepseek')).toBe('MY_VOICE_KEY')
+  it('keeps one override per provider, so renaming one does not rename the other', () => {
+    const teach = { ...DEFAULT_TEACH_SETTINGS, voiceAuthRefDeepseek: 'MY_DEEPSEEK_KEY' }
+    expect(voiceAuthRefFor(teach, 'deepseek')).toBe('MY_DEEPSEEK_KEY')
+    expect(voiceAuthRefFor(teach, 'volcengine')).toBe(DEFAULT_VOICE_AUTH_REFS.volcengine)
   })
 })
