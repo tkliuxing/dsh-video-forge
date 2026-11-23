@@ -10,7 +10,7 @@
  * needs to know whether a model or a browser asked for it.
  */
 
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import { maskSecret, resolveApiKey } from './credentials.ts'
 import { describeMaterial, resolveMaterial } from './materials.ts'
@@ -403,6 +403,11 @@ export async function cancelTask(
 ): Promise<CancelOutcome> {
   const task = runtime.ledger.byId(taskId)
   if (task === undefined) throw new ConfigError(`no video task with id "${taskId}"; call video_status to list recent tasks`)
+  if ((task.origin ?? 'provider') === 'local') {
+    // Nothing was submitted anywhere: the file is already on disk, and deleting
+    // it is a workspace decision, not a provider cancellation.
+    throw new ConfigError(`${task.localId} is a locally rendered video, not a provider task: there is nothing to cancel and nothing was charged. Delete the file if you no longer want it.`)
+  }
 
   const settings = runtime.settings()
   const { provider, model } = resolveTarget(settings, task.provider, task.model)
@@ -485,6 +490,8 @@ export async function cancelTask(
 /** One task row as either surface renders it. */
 export interface TaskRow {
   taskId: string
+  /** `local` for a render this machine made (a teaching video); the panel groups them with provider rows. */
+  origin: 'provider' | 'local'
   provider: string
   model: string
   status: VideoTask['status']
@@ -579,6 +586,7 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
       const inWorkspace = located?.kind === 'workspace' ? located : null
       return {
         taskId: task.localId,
+        origin: task.origin ?? 'provider',
         provider: task.provider,
         model: task.model,
         status: task.status,
@@ -614,6 +622,94 @@ export function listTasks(runtime: VideoForgeRuntime, options: { taskId?: string
     },
     active: all.filter(task => IN_FLIGHT.has(task.status)).length,
   }
+}
+
+/** A finished local render, as the ledger records it. */
+export interface LocalRenderInput {
+  /** The manuscript's title; shown as the row's prompt. */
+  title: string
+  /** Workspace-relative manuscript path, for the record. */
+  storyboard: string
+  session: TaskSession
+  /** Workspace-relative video path, POSIX separators (`renders/<shot>/vNNN.mp4`). */
+  relativePath: string
+  shot: string
+  version: number
+  /** Absolute path on this machine, for playback. */
+  absolutePath: string
+  bytes: number
+  durationMs: number | null
+  width: number | null
+  height: number | null
+  /** Workspace-relative sidecar path, when one was written. */
+  sidecar: string | null
+}
+
+/**
+ * Record a teaching video in the ledger so the video panel lists it (DESIGN §23,
+ * TEACH-VIDEO.md §8 plan A).
+ *
+ * The row is deliberately *not* shaped like a vendor task: `origin: 'local'`,
+ * no provider task id, no billing, and `params.mode` fixed at `t2v` because the
+ * ledger's vocabulary has no "narrated" mode and inventing one would ripple
+ * through the panel for no reader's benefit. What it does carry is what the
+ * panel actually reads: the workspace-relative path, the shot, and the measured
+ * geometry and duration.
+ *
+ * There is no dedupe: rendering is not billed, and two renders of the same
+ * manuscript are two files with two version numbers, which is exactly what a
+ * version history is.
+ */
+export async function recordLocalRender(runtime: VideoForgeRuntime, input: LocalRenderInput): Promise<VideoTask> {
+  await requireLedger(runtime)
+  const now = new Date()
+  const artifact: VideoArtifact = {
+    path: input.absolutePath,
+    bytes: input.bytes,
+    mime: 'video/mp4',
+    width: input.width,
+    height: input.height,
+    durationSec: input.durationMs === null ? null : Math.round(input.durationMs) / 1000,
+    token: randomBytes(16).toString('hex'),
+    createdAt: now.toISOString(),
+    location: {
+      kind: 'workspace',
+      root: input.session.cwd ?? '',
+      relativePath: input.relativePath,
+      shot: input.shot,
+      version: input.version,
+      sidecar: input.sidecar,
+    },
+  }
+  const task: VideoTask = {
+    localId: runtime.ledger.nextLocalId(now),
+    origin: 'local',
+    provider: 'local',
+    protocol: 'local-render',
+    model: 'teach-video',
+    providerTaskId: null,
+    status: 'succeeded',
+    progress: 1,
+    submittedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    // Unique per render, so the generation dedupe window can never match one.
+    paramsFingerprint: `local:${input.relativePath}:${now.toISOString()}`,
+    params: {
+      prompt: input.title,
+      mode: 't2v',
+      durationSeconds: artifact.durationSec,
+      resolution: null,
+      aspectRatio: null,
+      firstFrame: null,
+      lastFrame: null,
+      referenceImages: [],
+      sentPrompt: `${input.storyboard} (teaching video, rendered locally)`,
+    },
+    artifacts: [artifact],
+    error: null,
+    session: input.session,
+  }
+  return runtime.ledger.add(task)
 }
 
 /** What `video_status` with no task id tells the model about the setup (DESIGN §16.3). */

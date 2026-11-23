@@ -29,7 +29,7 @@ import { isSending, unconfirmedMessage } from './operations.ts'
 import { adapterFor, type AdapterContext } from './providers/index.ts'
 import type { VideoForgeRuntime } from './runtime.ts'
 import { resolveTarget, type ModelSetting, type ProviderSetting } from './settings.ts'
-import { UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
+import { isLocalRender, UNCONFIRMED_CODE, type TaskBilling, type VideoTask } from './types.ts'
 import { deliverNotices } from './notify.ts'
 import { startInProcessWatch } from './watch.ts'
 
@@ -88,7 +88,7 @@ export async function reconcile(runtime: VideoForgeRuntime, atLoad?: ReadonlySet
  */
 export async function retryOrphans(runtime: VideoForgeRuntime): Promise<void> {
   if (inFlight.has(runtime)) return
-  const unwatched = runtime.ledger.open().filter(task => !runtime.watching.has(task.localId) && !isSending(task.localId))
+  const unwatched = runtime.ledger.open().filter(task => !isLocalRender(task) && !runtime.watching.has(task.localId) && !isSending(task.localId))
   const orphans = recoverableOrphans(runtime.ledger)
   if (unwatched.length === 0 && orphans.length === 0) return
   inFlight.add(runtime)
@@ -120,7 +120,8 @@ export async function settleBilling(runtime: VideoForgeRuntime): Promise<void> {
     && task.providerTaskId !== null
     && (task.billing === undefined || task.billing === null)
     && !(now - Date.parse(task.submittedAt) <= PROVIDER_HORIZON_MS)
-  const owed = runtime.ledger.list().filter(task => awaitingBilling(task) || expiredOrphan(task))
+  // A local render has no provider to ask: it is settled when it is written.
+  const owed = runtime.ledger.list().filter(task => !isLocalRender(task) && (awaitingBilling(task) || expiredOrphan(task)))
   if (owed.length === 0) return
   settling.add(runtime)
   try {

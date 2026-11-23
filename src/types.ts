@@ -242,10 +242,33 @@ export interface VideoTaskError {
   moderation?: ModerationStage
 }
 
+/**
+ * Whether a row was produced on this machine rather than by a provider.
+ *
+ * Every path that reaches for a provider adapter — reconciliation, billing,
+ * orphan retry, cancellation — asks this first. Reading `origin` through one
+ * function keeps the default (absent means provider) in one place.
+ */
+export function isLocalRender(task: { origin?: 'provider' | 'local' } | object): boolean {
+  return (task as { origin?: 'provider' | 'local' }).origin === 'local'
+}
+
 /** One ledger row. */
 export interface VideoTask {
   localId: string
-  /** Configured provider id. */
+  /**
+   * Who made this row. Absent (and read as `provider`) on every row written
+   * before this field existed, and on every row a vendor task backs.
+   *
+   * `local` marks a render this machine produced — a teaching video assembled
+   * from TTS, reveal.js slides and Manim scenes (DESIGN §23). Such a row has no
+   * provider task id, no billing, nothing to reconcile and nothing to cancel,
+   * so every path that reaches for a provider adapter checks this first. It is
+   * stored rather than inferred from `provider === 'local'` so a real provider
+   * may one day be called that without the two meanings silently merging.
+   */
+  origin?: 'provider' | 'local'
+  /** Configured provider id; `local` for a row with `origin: 'local'`. */
   provider: string
   protocol: string
   model: string
