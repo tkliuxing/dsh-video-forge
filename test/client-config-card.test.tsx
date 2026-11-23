@@ -17,7 +17,7 @@ import { formatBytes, resolveMediaUrl as safeUrl } from '../src/client/video-car
 import { en } from '../src/client/locales.ts'
 import type { VideoForgeKey } from '../src/client/locales.ts'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 const t = (key: VideoForgeKey, params?: Record<string, unknown>): string => {
   const template = en[key]
@@ -257,13 +257,25 @@ describe('shared card helpers', () => {
 })
 
 describe('configuration card: teaching route', () => {
-  it('keeps the teaching fields behind a toggle and writes them as config ops', async () => {
+  it('shows the teaching fields open by default, still collapsible, and writes them as config ops', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input))
+      const dependencies = { ffmpeg: 'present', ffprobe: 'present', chromium: 'present', python3: 'present', manim: 'missing', latex: 'missing', dvisvgm: 'missing' }
+      return new Response(JSON.stringify({ ok: true, enabled: true, settings: {}, providers: [], paths: {}, dependencies }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
     const b = bench()
     render(<SettingsCard {...props(b, t)} />)
 
-    // Collapsed by default: a slides-only operator never sees (or probes) this.
-    expect(screen.queryByText(en['config.pythonPath'])).toBeNull()
+    // Open by default: the voice keys live here, and a collapsed section reads as
+    // "there is nothing to configure". Being open is also why the machine is
+    // probed without anyone pressing a button.
+    await screen.findByLabelText(en['config.pythonPath'])
+    await waitFor(() => { expect(calls.some(url => url.includes('/teach'))).toBe(true) })
 
+    // Collapsing still works, and expanding brings the fields back.
+    fireEvent.click(screen.getByText(en['config.teach']))
+    await waitFor(() => { expect(screen.queryByText(en['config.pythonPath'])).toBeNull() })
     fireEvent.click(screen.getByText(en['config.teach']))
 
     const python = await screen.findByLabelText(en['config.pythonPath'])
@@ -287,7 +299,6 @@ describe('configuration card: teaching route', () => {
     // state has to survive the refresh rather than be replaced by it.
     const b = bench()
     render(<SettingsCard {...props(b, t)} />)
-    fireEvent.click(screen.getByText(en['config.teach']))
     const field = await findKeyField('ARK_VOICE_API_KEY')
     fireEvent.change(field, { target: { value: 'voice-secret' } })
     fireEvent.click(within(keyRow('ARK_VOICE_API_KEY')).getByText(en['config.keySave']))
@@ -312,7 +323,7 @@ describe('configuration card: teaching route', () => {
     })
     expect(screen.getByText(new RegExp(`${en['config.teachVoice']}.*DeepSeek`))).toBeTruthy()
 
-    fireEvent.click(screen.getByText(en['config.teach']))
+    // The section is open by default, so both rows are already there.
 
     // Each row carries its own reference, defaulting to that provider's own name.
     expect((await screen.findByDisplayValue('DEEPSEEK_API_KEY') as HTMLInputElement).value).toBe('DEEPSEEK_API_KEY')

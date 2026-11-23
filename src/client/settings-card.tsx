@@ -185,9 +185,12 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   const [keyNotice, setKeyNotice] = useState<string | null>(null)
   const [teach, setTeach] = useState<TeachOverview | null>(null)
   const [teachError, setTeachError] = useState<string | null>(null)
-  // The teaching route is optional, so its body (and its Python probe) waits until
-  // someone opens it: a slides-only operator should not pay a probe on every visit.
-  const [teachOpen, setTeachOpen] = useState(false)
+  // Open by default: the voice keys and the paths live here, and a section that
+  // starts collapsed reads as "there is nothing to configure". Collapsing stays
+  // available for someone who only generates videos. The probe follows the same
+  // rule — whatever is on screen should be true, so it runs once on mount instead
+  // of waiting for a click that a default-open section never gets.
+  const [teachOpen, setTeachOpen] = useState(true)
 
   useEffect(() => {
     let live = true
@@ -204,7 +207,8 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
   }, [])
 
   // Probing spawns a Python, so it is one request for this card rather than part
-  // of the overview the video panel polls.
+  // of the overview the video panel polls: a settings visit costs one probe, not
+  // one per poll tick.
   const probeTeach = useCallback(() => {
     void fetchTeach().then(result => {
       if (result.ok) {
@@ -215,6 +219,13 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
       }
     })
   }, [])
+
+  // Probe whenever the section is open, including the first render, so the listed
+  // versions are about this machine as it is now rather than as it was when
+  // someone last pressed the button.
+  useEffect(() => {
+    if (teachOpen) probeTeach()
+  }, [teachOpen, probeTeach])
 
   // --- the provider list, in whichever view is live -------------------------
 
@@ -644,11 +655,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         <button
           type="button"
           style={{ ...headlessButton, display: 'flex', alignItems: 'baseline', gap: '8px' }}
-          onClick={() => {
-            const next = !teachOpen
-            setTeachOpen(next)
-            if (next) probeTeach()
-          }}
+          onClick={() => { setTeachOpen(current => !current) }}
         >
           <strong style={HEADING}>{t('config.teach')}</strong>
           <span style={MUTED}>{teachOpen ? t('config.teachCollapse') : t('config.teachExpand')}</span>
@@ -761,7 +768,9 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         {teach === null ? null : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             {(['ffmpeg', 'ffprobe', 'chromium', 'python3', 'manim', 'latex', 'dvisvgm'] as const).map(name => {
-              const state = teach.dependencies[name]
+              // A host that answers without the dependency block is a version skew,
+              // not a reason to take the whole card down.
+              const state = teach.dependencies?.[name] ?? 'unknown'
               const missing = state === 'missing' || state.startsWith('not installed')
               return (
                 <span key={name} style={missing ? ERROR : MUTED}>{`${name}: ${state}`}</span>
