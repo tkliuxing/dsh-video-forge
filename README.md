@@ -152,14 +152,16 @@ its environment variable, which wins over discovery.
 | `video_teach_plan` | Validate a teaching manuscript (`storyboard.yaml`), estimate its spoken length, and report which local tools are missing. Free and offline |
 | `video_teach_narrate` | Synthesize the narration (DeepSeek speech by default, `DEEPSEEK_API_KEY`; volcengine optionally, the only provider with word timings) and write `timings.json`; `sentences` re-synthesizes only those lines |
 | `video_teach_render` | Render one segment per sentence from reveal.js slides and/or Manim scenes, then assemble `renders/<shot>/vNNN.mp4`; `sentences` re-records only those lines and leaves the other segments untouched |
-| `video_teach_export` | Write the SRT (timed by the word timings), `timeline.json`, and the decks under `deck/` |
+| `video_teach_export` | Write the SRT and `timeline.json` next to the film, and the decks under `deck/`. The SRT is cut on word timings; the default voice has none, so it gets one cue per sentence |
 
 ### Teaching videos
 
 A teaching video is narrated by TTS and drawn on this machine, so it needs no
 provider key and costs nothing to render. The narration is the clock: each
-sentence's audio sets that sentence's length, and slide fragments fire on the
-words the manuscript names.
+sentence's audio sets that sentence's length. The default voice reports no word
+timings, so the picture advances one page per sentence and the beats inside a
+page are placed by proportion (see the two voice providers above); only
+`volcengine` can fire a beat on a given word.
 
 | Use it for | Do not use it for |
 |---|---|
@@ -171,11 +173,15 @@ words the manuscript names.
 bring at least one picture change, the average gap between changes must stay
 under 8 s, a sentence should run 2 to 8 s, cue numbers must fit the deck's real
 fragment count, and two sentences must not share one Manim scene (the animation
-would repeat). Findings name the sentence; only a cue beyond the deck's
-fragments is refused outright.
+would repeat). Findings name the sentence. A cue beyond the deck's fragments is
+refused outright, and so is a deck missing the `teachReady` / `teachCue` /
+`teachPage` contract; that one is caught before any narration is paid for.
 
 Artifacts: the film lands at `renders/<shot>/vNNN.mp4` with `vNNN.json` beside
-it, and appears in the video panel. The manuscript (`storyboard.yaml`),
+it, and appears in the video panel. `video_teach_export` adds three more: an
+`.srt` next to the film, a `vNNN.timeline.json`, and the interactive decks under
+`deck/`. Subtitles stay a separate SRT file; they are not burned into the
+picture. The manuscript (`storyboard.yaml`),
 `slides/<segment>/`, `scenes/*.py`, `timings.json` and `audio/` belong to the
 project and are worth committing; `.dsh-video/`, `deck/` and `renders/` are
 regenerable. The `video-teach-*` skills cover the manuscript format, the

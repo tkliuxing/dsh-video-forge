@@ -120,12 +120,14 @@ DeepSeek 用 `DEEPSEEK_API_KEY`，火山用 `ARK_VOICE_API_KEY`。两者都是�
 | `video_teach_plan` | 校验教学稿 `storyboard.yaml`、估时、检查内容与时间线的配合（哪句没有画面变化、fragment 是否越界、场景有没有被复用），并报告本机缺哪个外部程序。免费、不联网 |
 | `video_teach_narrate` | 合成旁白（默认 DeepSeek 语音 `DEEPSEEK_API_KEY`；火山 `volcengine` 可选，唯一带字级时间戳），写 `timings.json`；`sentences` 只重合成指定句 |
 | `video_teach_render` | 一句一段地从 reveal.js 幻灯片与/或 Manim 场景渲染，再拼成 `renders/<镜头>/vNNN.mp4`；`sentences` 只重录指定句，其余段不动。渲染后抽样帧颜色，把可疑静帧点名 |
-| `video_teach_export` | 写按词定时的 SRT、`timeline.json`，并把 deck 导出到 `deck/` |
+| `video_teach_export` | 写成片旁的 SRT 与 `timeline.json`，并把 deck 导出到 `deck/`。SRT 按词级时间戳切；默认音色没有词级时间戳，就一句一条 |
 
 ### 教学视频
 
 教学视频的旁白由 TTS 合成、画面在这台机器上画出来，所以不需要供应商 key，渲染不花钱。
-时间轴由旁白决定：每句音频的长度就是那句的长度，幻灯片的 fragment 按稿件里写的词触发。
+时间轴由旁白决定：每句音频的长度就是那句的长度。默认音色没有词级时间戳，所以画面按句
+换页，句内的节拍按该句时长的比例摆放（见上文两个语音供应商一段）；只有换成
+`volcengine` 才能让画面跟着某一个词动。
 
 | 适合 | 不适合 |
 |---|---|
@@ -135,10 +137,13 @@ DeepSeek 用 `DEEPSEEK_API_KEY`，火山用 `ARK_VOICE_API_KEY`。两者都是�
 
 `video_teach_plan` 不只检查格式：每句幻灯必须至少带来一次画面变化，平均每 8 秒至少变一次
 画面，一句的时长应在 2 到 8 秒之间，cue 的 fragment 不能超过 deck 实际拥有的数量，
-两句话不能共用一个 Manim 场景（否则同一段动画会重复播）。问题会点名到句子 id，
-只有 fragment 越界是直接拒绝。
+两句话不能共用一个 Manim 场景（否则同一段动画会重复播）。问题会点名到句子 id。
+越界的 cue 会被直接拒绝；deck 缺 `teachReady` / `teachCue` / `teachPage` 这几个契约
+也会直接拒绝，这一类在录音花钱之前就能发现。
 
 产物：成片在 `renders/<镜头>/vNNN.mp4`，旁边 `vNNN.json`，并出现在视频面板里。
+`video_teach_export` 另外给三样：成片旁的 `.srt` 字幕、`vNNN.timeline.json`，
+以及 `deck/` 下的可交互幻灯片。字幕是独立的 SRT 文件，不烧进画面。
 `storyboard.yaml`、`slides/<段>/`、`scenes/*.py`、`timings.json`、`audio/` 属于项目、值得进版本库；
 `.dsh-video/`、`deck/`、`renders/` 可以重建。稿子格式、两种引擎的约定、只重录一句的做法见
 `video-teach-*` 系列 skill。

@@ -1,6 +1,6 @@
-# 教学视频路线（规划稿，2026-11-20）
+# 教学视频路线（2026-11-20 起，已实现）
 
-> 状态：**规划，未实现**。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；本节把那些决策按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
+> 状态：**已实现**。§1–§12 是决策与规划，§13 起是逐轮实施记录，§25 是唯一未实现的提案，§26 是两份承诺了但没交付的产物清单。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；规划部分按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
 >
 > 相关：`DESIGN.md` §4（工具面）、§9（产物与播放）、§15（未决与风险）、§17.2（产物落点）、§19（视频面板）、§22（skill 结构）。
 
@@ -24,7 +24,7 @@
 | HTML 出帧 | Playwright 实时录屏，**按句分段**（一句一段 WebM） |
 | 中间格式 | `storyboard.yaml` 是唯一手写入口 |
 | 集成形态 | 现有插件加工具 + 中文 skill，与在线生成路线共存 |
-| 交付物 | 16:9 1080p mp4 · SRT · 烧入字幕 · 可交互 HTML deck · 封面 · 时间轴 JSON |
+| 交付物 | 16:9 1080p mp4 · SRT · 可交互 HTML deck · 时间轴 JSON（原目标是六项，另两项**烧入字幕**与**封面**尚未实现，见 §26） |
 | 首个真验收 | 一条 3 分钟混合样片：既有 Manim 段也有幻灯片段，旁白讲到哪画面走到哪（选题 π²/6，2026-11-20 定） |
 
 ## 3. 与现有仓库的接缝（读代码确认，2026-11-20）
@@ -84,7 +84,7 @@ renders/<shot>/vNNN.mp4 + .srt + .timeline.json + cover.png + deck/
 清单里建议新增一段而不是新建清单文件：
 
 ```yaml
-collect:                      # 教学路线（名字待定，见 §11）
+teach:                        # 教学路线（实际实现就叫 teach，见 src/config.ts；字段形态以那里为准）
   voice: { provider: volcengine-tts, speaker: zh_female_xxx, clone_id: null }
   video: { size: [1920, 1080], fps: 30 }
   storyboard: storyboard.yaml
@@ -120,14 +120,14 @@ segments:
     "words": [ {"t":"先","b":25,"e":235}, {"t":"看","b":235,"e":495} ] } ] }
 ```
 
-## 6. 工具面（四个，名字待定）
+## 6. 工具面（四个，命名已定：`video_teach_*`，§11 第 5 条）
 
 | 工具 | 职责 | 副作用归属 |
 |---|---|---|
 | `video_teach_plan` | 校验 `storyboard.yaml`、拆句、产出渲染计划与耗时预估 | 只读 |
 | `video_teach_narrate` | 逐句 TTS、落 `timings.json`（词级） | 付费 + 网络 |
 | `video_teach_render` | 分段渲染 → CFR → concat → 混音 → 字幕；可只重录指定句 | 子进程 + 写工作区 |
-| `video_teach_export` | `deck/` 静态 HTML、封面、外部 SRT、时间轴 JSON | 写工作区 |
+| `video_teach_export` | `deck/` 静态 HTML、外部 SRT、时间轴 JSON（**封面尚未实现**，见 §26） | 写工作区 |
 
 四条通用约束（由现有代码约束导出，不是新定的）：
 
@@ -167,16 +167,16 @@ segments:
 
 ## 9. 里程碑
 
-| 阶段 | 内容 | 验收 |
-|---|---|---|
-| M0 | `storyboard.yaml` / `timings.json` 的 schema 与校验，目录约定 | 非法稿的报错能指出行号与具体键 |
-| M1 | 单句最小闭环：TTS → 录屏 → CFR → 段 mp4 | 一句 3 秒，音画对齐误差 < 50ms |
+| 阶段 | 内容 | 验收 | 状态（2026-11-24 核对） |
+|---|---|---|---|
+| M0 | `storyboard.yaml` / `timings.json` 的 schema 与校验，目录约定 | 非法稿的报错能指出行号与具体键 | ✅ §13 |
+| M1 | 单句最小闭环：TTS → 录屏 → CFR → 段 mp4 | 一句 3 秒，音画对齐误差 < 50ms | ✅ §13 |
+| M2 | 多句拼接 + 只重录某句 | 改第 3 句不触发前两句重录 | ✅ §14 |
+| M3 | Manim 段接入 + 跨引擎拼接 | 两段不同引擎拼成一条，无音画错位 | ✅ §14（第三句走 Manim，落在同一路径形状） |
+| M4 | SRT / 烧字幕 / 封面 / deck 双产物 | 六种产物齐全 | ⚠️ 四种（mp4 / SRT / deck / 时间轴 JSON）；**烧入字幕与封面未实现**，见 §26 |
+| M5 | 工具化 + skill 落地 + 3 分钟混合样片 | 从头看一遍不出戏 | ✅ 工具与 skill §15，样片 §16 |
 
-**M0/M1/M2 已落地（2026-11-20）**，证据在 §13。代码：`src/teach/storyboard.ts`（解析与校验）、`voice.ts`（TTS 客户端）、`slides.ts`（CDP 录屏）、`manim.ts`（Manim 段）、`ffmpeg.ts`（探测/CFR/拼接/混流）、`deck.ts`（reveal.js 脚手架）、`pipeline.ts`（plan/narrate/render/assemble + 分段复用）。
-| M2 | 多句拼接 + 只重录某句 | 改第 3 句不触发前两句重录 |
-| M3 | Manim 段接入 + 跨引擎拼接 | 两段不同引擎拼成一条，无音画错位 |
-| M4 | SRT / 烧字幕 / 封面 / deck 双产物 | 六种产物齐全 |
-| M5 | 工具化 + skill 落地 + 3 分钟混合样片 | 从头看一遍不出戏 |
+**M0–M3、M5 已落地（2026-11-20）**，证据在 §13–§16。代码：`src/teach/storyboard.ts`（解析与校验）、`voice.ts`（TTS 客户端）、`slides.ts`（CDP 录屏）、`manim.ts`（Manim 段）、`ffmpeg.ts`（探测/CFR/拼接/混流）、`deck.ts`（reveal.js 脚手架）、`pipeline.ts`（plan/narrate/render/assemble + 分段复用）。**M4 差两项**（烧入字幕、封面），现状与两条出路的取舍见 §26。
 
 ## 10. 本机环境现状（2026-11-20 实测）
 
@@ -373,11 +373,11 @@ curl -sS https://openspeech.bytedance.com/api/v3/tts/unidirectional \
 
 **验证**：`pnpm test` 41 个文件、**590 passed / 6 skipped**（含 `test/teach-tools.test.ts` 14 例离线用例）；`pnpm run build` 通过，产物 `lib/index.js` 399 kB + `lib/ffmpeg-*.js` + `lib/manim-*.js`（后两者是懒载的子进程模块）；`node -e "import('./lib/index.js')"` 确认打包产物能加载、`apply` 与 `inject` 都在，`playwright-core` 的顶层引用不再阻塞加载。
 
-**仍未做（下一轮）**：隔离实例里的端到端调用与 3 分钟混合样片仍未做。台账行与面板（§8 方案 A）已实施，`README` / `README.zh-CN.md` 的 Requirements 与工具表也已补上教学路线所需的外部依赖与四个工具。
+**当时仍未做（下一轮），后文都已补上**：隔离实例里的端到端调用见下一段，3 分钟混合样片见 §16。台账行与面板（§8 方案 A）已实施，`README` / `README.zh-CN.md` 的 Requirements 与工具表也已补上教学路线所需的外部依赖与四个工具。
 
 **隔离实例验收（2026-11-20，成功）**：`DSH_HOME=/tmp/teach-verify/home dsh plugin --profile web add <repo>` 把仓库 link 进一个全新 profile 的 `web`（**关键是 profile 名要对上宿主实际启动的那个**；早先装进 `verify` 却启动 `web`，于是怎么都不加载），再 `dsh web --port 34798 --no-open`。结果：宿主起在 `http://127.0.0.1:34798`，插件自己的面板接口 `GET /video-forge/api/overview?token=…` 返回 `{"ok":true,…,"outputRoot":"/tmp/teach-verify/home/dsh-video-forge/outputs"}` —— 说明打包产物在真实宿主里加载成功、`apply()` 跑完（四个工具与四份 skill 都在同一段注册代码里，注册抛错就会让插件页不响应），且完全落在隔离的 `$DSH_HOME` 里，真实 `~/.dsh` 未被触碰（`tasks.json` 仍是 11 月 17 日那份）。两个坑记下来：`/video-forge/api/setup`、`/tasks` 是我猜的，真实动作名是 `overview` / `cancel` / `selection`；`dsh web --profile <name>` 与 `DSH_PROFILE` 同时存在时报 `select a profile only once`，干脆只用 `plugin --profile web add` 装、`dsh web` 不带 `--profile` 启动。
 
-**仍未做**：宿主内**真的调用一次** `video_teach_*`（需要会话与模型，属付费验证）、3 分钟混合样片。
+**仍未做**：宿主内**真的调用一次** `video_teach_*`（需要会话与模型，属付费验证）。3 分钟混合样片已产出，见 §16。
 
 **更早的一次尝试（2026-11-20，未成功，保留以便对照）**：`DSH_HOME=/tmp/teach-verify/home dsh plugin --profile verify add <repo>` 装包成功（pnpm link），profile 的 `package.json` 里 `dsh.profile.bundles` 已经包含 `dsh-video-forge`；但 `dsh web` 起来后 `$DSH_HOME/dsh-video-forge/`（插件自己的数据目录）并未创建，说明插件没有加载。启动时加 `--profile verify` 直接报 `select a profile only once`（即便 `env -u DSH_PROFILE`），不加则宿主新建了一个 `web` profile，插件不在其中。宿主本体是健康的（`/?token=…` 返回 401 属正常鉴权）。下次先弄清 `DSH_PROFILE` / `DSH_PROFILE_DIR` / `--profile` 三者的互斥语义。
 
@@ -699,3 +699,159 @@ cue 因此有两种时间写法：
 隔离实例里实测：`DeepSeek 凭据引用名 → DEEPSEEK_API_KEY`、`volcengine 凭据引用名 → ARK_VOICE_API_KEY`，各填一次 key 点「保存密钥」，标题行变成 `语音凭据: DeepSeek 已配置 · volcengine 已配置`，宿主 `.credentials.yaml` 的 `refs` 里出现这两个名字（值不打印）。截图见 `renders/settings-ui/`（该目录被 `.gitignore` 忽略）。
 
 **给使用者的一句话**：这一节在插件配置卡片里、默认展开，标题行右侧就是两个 key 的状态；改完设置下一次工具调用即生效，但宿主进程必须重启过才能加载带这两个字段的构建。
+
+## 25. 一页承载多句：`page` / `enter` 提案（2026-11-24，未实现）
+
+这一节是**设计提案**，代码未动。它的依据是一条真实片子（`video-hypatia`，七幕 196 页）跑完整条路线后留下的证据，不是推演。
+
+### 25.1 为什么需要它
+
+a00-6、a00-7、a00-8 三页讲的是同一件事的三个次第（「第一个负责存 / 第二个负责自组织 / 第三个负责看见」），右侧三张能力卡依次点亮。用 Playwright 量三页的元素框，**完全重合**：
+
+| 页 | h1 | 左栏 | 右图 |
+|---|---|---|---|
+| a00-6 | `[96,126,1728,75]` | `[96,217,832,683]` | `[992,323,832,471]` |
+| a00-7 | 同上 | 同上 | 同上 |
+| a00-8 | 同上 | 同上 | 同上 |
+
+版面早就做对了，观众仍读成「翻页」。泄漏只剩两处：右上角页码 `6/11 → 7/11 → 8/11`，以及左侧大标题整行替换（58 px 跳变）。作者要的是「同一页在演进」。
+
+不改代码能做到的极限是让它**看起来**像一页：页码固定成 `a00 · 6–8/11`，左侧换成常驻标题，变化下沉到细节行。这能止住翻页感，但屏幕上的大标题不再逐字对应旁白的「第一个 / 第二个」，那部分语义只能靠旁白承担。
+
+要真的共享一页，插件必须额外知道两件事，而这两件事 deck 自己算不出来：
+
+1. **哪几句属于同一页**。现在的页号就是句在本段里的下标（`src/teach/pipeline.ts:498` 的 `findIndex`），deck 只是被动接收 `teachPage(n)`。
+2. **进入这一页时该亮到第几拍**。每句都是独立的 `page.goto` → `teachPage` → 等 300 ms 过场 → 开录（`src/teach/slides.ts:173`，`PAGE_TRANSITION_MS = 300`）。新导航会清空 DOM，上一句点亮的卡不会留到下一句，所以进页状态必须由录制器在开录之前打到位。
+
+**两条不要走的路**：
+
+- **把三句合成一句**。86 字按 5 字/秒（`CHARS_PER_SECOND`）约 17 秒，超 `MAX_SENTENCE_SECONDS = 8`；更要紧的是合成后只剩一条 cue，页内节奏反而丢了，还要为这一句重录旁白。
+- **在 deck 里给 `teachPage` 加一张「页号 → 句号」映射表**。看着能省事，但它把「页序」这件事复制到每个项目里。一旦句序调整（拆句、并句），映射表静默错位，画面和旁白就不同步，而且**没有任何检查会发现**。判断依据只能有一个出处，就是稿子。
+
+### 25.2 语法（两个可选键）
+
+`storyboard.yaml` 的 sentence 增加 `page`（从 0 起的页号，缺省＝本句在段内的下标）与 `enter`（进入该页时先显示到第几拍，缺省＝同页内上一条句子的最后一拍，本句是该页第一句时为 0）：
+
+```yaml
+sentences:
+  - { id: a00-6, say: ..., page: 5 }
+  - { id: a00-7, say: ..., page: 5, enter: 1 }
+  - { id: a00-8, say: ..., page: 5, enter: 2 }
+```
+
+`enter` 不写时按上一条规则推算，写出来只是为了读稿时能一眼看到进页状态，两种写法等价。
+
+### 25.3 三个改动点
+
+| 位置 | 现在 | 改成 |
+|---|---|---|
+| `src/teach/storyboard.ts:387` | `knownKeys(sentence, …, ['id','say','cues'])` | 白名单加 `page`、`enter`；`page` 校验非负整数，`enter` 校验非负整数 |
+| `src/teach/pipeline.ts:498` | `page = segment.sentences.findIndex(...)` | `sentence.page ?? segment.sentences.findIndex(...)` |
+| `src/teach/slides.ts:173` | 切页后等 300 ms | `RecordDeckOptions` 加 `enter?: number`；切页后若 `enter > 0` 先 `teachCue(enter)`，再等 300 ms |
+
+第三条的顺序是硬要求：screencast 在 300 ms 之后才开，`teachCue(enter)` 必须落在这段等待里。否则第 2 句的 t=0 仍是「整页暗」，观众会看到第一张卡闪两次。
+
+### 25.4 为什么用 `teachCue(enter)`，不扩展 `teachPage(n, enter)`
+
+契约仍然是两个函数：`teachPage(n)` 切页，`teachCue(k)` 显示到第 k 步。第三个数只是录制器在开录前多调一次 `teachCue`，语义不变。老 deck 完全兼容（没写 `enter` 就不调），模板一行都不用改。
+
+扩展 `teachPage` 的签名会把「要不要处理第二个参数」这个分支复制到每个项目的 deck 里，而 deck 并不知道「这一页是第几句进来的」这件事该由谁负责。
+
+### 25.5 编号规则要跟着改（最容易做错的一处）
+
+§23 定的口径是「fragment 在所在页内从 1 递增，跨句不检查」。共享页打破这条，因为 `teachCue` 是幂等的「显示到第 k 步」：同页第二句如果又从 1 编号，`teachCue(1)` 只会把已经亮着的第一张卡再确认一次，**画面不动**，等于把「静帧」这个老缺陷换个地方复发。
+
+共享页的规则：**同一页内，fragment 跨句继续递增**（第 1 句 1，第 2 句 2，第 3 句 3）。两条规则并存，判定看页是否相同：
+
+- **不同页之间**不比较（§23 的现有行为）；
+- **同一页内**必须递增，否则结构性拒绝（照 `src/teach/rules.ts:201` 那段跨句检查的写法）。
+
+这不是推翻 §23，是补它的另一半：一句一页时页面之间没有共享状态，共享页时同一页就是一条连续时间线。
+
+### 25.6 校验改成按页映射核对（`src/teach/rules.ts`）
+
+| 行 | 现在 | 改成 |
+|---|---|---|
+| 330 | `pages < segment.sentences.length` 报 warning「Give each sentence its own `<section>`」 | 整段都声明了 `page` 时：`max(page) + 1 > deck 页数` → 拒绝（句子的页不存在）；`max(page) + 1 < deck 页数` → warning（多出来的页永远不会被录到）。没声明 `page` 的段保持现有 warning |
+| 334 | `segment.sentences.forEach((sentence, page) => …)` 拿句下标当页下标 | 用 `pageOfSentence[i]` 取该句所在页的 fragment 总数做上限核对 |
+| 新增 | 无 | 同页跨句 fragment 递增（§25.5） |
+| 新增 | 无 | `page` 必须单调不减：录制严格按句序进行，页号回退等于让画面倒着走 |
+| 新增 | 无 | `enter` 必须小于本句第一个 cue 的 `fragment`，否则这一拍在开录前就亮过了，cue 到时不会有变化 |
+
+`page` 只声明一部分的做法要拒绝：一条句子的页归属和相邻句有关，半张声明会让进页状态没有唯一答案。
+
+### 25.7 不改的部分（划界）
+
+- **跨句仍然是硬切**。每句独立录制、单独编码、最后拼接，跨句过渡动画拍不到，本提案不改变这一点。观众感到「连续」的原因只能是版面、页码、几何三者一致。
+- **重录仍然只花一句的钱**。共享页不改变「一句一录像片段」，`sentences: ['a00-7']` 仍然只重渲那一段。
+- **页模式仍然没有词时间戳**。`enter` 与 `at_progress` 都与发音不逐字对齐。
+- **每页 fragment 上限仍是 5**（skill 里的排版约定）。共享页让这个数字更快撞到（三句 × 每句 2 拍 = 6），所以 skill 里要同时写：共享页按「一页三句、每句两拍」规划版面，超了就说明这几句不该挤在一页。
+
+### 25.8 已成立但没写进契约的一条：SVG 元素也能当节拍
+
+同一条片子还依赖一个**现有实现已经支持、文档里却没写**的行为：`class="fragment"` 写在 SVG 的 `<g>` 上同样有效。
+
+- `countDeckFragments` 用正则数 `class="fragment"`（`src/teach/rules.ts:253`），`<g>` 会被数到；
+- `pageFragments` 按 `<section>` 切分，`<g>` 落在 section 内，算进该页；
+- `teachCue(k)` 是 deck 自己的 JS，点亮「当前页前 k 个」，`<g>` 与 `<div>` 一视同仁（SVG 的 `opacity` 同样吃 CSS 类）。
+
+这条让「一页内三张卡依次亮」不必拆三页，是**不改代码就能拿到**的能力。必须写成契约，否则以后有人把正则收紧成「只数 section 的直接子元素」，项目侧会静默坏掉。稳妥的写法是 deck 给每个节拍元素加 `data-beat="k"`，`teachCue(k)` 点亮 `data-beat ≤ k`，不依赖 DOM 顺序。
+
+### 25.9 验收（全部离线）
+
+1. 新 fixture `fixtures/teach/shared-page/`：三句共享一页，`enter: 0 / 1 / 2`。`video_teach_plan` 通过、零 warning，且不再出现「Give each sentence its own `<section>`」。
+2. 渲染该 fixture 后抽帧：第 2 句的首帧与第 1 句的末帧颜色集合相同，证明 `enter` 真的在开录前打到位。
+3. `rules.ts` 的负例：同页第二句的 fragment 从 1 重新开始 → 拒绝；`enter` ≥ 本句第一个 cue 的 `fragment` → 拒绝；只声明一半的 `page` → 拒绝；`page` 越界 → 拒绝。
+4. 老 fixture（`fixtures/teach/page-mode/`、`fixtures/teach/sample/`）行为不变：`pnpm test`、`pnpm run build`。
+5. skill 同步：`video-teach-storyboard` 写 `page` / `enter` 与「跨句必然硬切」的事实，`video-teach-slides` 写共享页的 deck 怎么写（`teachPage` 幂等、进页拍由录制器先打到位、不依赖 DOM 残留）。
+
+### 25.10 代价
+
+storyboard 多两个可选键，`rules.ts` 三处检查，`slides.ts` 一次额外调用与一个选项字段，两份 skill 各一段。换来的是「同一版面承载多句」从「靠固定页码伪装」变成契约里的一等能力，且判断依据（页归属 + 进页拍数）只有稿子一个出处。
+
+### 25.11 和它配套、但不改插件的两件事
+
+同一次片子还暴露了项目侧的两个缺口。它们不需要改插件，写在这里是为了不让读者以为「装了这个提案就都解决了」：
+
+1. **素材真伪没有机器判定**。截图有四种状态（拍到 / 拍不到 / 拍到但与旁白矛盾 / 拍到但不能整图上镜），现在全靠人在 README 表格里记。做法是把它们收进一份 `shots.yaml`（`status` / `crop` / `must_show` / `forbidden`），角标「真实截图 / 界面示意」由判定结果生成，而不是由人写。
+2. **图元被等比缩小到读不清**。库里的图元只按设计宽度画，塞进窄列后整体缩到 0.72，字号跌破 24 px。要在图元上声明最小可用宽度，自检里断言宿主列宽不小于它，不满足就要求重排，而不是缩放。
+
+## 26. 尚未交付的两种产物：烧入字幕与封面（2026-11-24 核对）
+
+### 26.1 现状：目标六种，实际四种
+
+§2 的目标交付物写了六项，§9 的 M4 验收写「六种产物齐全」。按 2026-11-24 的代码核对，实际产出四种：
+
+| 产物 | 谁产出 | 状态 |
+|---|---|---|
+| 16:9 1080p mp4 | `video_teach_render`（`pipeline.ts` → `ffmpeg.ts` 的 CFR / concat / 混音） | ✅ |
+| 外部 SRT | `video_teach_export`（`buildSrt`） | ✅ |
+| 可交互 HTML deck | `video_teach_export`（把 `segment.deck` 抄进 `deck/<段>/`） | ✅ |
+| 时间轴 JSON | `video_teach_export`（`vNNN.timeline.json`） | ✅ |
+| **烧入字幕** | — | ❌ 未实现 |
+| **封面** | — | ❌ 未实现 |
+
+核对方式：`src/teach/` 全树 grep，没有一处与这两种产物有关。`subtitle` 的 5 处命中全在 `voice.ts`，指的是**向 TTS 请求字级时间戳**（`enable_subtitle: true`），不是烧进画面；`burn` 零命中；两处 `-vf` 都是 CFR 编码的 `scale/pad/setsar/fps/tpad`，没有 `subtitles=`；`slides.ts:170` 的 `cover slide` 指 deck 的第一页，与产物无关。`ffmpeg.ts` 的混流只处理音频与时长取舍，`tools.ts` 的 export 只写 `srt` / `timeline.json` / deck 副本。所以 M4 的「六种产物齐全」不成立，实际交付四种。
+
+### 26.2 两条出路，需要拍板
+
+**出路 A：补实现。** 两项都不难，都要动代码。
+
+- **烧字幕**：在 `assemble` 阶段给 `-vf` 加一条 `subtitles=renders/<shot>/vNNN.srt`（配 `force_style` 定字号与边距，字幕必须落在画面底部 900–1080 那条带里）。前提是本机 ffmpeg 构建带 `libass`，**这一点没有实测过**，ffmpeg 9.0.2 若是精简构建就会静默忽略滤镜或直接报错。代价：`render` 多一条滤镜链，字幕样式多一份要维护的常量。它与 `DESIGN.md` §1 非目标里的「不做自动配音/字幕烧录」不冲突：那条针对**自动生成**字幕，教学路线的字幕来自作者写好的稿子，本来就已知。
+- **封面**：两条便宜的路，取成片首帧（`-frames:v 1`），或在 deck 首页截一张（`teachPage(0)` + Playwright 截图，与 §13 的 CDP 录屏同一条路径，不需要额外依赖）。代价：`export` 多一段，且要想清楚封面的构图规则（哪一页适合当封面）。
+
+**出路 B：撤掉承诺。** 把这两项从 §2 的交付物、§6 的工具表与 M4 的验收里删掉，只保留外部 SRT（字幕由平台或用户自己烧，封面由用户自取首帧）。代价是少两种产物，但文档与实现一致，不用为一个没人验证过的承诺维护代码。
+
+在拍板之前，文档按**「目标六种、已交付四种」**标：§2 的交付物、§6 的工具表与 §9 的 M4 状态列都已改成这个口径，不再把烧字幕与封面写成已交付。
+
+### 26.3 为什么这两项能一直漏着
+
+因为**没有任何验证路径覆盖过产物清单**：
+
+- 离线测试断言的是 `srt` / `timeline` / `decks` 三个返回键与它们的内容，不检查「还应该有封面」；
+- live 样片验收看的是 mp4 的时长、音画对齐与段数（§16.3），产物表里没有这两项就不在检查范围内；
+- `README.zh-CN.md` 的产物描述（第 141 行）只写「成片在 `renders/<镜头>/vNNN.mp4`，旁边 `vNNN.json`」：SRT / deck / 时间轴 JSON 都没列，更不会提醒还缺两项。
+
+于是「M4 完成」是从**执行记录**推出来的（工具有了、SRT 有了），不是从**产物清单**核出来的。这两件事在别的里程碑上刚好重合，在这里不重合，就漏了。
+
+教训写在这里：**里程碑收尾时逐项对产物清单，而不是对「工具都实现了吗」**。工具在、清单缺一项，是最容易被执行记录掩盖的失败。

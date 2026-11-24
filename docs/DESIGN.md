@@ -17,7 +17,7 @@
 **非目标（首期）**：
 
 - **不接本地模型推理**（2026-10-13 撤销原 mlx-serve / MiniMax-H3 路线，见 P5）；本插件是**在线模型的客户端**，不做推理、不做权重管理。
-- 不做视频剪辑/时间线/多段拼接（那是 `deepseek-ivideo` 的地盘；npm 上占用 `dsh-video-studio` 的也是这一类）。本地 ffmpeg 能力列为待办、尚未决定（§16.8），决定前这条非目标不变。
+- 不做视频剪辑/时间线/多段拼接（那是 `deepseek-ivideo` 的地盘；npm 上占用 `dsh-video-studio` 的也是这一类）。**本地 ffmpeg 已经存在，但只在教学路线里**：2026-11-20 起 `src/teach/ffmpeg.ts` 用 `node:child_process` 起 ffmpeg 做 CFR 编码、拼接、混音与时长探测。它没有变成可被调用的剪辑工具，`video_generate` 这条路仍然不拼接、不碰本地媒体，所以本条非目标仍然成立。§16.8 里「本地 ffmpeg 未决」那条已被这一步绕开，原文保留供对照。
 - **不做按分镜批量生成**（2026-10-15）：一次生成一个镜头；分镜只是给模型参考的文本。
 - 不做独立的工作台页面（2026-10-15，见 P8）。
 - 不做自动配音/字幕烧录（可作为后续能力）。
@@ -631,7 +631,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 - **M5 发布**：仓库与目录改名为 `dsh-video-forge`、加 git remote、GitHub Actions 跑 `pnpm check`、npm trusted publishing / OIDC、README 双语、市场收录（`capabilities` + `locale` + `icon`）。
 - **M6 内容片段重构**（§16.8）：**单独一次改造，不与 M3 合并**（2026-10-15 决定）。之后接 Seedance 2.x 的参考视频/音频、编辑/延长、样片模式，以及 MiniMax 尚未接的扩展项。
 - **之后**：可灵（AK/SK → JWT）→（可选）Veo（默认关闭）。
-- **低优先级 / 待办**：预算闸门（2026-10-15 决定暂不做）、本地 ffmpeg（未决，§16.8）、`conversation.view` 任务 tab（聊天卡片已承担大部分职责，待重新评估）。
+- **低优先级 / 待办**：预算闸门（2026-10-15 决定暂不做）、本地 ffmpeg 的**通用化**（能力已随教学路线落地，见 §16.8；未决的只剩「要不要让 `video_generate` 这条路也用它」）、`conversation.view` 任务 tab（聊天卡片已承担大部分职责，待重新评估）。
 
 ## 15. 未决与风险
 
@@ -676,7 +676,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 | 嵌在更大的任务里 | 做网页或 PPT 时生成一段视频素材 | ✅（产物本来就在工作区） |
 | 问花了多少钱 | "这个项目的视频一共花了多少？" | ✅（§16.5） |
 | 按分镜批量生成 | "把 shots.yaml 里的镜头全部生成" | ❌ 一次一个镜头 |
-| 拼接成片 | "把这几段接成一个片子" | ❌（ffmpeg 待办，§16.8） |
+| 拼接成片 | "把这几段接成一个片子" | ❌ `video_generate` 不提供；教学路线能拼，见 §16.8 |
 
 ### 16.2 工作区即项目
 
@@ -799,7 +799,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 
 ### 16.8 待办与未决
 
-- **本地 ffmpeg（未决）**：会推翻两条已定的事——"不做拼接"的非目标，以及插件不声明 `shell` 能力（P5 当时整条撤掉了 ffmpeg），市场能力声明也要跟着改。可能的用途按价值排序：给不返回尾帧的供应商（如 MiniMax）截取尾帧以支持 `from` 续拍、为模型自检抽关键帧、读取时长与尺寸、生成缩略图、拼接。决定前不设计。
+- **本地 ffmpeg（2026-11-20 已被教学路线绕开，通用能力仍未决）**：原判它会推翻两条已定的事——"不做拼接"的非目标，以及插件不声明 `shell` 能力（P5 当时整条撤掉了 ffmpeg）。落地时这两条都没有被正式推翻，而是被**放在教学路线之内**：`src/teach/ffmpeg.ts`、`manim.ts`、`probe.ts` 直接用 `node:child_process` 的 `spawn` 起 ffmpeg 与 python，`inject` 表里没有加 `subprocess`（§23 原本写的宿主 `ctx.subprocess` 那条路没走），`video_generate` 那条路依旧不拼接、不碰本地媒体。所以现状分两半：**已经有能力**的是 CFR 编码、拼接、混音、`ffprobe` 探测时长与尺寸（教学路线在用）；**仍未决**的是要不要把这份能力提到通用路线（`video_generate` 的拼接、`from` 续拍的尾帧截取、模型自检抽帧、缩略图）。真要做，得把 `node:child_process` 换成宿主的 `ctx.subprocess`，并重新评估市场能力声明。按价值排序，最值得先做的是给不返回尾帧的供应商（如 MiniMax）截尾帧，它直接决定 `from` 续拍能不能用。
 - **内容片段重构（M6，单独一次改造）**：`VideoMode = t2v | i2v | flf2v | s2v` 是四选一的枚举，装不下 Seedance 2.x 与 MiniMax 还没接的能力（参考视频、参考音频、编辑/延长、样片、仅尾帧）。两家的 `content[]` 已经是同一个形状，所以改成 `parts: [{ type: 'text' | 'image' | 'video' | 'audio', role, source }]`，mode 从 parts 推导、只用于校验，能力矩阵改成"模型接受哪些 role 的组合"。会动到工具 schema、台账里的 `params`、去重指纹与卡片。**不与 M3 合并**。
 - **预算闸门**：暂不做（§16.5）。
 - **可灵 / Veo**：排在 M6 之后；Veo 默认关闭。
@@ -855,7 +855,7 @@ VIDEO_FORGE_LIVE=paid ARK_API_KEY=… MINIMAX_API_KEY=… pnpm test:live   # 另
 ### 17.4 默认做法（未单独询问）
 
 - `renders/` 里放一个只含 `*` 的 `.gitignore`，和清单一起在首次产出时写入；想把产物提交进 git 的人删掉它即可。
-- `from`（续拍）只在能拿到尾帧的协议上可用：方舟用 `return_last_frame`；MiniMax 明确拒绝，等本地 ffmpeg 决定后再说（§16.8）。
+- `from`（续拍）只在能拿到尾帧的协议上可用：方舟用 `return_last_frame`；MiniMax 明确拒绝。本地 ffmpeg 能力已随教学路线落地，但还没对 `video_generate` 开放，要用本地截尾帧得先做 §16.8 说的通用化。
 - 附件 id、`sandbox_permissions` 式的一次性提权：都不在 M3 里做。
 
 ### 17.5 用户决定（2026-10-15）
@@ -1547,7 +1547,7 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
 - **未做**：隔离实例里 `/video-prompting` 的真实触发没有跑（命令识别逻辑简单，风险低，但按 §13 的纪律该在隔离实例里点一次）。留到下次动技能正文时一起做。
 - **能力缺口（单独立项，不混入本次）**：① `MINIMAX_MODELS` 只注册 H3 与 H3-Max，缺 H3-Highspeed / H3-Lite；② presets 注释里 `generateAudio: false` 与"两家都没写音频开关"的判断和官方"H3 原生立体声"不符；③ 方舟 `buildArkContent` 只有三种图片 role，没有 reference_video / reference_audio。
 
-## 23. 教学视频路线（规划，2026-11-20）
+## 23. 教学视频路线（2026-11-20 起，已实现）
 
 在线模型生成之外的第二条制作路线：旁白驱动的教学视频（3b1b 式数学动画 + 幻灯片讲解）。完整规划写在 [`docs/TEACH-VIDEO.md`](TEACH-VIDEO.md)，本节只记与本设计文档其余各节的接口。
 
@@ -1562,7 +1562,7 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
 - §19 视频面板：面板行的唯一来源是 `operations.listTasks`（台账）。本地渲染的片子要出现在面板，就必须有一条台账行，因此 `VideoTask` 需要一个显式的来源标记（方案 A：`origin` / `provider: 'local'` 哨兵），并在所有 `adapterFor` 调用点先判它。三个方案与取舍见 `TEACH-VIDEO.md` §8。
 - §22 skill 结构：新开一个 `teaching/` 参考子目录，做法与 `prompting/` 相同。
 
-**新增的外部依赖**（本机实测 2026-11-20）：ffmpeg 9.0.2 与 python3 3.11.12 现成；**Manim 与 LaTeX 未安装**；Playwright 浏览器已有缓存。插件目前全树没有 `child_process`，教学路线必须新增子进程能力，正路是宿主的 `ctx.subprocess`，并按可选依赖写（缺失时明确报错，不静默降级）。
+**新增的外部依赖**（本机实测 2026-11-20）：ffmpeg 9.0.2 与 python3 3.11.12 现成；**Manim 与 LaTeX 未安装**；Playwright 浏览器已有缓存。**子进程这一步与当时的计划不同**：原定"正路是宿主的 `ctx.subprocess`"，落地时用的是 `node:child_process` 的 `spawn`（`src/teach/ffmpeg.ts` / `manim.ts` / `probe.ts`），`inject` 表里因此没有 `subprocess`。这个偏离让"插件不声明 `shell` 能力"的旧判断变得含糊（代码能起子进程，但 manifest 没声明），要做通用化时一并重估，见 §16.8。外部可执行仍按可选依赖判定（缺失时动手前拒绝，不静默降级）。
 
 **第二轮问答补定（2026-11-20）**：面板集成选方案 A（台账加显式来源标记，本地成片上面板）；Manim 走本机 pip、LaTeX 用 BasicTeX + `tlmgr`，插件只检查外部可执行是否齐备；TTS 鉴权两种都支持（豆包 appid + access token，或 Ark 单一 API Key），按配置显式选类型。
 
@@ -1599,3 +1599,5 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
 **独立验收运行的十个缺陷已处理完（2026-11-20）**：不继承上下文的子智能体照文档从零跑了一遍 DeepSeek 页模式，结论是"能跑通，但默认跑不通"。断流的三个当轮修好（`timings.json` 写读键不一致、CDP `metadata.timestamp` 秒被当毫秒导致句内节拍全丢、默认路线 SRT 空文件却报 word-timed；第二条同时改判了"40 秒冻结"的原归属，真实主因是时钟单位而非版式溢出）。这轮又清掉七个：`plan`/`render` 对 cue 的表述互相反对、依赖报告用裸引用名而非 `voiceAuthRefFor()`（DeepSeek 稿件下报 `ARK_VOICE_API_KEY`）、`assemble: false` + 部分 `sentences` 被 `planSegments` 卡死（现在 `requireAll` 只在拼片时强制，缺段作为 `pending` 报回）、抽帧阈值 64 误报 57 色的合法稀疏帧（阈值降到 16，判据改为"每一帧都没画东西"）、每段首帧闪 deck 首页（先 `teachPage` 并等过场再开录）、页模式 deck 契约只在 render 期才发现（新增 `auditDecks()`：plan 期检查 `teachReady`/`teachCue`/`teachPage`、页数、页内 fragment 数）、`-shortest` 让成片音轨比旁白短 72 ms（去掉，长度取较长流）。同时统一了一条契约：**页模式下 fragment 编号按页从 1 起**（reveal.js 的 fragment 本来就是页内概念，模板的 `teachCue` 现把 `n` 夹在本页 fragment 数内，一次 cue 永不翻页），`fixtures/teach/page-mode/` 随之改编号。`timings` 的写读放回同一模块（`serializeTimings`）并加了往返测试。`pnpm test` 692 passed / 7 skipped，构建通过。细节在 `TEACH-VIDEO.md` §23；仍未做的四条（DeepSeek 真跑一次、GUI 设置页与面板目视、样片按规则返工、听感复核）同处列出。
 
 **语音 key 的配置面修正（2026-11-23）**：教学路线的语音凭据拆成 `teachVoiceAuthRefDeepseek`（默认 `DEEPSEEK_API_KEY`）与 `teachVoiceAuthRefVolcengine`（默认 `ARK_VOICE_API_KEY`），`probe.ts: voiceAuthRefFor()` 按 provider 取，工具与设置卡片共用。设置卡片的「教学视频」小节改为每 provider 一组「引用名 + 凭据行」，折叠状态下标题行也显示两个 key 的状态（配置状态是需要一眼看到的事实，不该藏在折叠里）。在隔离实例里渲染真实宿主时抓到两个只有渲染才看得见的缺陷：保存一个 key 后 `refreshCredentials` 整张替换状态（另一个 provider 变成"无法检查"），已改为合并；每 provider 一组字段塞进列方向 flex 后 `FIELD` 的 `flex-basis` 变高度、撑出 260px 空白，已让 label 回到 `ROW` 内。两条都有回归测试。细节在 `TEACH-VIDEO.md` §24。该小节**默认展开**（2026-11-23 改）：默认收起时一节里什么也看不见，正是"这条需求没落实"的观感来源；展开状态下卡片自动探测一次机器，所以列出的版本是当下的。
+
+**一页承载多句的提案（2026-11-24，未实现）**：一条真实片子（`video-hypatia`，七幕 196 页）把「页号即句号」这个契约的缺口摆到了明面上。三页讲同一件事的三个次第时，页面元素框实测**完全重合**，观众仍读成翻页，因为页号是句在段内的下标（`pipeline.ts:498` 的 `findIndex`），deck 只能被动接收 `teachPage(n)`，既不知道哪几句属于同一页，也不知道进页时该亮到第几拍。不改代码的极限是「固定页码 + 常驻标题 + 变化下沉到细节行」，让同一版面**看起来**像一页；要真的共享一页，得给 `storyboard.yaml` 的 sentence 加两个可选键 `page` 与 `enter`，改动集中在三处（`storyboard.ts:387` 的键白名单、`pipeline.ts:498` 的页号、`slides.ts:173` 切页后开录前的那一次 `teachCue`），校验侧加四条（同页跨句 fragment 递增、`page` 单调不减、`enter` 小于本句首个 cue、按页映射核对页数）。两条路明确不走：把三句合一句（86 字约 17 秒，超 8 秒预算，且合成后只剩一条 cue，页内节奏反而丢），以及在 deck 里放「页号 → 句号」映射表（句序一调整就静默错位，没有任何检查会发现）。跨句仍是硬切、重录仍只花一句的钱，这两条不因本提案改变。同时把「SVG `<g>` 上的 `class="fragment"` 也计入节拍」写成契约：现有实现已支持（`countDeckFragments` 数正则、`<g>` 落在 section 内、`teachCue` 一视同仁），文档没写，所以一页内「三张卡依次亮」现在只能靠拆页绕开。完整理由、编号规则的反转处与离线验收见 `TEACH-VIDEO.md` §25。
