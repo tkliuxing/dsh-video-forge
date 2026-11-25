@@ -73,6 +73,56 @@
 
 ---
 
+### [ ] B4 截图素材台账 `materials/shots/shots.yaml`
+
+- **做什么**：建唯一台账，字段见设计文档 §7.3；`status` 由脚本按「`file` / `blocker` / `evidence.source`」三者的组合算出（§8 的七行矩阵），不手写。同时把 `materials/shots/README.md` 从手写表格改成由它渲染。
+- **为什么**：同一批截图状态现在有七处抄本，已经漂移：README 说 S07「待拍」而 `slides/build.py:1522` 写「决定不拍」；`script/spec/a04.md:143` 说 S01「待拍摄」而 README 写已拍；`slides/acts/a06_art.py:293` 用的 `crops/S01-rows.png` 在 README 的裁切表里不存在；8 张 crops 的裁切参数没有留存，原图重拍即全废。
+- **成本/前提**：半天，零付费。**历史 8 张没有 DOM 快照，只能落成 `unverified`**，角标带「未复核」——这是设计里刻意的诚实（§8），重拍才能升成 `shot`。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §1.1（七处真值实测）· §7.1（两本台账的分工）· §7.3（字段）· §8（状态矩阵）
+- 实现记录：待
+
+### [ ] B5 拍摄脚本 `script/shoot-shots.mjs`
+
+- **做什么**：把拍摄脚本稳定成项目内脚本：Playwright 起隔离实例 → 按选择器取 DOM 文本写进 `evidence.dom` → 截图 → 按 `crop.box` 生成 `crops/` → 把 `evidence.at` / `instance` / `evidence.dom` 写回 `shots.yaml`。当年那两个临时脚本（`cap5.mjs` / `cap6.mjs`）**不要假设还在**：在就直接改，不在就按 `materials/shots/README.md:26` 记录的步骤重写。
+- **为什么**：断言必须在按快门那一刻对 DOM 做，出片后对 PNG 做不可行（整屏图缩到 0.27×，`slides/README.md:248` 记截图高度只能收到 586–620）。更根本的是，复现材料本身不能停在 `/tmp`：脚本、隔离实例的 `$DSH_HOME`、token 日志都放在那，等于这套截图没有任何人能重拍（`materials/shots/README.md:25–26` 现在就是这样）。
+- **成本/前提**：一天。要重建隔离实例（`materials/shots/README.md:25` 提到的 3099 端口实例已不在）。Playwright 从插件 `node_modules` 硬编码 import（`script/shot-cover.mjs:3` 的现状），搬进脚本时一并改成可配置路径。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §4（生产侧落点）· §9（证据区与字号判据）· §13 验收 1–3
+- 实现记录：待
+
+### [ ] B6 入片契约与 skill 写法
+
+- **做什么**：三件：① `slides/build.py` 的 `shot=(path, w, h)` 改为取 `shots.yaml` 的 `file` 与 `crop.design_width`，`note` 的「界面示意」前缀由 `status` 生成；② `slides/art_frozen.py:124` 的 `shotflag` 改为三档文案（真实截图 / 真实截图（未复核）/ 界面示意）由 `status` 生成；③ 写进 `video-teach-slides`：证据区上限（宽 ≤ 1728、高 ≤ 620）、字号判据（`min_text_px × design_width / box.w`，`evidence` ≥ 24 px、`structure` ≥ 10 px，后者另用 `readable_because` 说明为什么这个缩放够用）、按需触发的初始化（deck 里出现 `materials/shots/` 的 `<img>` 才要求台账存在）、`shots` 是保留目录名、`materials/shots/shots.yaml` ≠ `storyboard/shots.yaml`。
+- **为什么**：角标现在是人写的——S03 明显「搜索没真的执行」仍标「真实截图」。判定结果必须自己跑到画面上，否则又是一份手抄。初始化这一条同时回答「要不要在建项目时加一步」：不加进 `video-project` 的三步（那是参考图），只进教学路线的 slides skill。
+- **成本/前提**：半天，改项目侧生成脚本 + 一份 skill 正文；项目根的 `video-project.yaml` 不需要新键（`paths.materials` 已覆盖）。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §9（证据区与字号判据）· §8（角标由状态生成）· §14 第 1 条（字号下限已定）
+- 实现记录：待
+
+### [ ] B7 `materials` 布局、`catalog.yaml` 与保留名
+
+- **做什么**：按设计文档 §3 铺目录（角色沿用 `materials/<名字>/`）、写 `materials/catalog.yaml`（§7.2 字段：`kind` / `origin` / `used_by` / `license` / `source` / `prompt` / `model` / `sha256`）、定下保留名清单（`shots` / `images` / `icons` / `frames` / `style` / `catalog.yaml` 不许当角色名）。把 `script/facts.md` §E 的图片表与 `materials/README.md` 的散约定迁进 catalog。
+- **为什么**：抽卡侧只有 `characters.<名字>.refs` 一条硬约定，首尾帧、风格板、立绘规格、来源都没有位置和去处（§1.2 的缺口表）；而 `materials` 下一层目录名被角色名占用，不先定保留名，`images/` 哪天会被登记成角色。
+- **成本/前提**：半天，纯项目侧，不动插件。现有 `facts.md` 3 行与 `materials/README.md` 一段要迁移。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §3（布局与保留名）· §4（生产侧）· §7.1（两本台账）· §7.2（字段）
+- 实现记录：待
+
+### [ ] B8 deck 静态资源与六条校验
+
+- **做什么**：图标从 `icons/*.svg` 由构建脚本读入并内联成 `<svg>`；位图走 `../../materials/images/…`；写 `script/check-materials.mjs` 跑设计文档 §10 的六条：引用完整、路径形状、图标必须内联、台账双向一致、来源可复现、截图状态自洽。
+- **为什么**：deck 现在是 `file://` 直接加载图片，插件不读也不查（`missingAssets` 只 stat deck/scene/cover 本身），改个文件名录制就静默出空白。而 a02-1 已经引了外部位图，`materials/README.md` 却还写着「deck 不引外部图片」，两边相反。
+- **成本/前提**：一天，零付费。脚本落点已定：项目侧 `script/check-materials.mjs`（§14 第 2 条），随项目走版本管理，初始化时由 skill 拷一份。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §5（内联/外链判据）· §10（六条校验）· §13 验收 5–6
+- 实现记录：待
+
+### [ ] B9 抽卡素材规格与初始化模板
+
+- **做什么**：立绘规格写死（位图不支持 SVG、长边 ≥ 1024、背景干净、多视角 `front`/`side`/`back`、单角色单目录、一次 ≤ 9 张）；首尾帧放 `frames/<shot>/{first,last}.png`、风格板放 `style/`；**允许从成片派生并长期复用**（`origin: derived` + `source: renders/<shot>/vNNN`）；在 `video-project` 与 `video-teach-slides` 的初始化步骤里生成 `materials/README.md`（布局表 + 路径算式 + 引用判据）与 `catalog.yaml` 模板，并改掉 README 里「教学路线不需要素材文件、deck 不引外部图片」那句。
+- **为什么**：首帧/尾帧与非角色参考图没有位置约定，模型每次临时传路径，下次就找不到同一张；立绘既可能是抽卡产物又被当输入，不记 `prompt`/`model` 就不可复现（§1.2）。初始化必须留下这份 README，否则规范只存在于 skill 里，用户打开项目看不到。
+- **成本/前提**：半天，改两份 skill 正文；插件只写 `renders/` 与 `.dsh-video/`，不碰 `materials/`，所以模板靠模型建。
+- **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §6（抽卡素材）· §11（初始化模板）· §14 第 3 条（已定：允许从成片派生）
+- 实现记录：待
+
+---
+
 ## C. 待办：明确要做，只差动手
 
 ### [ ] C1 DeepSeek 真跑一遍 `narrate → render`

@@ -508,6 +508,7 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
   代码: /tmp/dsh-video-studio-verify/shadow        # 隔离影子副本，原仓库保持 clean
   ```
 
+- 上面和下文出现的 `/tmp/…` 都是**配方产物**，每次按这三行新建；它们不是可供回访的目录（`/tmp` 会被系统清理）。要留证据就留在仓库里，不要把结论指向临时路径（记忆 `rule-no-tmp-asset-references`）。
 - 为什么不用本地 checkout 的 dev CLI：`~/.local/bin/dsh` 是指向本地仓库 `apps/cli/src/bin.ts` 的 wrapper，其 HEAD/tag/工作区状态会污染"通道级"结论（记忆 `wu-compat-verification-negative-control-and-real-cli-b3e0b116`）。任何兼容性/可安装性结论必须建立在 **npm 实包 + 隔离 `DSH_HOME` + 隔离影子副本** 上。
 - 加**负对照**：跑一个必然失败的门禁用例（如 peer 区间 `^0.0.1` 的假插件）确认门禁真的在拦，否则 exit 0 无法区分"通过"与"没跑"。
 - 收尾必须清理：`job_kill` **不会**杀掉宿主孙进程，会留下仍占端口的孤儿 host。收尾用 `job_list` + `ps`（核对 `cwd` 与 `DSH_HOME`）+ 端口检查，确认进程已退出后再删临时目录（记忆 `wu-job-kill-orphans-background-host-process-a997869b`）。
