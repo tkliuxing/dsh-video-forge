@@ -1,0 +1,60 @@
+# The motion fixture (docs/TEACH-MOTION.md §3–§4): one sentence per page, each
+# page showing one motion variant, plus a control page whose `--teach-dur` is 0.
+#
+# The page markup lives in sections.html, not in a finished deck: the test
+# scaffolds it into a real deck with `writeDeck`, so the asserts run against the
+# shipped template CSS and the shipped `teachCue`. `demo/motion` was scaffolded
+# from the same file, so the sample video and this test show the same deck.
+#
+# Two beats per page, so the beats land at 1/3 and 2/3 of the sentence
+# (docs/TEACH-VIDEO.md "页内节拍"): a page with 2 fragments has 3 picture changes
+# and the page switch is the first one.
+meta:
+  title: 页内动效库
+  voice:
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 第一种是压暗点亮，整页在句首就完整，节拍只把说到的部分提亮。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-2
+        say: 第二种是逐条出现，位移加淡入，一条一条落到自己的位置上。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-3
+        say: 第三种用缩放进场，结论和一屏数字适合这样一次弹出来。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-4
+        say: 第四种是描边画出，曲线沿着路径自己长出来，过程能被看见。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-5
+        say: 第五种是数字滚动，从零滚到目标值，滚动过程本身就是信息。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-6
+        say: 第六种是条形生长，比两个数字更快看出多和少的关系。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-7
+        say: 第七种是同一个元素连续变形，尺寸、颜色、圆角一起补间。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-8
+        say: 最后把时长设为零，同样的花样就只剩一次跳变，差别全在这里。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }

@@ -122,21 +122,21 @@
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §6（抽卡素材）· §11（初始化模板）· §14 第 3 条（已定：允许从成片派生）
 - 实现记录：2026-11-25 · `video-project` 建项目改 4 步（`catalog.yaml` 与 `materials/README.md` 模板、保留名清单）；`video-teach-slides` 新增「静态资源：图标内联、位图外链」；立绘规格（位图、长边 ≥ 1024、`front`/`side`/`back`、≤ 9 张）与教学项目「没有 materials 就先按建项目第 2 步建」两条也写进了 skill；`src/skills.ts` 两份 routing description 带上素材 · 独立审查发现这两条原本没落地，已补 · `pnpm check` 705 passed / 7 skipped · 未提交
 
-### [ ] B10 D0：页内动效库（模板 CSS + skill 食谱）
+### [x] B10 D0：页内动效库（模板 CSS + skill 食谱）
 
 - **做什么**：模板 `assets/teach/deck/index.html` 里加 `--teach-dur: 480ms` 与 `.reveal .slides .fragment { transition-duration: var(--teach-dur) }`（只改时长，**不覆盖 `transition`**，否则杀掉 reveal 内置变体的 transform）；补四个类：`dim`（压暗 `.42` → 点亮，整页构图句首完整）、`draw`（SVG `stroke-dashoffset` 一次性 keyframes）、`count`（数字滚动）、`bar`（条形生长）；`video-teach-slides` 加「动效食谱」（内容类型 → 用哪个类）与禁用清单（无限循环的信息型动画、整体覆盖 `.fragment` 的 `transition`）。
 - **为什么**：实测一段 9.23 s 的句子只产生 23 帧，其中 20 帧集中在两次约 170 ms 的淡入里，其余 8 秒画面一个像素都不变——这是"呆板"的物理来源。管线本身能拍到 60 fps 的位移/缩放/绘制，瓶颈是默认只给了 opacity。另一条：某个 fixture deck 自写 `.reveal .fragment{transition:opacity 180ms}`，与 reveal 自己的规则同特异性且后加载，把 `fade-up`/`grow` 的 transform 全部变成瞬间跳变，作者无从得知。
 - **成本/前提**：模板 CSS 一段 + skill 一节，不改代码。`480 ms` 的依据是实测 400 ms 拍 32 帧、200 ms 只拍 16 帧；不能用 demo 的 `cubic-bezier(0.77,0,0.175,1)`（实测前 77% 时间几乎不动）。
 - **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §1.1（实测帧数，行 26）· §1.3（覆盖 `transition` 的坑，行 46）· §3（D0 全文，行 84）· §3.2 类清单（行 98）· §3.3 缓动（行 120）
-- 实现记录：待
+- 实现记录：2026-11-25 · 未提交 · 模板 `assets/teach/deck/index.html`：`:root` 加 `--teach-dur: 480ms` 与 `--teach-ease`，`.reveal .slides .fragment` **只改时长**（保留各变体的 `transition-property`；覆盖 `transition` 会杀掉 `fade-up`/`grow`，这条坑写进注释），补四个类——`dim`（0.42→1，`visibility: inherit` 覆盖 `:not(.custom)` 的隐藏）/ `draw`（`stroke-dasharray` + 一次性 keyframes，`--teach-len` 定路径长度）/ `count`（注册 `--teach-num` 整数属性 + CSS counter，目标写 `--teach-to`，零 JS）/ `bar`（`scaleX` 生长，走合成器）；skill `video-teach-slides` 新增「动效：先定画面语言，再选类」（两种画面语言、时长只改不改、类清单与内容类型对照、四条禁用、负对照写法），原「动效用自带的 `fragment` 与 `fade` 就够」按 §3.4 收窄成"按与时钟的关系判断"；`src/skills.ts` 的 routing description 带上动效。验证：`test/teach-motion.test.ts` 用 `writeDeck` 把 `fixtures/teach/motion/sections.html` 装进**随包模板**再录，八页里前七页句内"画面在变"的帧数为 10 / 24 / 24 / 12 / 38 / 14 / 25，末帧与"全部节拍点亮"的 deck 截图平均差 ≤ 0.1；第 8 页是同一批元素 `--teach-dur: 0ms` 的负对照，只有 2 帧——把它改回 480 ms 该页变 23 帧并让测试失败（实测）。样本成片 `renders/motion/v001.mp4`（46.17 s，DeepSeek 音色 `stella`，项目在 `demo/motion/`）按 30 fps 数事件：前七页每拍 3–13 帧连续变化，对照页两次变化各 1 帧。未做：`fade-in-then-out` 这类"一拍消失"的用法只写进 skill、没进 fixture
 
-### [ ] B11 D1：页内手动 auto-animate（`data-teach-stage`）
+### [x] B11 D1：页内手动 auto-animate（`data-teach-stage`）
 
 - **做什么**：模板 CSS 给 `r-stack` + `.mover` 的写法示例；模板的 `teachCue` 末尾加一段可选同步——把 `[data-teach-stage]` 容器的 `data-step` 跟随当前拍数，deck 只写 CSS 不写 JS。同时给「依次聚焦」写法：`custom` 元素用 `current-fragment` 改颜色/位移/字重。
 - **为什么**：reveal 的 Auto-Animate 是跨页补间，在我们的录制架构里被吃掉（换页发生在开录之前）。但 `.reveal .fragment:not(.custom)` 这条规则给了出口——`class="fragment custom"` 不被隐藏，reveal 只负责数它和推进它，样式全交给作者。实测：尺寸、颜色、圆角的变化被平滑补间并完整录取，观感与原生 Auto-Animate 同源。
 - **成本/前提**：模板 CSS + `teachCue` 一段 + skill 一节；不改代码。边界要写清：`data-teach-stage` 只在当前页生效，跨页是 B13 的职责；共享页下编号跨句递增，作者要么按整页编号写 CSS，要么用 `enter`。
 - **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §4（D1 全文，行 128）· §4.1 `.fragment.custom` 支点（行 130）· §4.2 连续变形（行 144）· §4.3 依次聚焦（行 171）
-- 实现记录：待
+- 实现记录：2026-11-25 · 未提交 · 模板 `teachCue` 末尾把每个 `[data-teach-stage]` 的 `data-step` 写成 **`target + 1`**（不是文档原稿的 `Math.max(1, target)`：那会让"首拍之前"与第一拍都落在 1 上，2 拍的页面只剩一次变形；§4.2 已同步改口径并写明理由）；模板补 `.beat` + `.current-fragment` 的"当前项高亮"（`fragment custom` 不被 reveal 隐藏，样式全归 deck）；写法与五条边界（步号含义、容器自己不是 fragment、一容器一 `data-step`、只在当前页、共享页编号跨句递增）写进 `video-teach-slides` 的「动效」一节。验证：`test/teach-motion.test.ts` 的 stage 页抽 rgb24 帧数三种形色的像素——首帧 step-1 灰、末帧 step-3 洋红；**删掉那段同步后该页帧数从 25 掉到 13、末帧洋红 0 px，测试失败**（实测）；样本成片 37.4 s / 39.6 s 两帧可肉眼看到"矩形→圆形"的连续变形。未做：跨页/跨句的连续变形仍做不到（那是 B13 的职责）
 
 ### [ ] B12 D2：录制契约（`teachTransition` / `teachPageTransition`）
 

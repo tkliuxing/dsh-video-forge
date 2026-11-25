@@ -1,0 +1,146 @@
+<!--
+  The page markup of the motion fixture (docs/TEACH-MOTION.md §3, §4, §10).
+
+  Why the pages live here and not in a finished deck: this file is the single
+  source for both halves. `test/teach-motion.test.ts` scaffolds it into a real
+  deck with `writeDeck` and records it, so the asserts run against the *shipped*
+  template CSS and `teachCue` rather than against a copy; and the same markup is
+  what the `demo/motion` project was scaffolded from, so the video the reader
+  watches is the deck the test measures.
+
+  Eight pages, one per sentence: the seven variants of §3.2/§4 plus one negative
+  control. The control is the last page: the same `fade-up` rows with
+  `--teach-dur: 0ms`, which is the difference between "it moves" and "it
+  flashes". The test counts frames between two cues on every page, so that page
+  has to stay a jump.
+
+  The styling is deliberately unlike a real lecture: flat blocks of one colour,
+  because the test measures pixels and a photograph would move on its own.
+-->
+<style>
+  .reveal .slides section { color: #e8ecf4; }
+  .reveal .page { padding: 24px 10px; }
+  .reveal .eyebrow {
+    margin: 0 0 6px; font-size: 22px; letter-spacing: 1px; color: #7aa2f7;
+    text-transform: none;
+  }
+  .reveal .page h2 { font-size: 44px; margin: 0 0 22px; text-transform: none; letter-spacing: .5px; }
+
+  /* dim */
+  .reveal .card {
+    width: 820px; box-sizing: border-box; padding: 18px 26px; margin: 0 0 20px;
+    background: #2f3b52; border-left: 10px solid #7aa2f7; border-radius: 10px;
+  }
+  .reveal .card b { display: inline-block; width: 120px; font-size: 40px; color: #ffd479; }
+  .reveal .card span { font-size: 34px; }
+
+  /* fade-up / zoom-in / the instant control share one row shape */
+  .reveal .line {
+    width: 820px; box-sizing: border-box; padding: 16px 24px; margin: 0 0 18px;
+    font-size: 34px; background: #1b2436; border-radius: 10px;
+  }
+  .reveal .numbers { display: flex; gap: 40px; align-items: baseline; }
+  .reveal .num {
+    font-size: 96px; font-variant-numeric: tabular-nums; color: #ffd479;
+    background: #1b2436; border-radius: 12px; padding: 6px 26px;
+  }
+
+  /* draw */
+  .reveal .draw-page svg { width: 820px; height: auto; display: block; margin: 0 0 14px; }
+  .reveal .draw-page path, .reveal .draw-page polyline {
+    fill: none; stroke: #52c286; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  /* bar */
+  .reveal .track {
+    width: 820px; height: 54px; margin: 0 0 20px; background: #1b2436;
+    border-radius: 8px; overflow: hidden;
+  }
+  .reveal .fill-a { width: 78%; height: 100%; background: #52c286 }
+  .reveal .fill-b { width: 46%; height: 100%; background: #e05252 }
+
+  /* data-teach-stage: one element, three shapes, CSS only (docs/TEACH-MOTION.md §4.2) */
+  .reveal .stagewrap {
+    width: 820px; height: 250px; margin: 0 0 8px; display: flex;
+    align-items: center; justify-content: center; background: #1b2436; border-radius: 12px;
+  }
+  .reveal .mover {
+    width: 120px; height: 120px; border-radius: 10px; background: #6b7280;
+    transition:
+      width 600ms cubic-bezier(.2, .7, .3, 1),
+      height 600ms cubic-bezier(.2, .7, .3, 1),
+      border-radius 600ms cubic-bezier(.2, .7, .3, 1),
+      background 600ms cubic-bezier(.2, .7, .3, 1);
+  }
+  [data-teach-stage][data-step="2"] .mover {
+    width: 260px; height: 150px; background: #22d3ee; border-radius: 16px;
+  }
+  [data-teach-stage][data-step="3"] .mover {
+    width: 210px; height: 210px; background: #e879f9; border-radius: 50%;
+  }
+</style>
+
+<section class="page dim-page">
+  <p class="eyebrow">D0 · dim ／ 压暗点亮</p>
+  <h2>整页先在，节拍只做强调</h2>
+  <div class="card fragment dim"><b>0.42</b><span>句首就是完整版面</span></div>
+  <div class="card fragment dim"><b>1.00</b><span>说到哪一块，哪一块提亮</span></div>
+</section>
+
+<section class="page">
+  <p class="eyebrow">D0 · fade-up ／ 逐条出现</p>
+  <h2>一条一条落到位置上</h2>
+  <div class="line fragment fade-up">位移加淡入，比纯透明度更有动感</div>
+  <div class="line fragment fade-up">要点、清单、步骤都用它</div>
+</section>
+
+<section class="page">
+  <p class="eyebrow">D0 · zoom-in ／ 缩放进场</p>
+  <h2>结论一次弹出来</h2>
+  <div class="numbers">
+    <div class="num fragment zoom-in">95%</div>
+    <div class="num fragment zoom-in">3.2×</div>
+  </div>
+</section>
+
+<section class="page draw-page">
+  <p class="eyebrow">D0 · draw ／ 描边画出</p>
+  <h2>曲线沿着路径自己长出来</h2>
+  <svg class="fragment draw" viewBox="0 0 820 110" style="--teach-len: 1200">
+    <path d="M20 90 C 200 90, 240 16, 420 16 S 640 90, 800 56" />
+  </svg>
+  <svg class="fragment draw" viewBox="0 0 820 90" style="--teach-len: 1000">
+    <polyline points="20,70 200,34 400,62 580,18 800,44" />
+  </svg>
+</section>
+
+<section class="page">
+  <p class="eyebrow">D0 · count ／ 数字滚动</p>
+  <h2>从零滚到目标值</h2>
+  <div class="numbers">
+    <div class="num fragment count" style="--teach-to: 95"></div>
+    <div class="num fragment count" style="--teach-to: 128"></div>
+  </div>
+</section>
+
+<section class="page">
+  <p class="eyebrow">D0 · bar ／ 条形生长</p>
+  <h2>比数字更快看出多和少</h2>
+  <div class="track"><div class="fragment bar fill-a"></div></div>
+  <div class="track"><div class="fragment bar fill-b"></div></div>
+</section>
+
+<section class="page">
+  <p class="eyebrow">D1 · data-teach-stage ／ 连续变形</p>
+  <h2>一个元素，三种形状</h2>
+  <div class="stagewrap" data-teach-stage data-step="1"><div class="mover"></div></div>
+  <div class="line fragment">尺寸、颜色、圆角一起补间</div>
+  <div class="line fragment">和跨页 auto-animate 的观感同源</div>
+</section>
+
+<section class="page" style="--teach-dur: 0ms">
+  <p class="eyebrow">对照 · --teach-dur: 0ms</p>
+  <h2>时长设为零，就只剩一次跳变</h2>
+  <div class="line fragment fade-up">同样的花样，唯一的区别是时长</div>
+  <div class="line fragment fade-up">这就是"闪一下"和"动起来"的分界</div>
+</section>

@@ -49,7 +49,89 @@ window.teachCue = function teachCue(n) {
 - 字号按 1080p 的观看距离定：标题 44–48px，正文 32–40px，注释不小于 24px。默认 16:9，`reveal` 会把内容缩放填满，字号写小等于看不清。
 - 字体栈带中文：`"PingFang SC", "Noto Sans SC", system-ui`。不指定就会在录制时回落到衬线字体。
 - **公式优先用 HTML/CSS 或 MathJax 独立脚本**，不要把 LaTeX 塞进 reveal 的 Markdown 插件里再由插件去 shell 调用 —— 录屏进程不该有执行外部命令的路径。
-- 动效用 reveal 自带的 `fragment` 与 `fade` 就够；自定义 CSS 动画会让"这一帧该长什么样"变得不可预测，也就会让重录结果不一致。
+- 动效按下面「动效：先定画面语言，再选类」一节的食谱挑类。判据是**它与时钟的关系**：由 `teachCue` 触发的过渡是确定的（起点由 cue 定、终点由 CSS 时长定），可以放心用；不确定的只有跟时钟无关的循环动画（相位从页面加载就开始算）。
+
+## 动效：先定画面语言，再选类
+
+一页只用一种画面语言。先选语言，再从表里挑类：
+
+| 语言 | 句首那一帧长什么样 | 用什么 |
+|---|---|---|
+| **整页先在**（讲解默认） | 版面完整、要讲的要素压暗可见 | `dim` |
+| **逐条出现** | 版面是空的，一条一条加上来 | `fade-up` / `zoom-in` / 默认 `fade` |
+
+同一页里混用两种语言，观众分不清"先讲这块后讲那块"是节奏还是失误。
+
+### 时长：只改时长，不要覆盖 `transition`
+
+模板给了 `--teach-dur: 480ms`，只改 `transition-duration`。**这一行是错的**：
+
+```css
+.reveal .fragment { transition: opacity 180ms ease; }   /* 别写 */
+```
+
+它与 reveal.css 的 `.reveal .fragment{transition:all .2s}` **特异性相同、后加载**，于是胜出：`transition` 只剩 opacity，`fade-up` 的位移、`grow` 的缩放全部变成瞬间跳变，而且没有任何报错——作者明明用了变体，看到的是"闪一下"。要改节奏就在 `<section>` 上覆盖变量：
+
+```html
+<section style="--teach-dur: 260ms">…</section>
+```
+
+480 ms 是实测选的：400 ms 的过渡在录屏里约 32 帧、200 ms 约 16 帧，低于 300 ms 观感仍是"闪一下"。想让人看清这个差别，就做一页负对照：同一批元素把 `--teach-dur` 设成 `0ms`，画面只剩一次跳变。
+
+### 类清单
+
+reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` / `fade-right` / `zoom-in` / `fade-in-then-out`；强调型 `grow` / `shrink` / `strike` / `highlight-blue|red|green` / `semi-fade-out`。
+
+**强调型不能当出现型用**：`grow`、`shrink` 从一开始就可见（reveal 让它们 `opacity:1`），拿来做"逐条出现"会让整列一开始全在。它们的语义是"已经在场上，说到时变一下"。
+
+模板额外给四个。它们写在随包模板 deck 的 `<style>` 里，所以**新起的项目自动就有**；老项目的 deck 是当初那一份拷贝，不会跟着更新，需要时从模板抄一段过来：
+
+| 类 | 观感 | 用在哪 |
+|---|---|---|
+| `dim` | 压暗到 0.42，说到时点亮 | 整页构图、多块对照、要观众先看全局 |
+| `draw` | SVG 路径描边画一次 | 曲线、流程线、坐标轴；`--teach-len` 要不小于路径实际长度 |
+| `count` | 数字从 0 滚到目标值 | 指标、金额、占比；目标写 `style="--teach-to: 95"` |
+| `bar` | 条形从左边生长 | 对比量级，比并排两个数字更快看出多和少 |
+
+`count` 的数字由 CSS counter 打印，所以元素要留空：`<div class="fragment count" style="--teach-to: 95"></div>`。加 `custom` 就变"先亮着 0、说到时滚"，不加是"出现并滚动"。
+
+### 同一元素连续变形：`data-teach-stage`
+
+跨页 auto-animate 在"一句一录"里拍不到（每句开录前才切页），页内可以自己做一个：容器加 `data-teach-stage`，`teachCue` 会把它的 `data-step` 跟着拍数写进去，形状全交给 CSS。
+
+```html
+<div class="r-stack" data-teach-stage data-step="1"><div class="mover"></div></div>
+```
+```css
+.mover { width: 120px; height: 120px; border-radius: 10px; background: #6b7280;
+         transition: all 600ms cubic-bezier(.2, .7, .3, 1) }
+[data-teach-stage][data-step="2"] .mover { width: 260px; height: 150px; background: #22d3ee }
+[data-teach-stage][data-step="3"] .mover { width: 210px; height: 210px; border-radius: 50%; background: #e879f9 }
+```
+
+- **步号从 1 起，1 表示"第一拍之前"**。`data-step="1"` 就是 markup 里写的初态，第一拍把它推到 2。因此一个容器能表达"首拍前 + 每拍各一个"的状态，比这一页的拍数多一个（2 拍 → 3 种形状）。
+- **容器本身不要当 fragment**：它靠同一页上的其他 fragment 数拍（文字条、标注）。页上一共 2 个 fragment，容器就走 1 → 2 → 3。
+- 一个容器一个 `data-step`；要两处独立变形就开两个容器。
+- **只在当前页有效**：跨句不接续（每句都是一次新的页面加载），跨页的连续变形这一版做不到，跨句仍然是硬切。
+- 共享页（`page` / `enter`）下拍号跨句递增，`data-step` 会继续往上数到 4、5、6；按整页编号写 CSS，或者让进页那几拍由 `enter` 先打到位。
+
+### 依次聚焦
+
+`class="fragment custom"` 不被 reveal 隐藏、也不被压暗，reveal 只负责数它和推进它，样式全归你。做"当前项高亮、其余压暗"只要两条规则：
+
+```css
+.beat { color: #9ca3af; transition: color 400ms ease, transform 400ms ease }
+.beat.current-fragment { color: #ffd479; transform: translateX(14px) }
+```
+
+比 `highlight-*` 更可控：颜色、位移、字重可以同时改。模板里这套类就叫 `.beat`。
+
+### 动效的禁用清单
+
+- **无限循环的"信息型"动画**（转到某个角度时正好说到某句）：循环相位从页面加载就开始计，到开录之间还隔着截图自检等不确定耗时，对不上。纯装饰的循环允许，但只要有重绘，帧数就涨到约 90 fps（6 秒的句子从约 25 帧涨到约 560 帧），别全片铺开。
+- **为了循环动画去改 `width` / `top` / `left`**：走 layout，帧率与帧大小都更差。循环部分只用 `transform` / `opacity`。
+- **照抄 reveal 官方 demo 的 `cubic-bezier(0.77,0,0.175,1)`**：实测前 77% 的时间几乎不动（600 ms 的变形前 460 ms 只走 5 px），单元素变形看起来是"卡住然后突然变"。用 `ease-out` 或 `cubic-bezier(.2,.7,.3,1)`。
+- **一页超过 5 个 fragment**：上一节的上限仍然成立，动效再多也不能超。
 
 ## 与时间轴的关系
 
@@ -98,6 +180,8 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 - 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍时）、检查 `teachPage`（页模式下），缺了在**录音之前**就拒绝。
 - 每页的 fragment 数与稿件里这一页的 cue 数一一对应；多出来的 fragment 永远不显示（页末夹住）。页内节拍数 = fragment 数 + 1（换页算第一次变化）。共享页按整页数，不是按句数。
 - 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
+- 动效类来自模板（`dim` / `draw` / `count` / `bar`）或 reveal 内置变体，节奏靠 `--teach-dur` 覆盖；deck 里**没有** `.reveal .fragment { transition: … }` 这样的整体覆盖。
+- `data-teach-stage` 的容器自己不是 fragment，但同一页要有足够多的 fragment 给它数拍（2 拍 → 3 种形状）；`data-step` 初值写成 `"1"`。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
 
 ## 让每句话都改变画面

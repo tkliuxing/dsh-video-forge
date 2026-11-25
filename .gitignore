@@ -11,3 +11,10 @@ coverage/
 .omc/
 
 .cybernetics/
+
+# A demo project's narration is paid, generated and machine-local: the manuscript
+# and the deck are the source, `audio/` and `timings.json` are its output. The
+# finished film lands under renders/, which has its own ignore file.
+demo/*/audio/
+demo/*/timings.json
+demo/*/.dsh-video/

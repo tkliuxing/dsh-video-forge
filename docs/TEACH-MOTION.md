@@ -123,7 +123,7 @@ reveal 内置、直接可用（不需要写 CSS，但**必须不被 §3.1 的坑
 
 ### 3.4 skill 的对应改动
 
-`video-teach-slides` 加一节"动效食谱"（内容类型 → 用哪个类），并把"自定义 CSS 动画不可预测"的禁令**收窄**成第 2 节的三种类型判据。原文那条把状态驱动的 transition 也一起禁了，而它恰恰是唯一确定的类型。
+`video-teach-slides` 加一节"动效食谱"（内容类型 → 用哪个类），并把"自定义 CSS 动画不可预测"的禁令**收窄**成第 2 节的三种类型判据。原文那条把状态驱动的 transition 也一起禁了，而它恰恰是唯一确定的类型。——**已落成（2026-11-25，§13）**：那一节叫「动效：先定画面语言，再选类」，包含类清单、时长怎么改、`data-teach-stage` 与禁用清单。
 
 ## 4. D1：页内手动 auto-animate
 
@@ -162,9 +162,11 @@ demo 的 Auto-Animate 是"三页里同一组元素连续变形"。页内复刻�
 ```js
 // 标了 data-teach-stage 的容器跟着 cue 走；deck 只写 CSS，不写 JS
 for (const el of document.querySelectorAll('[data-teach-stage]')) {
-  el.dataset.step = String(Math.max(1, target))
+  el.dataset.step = String(target + 1)      // 1 = 第一拍之前
 }
 ```
+
+**步号是 `target + 1`，不是 `target`**（实现时改的口径，见 §13）：一页开局所有拍都暗，markup 里写的是 `data-step="1"`，所以 1 必须表示"第一拍之前"。写成 `Math.max(1, target)` 会让第一拍落到 1 上，于是首拍期间形状不动、要到第二拍才变形——2 拍的页面只剩一次变形（实测：该页帧数从 25 降到 13）。
 
 实测：尺寸、颜色、圆角全部被平滑补间并完整录取，与 reveal 原生 Auto-Animate 在页内的观感同源。
 
@@ -340,8 +342,8 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 ## 10. 验收（全部离线，落代码后执行）
 
-1. **D0**：`fixtures/teach/motion/` 每页一个变体（`dim`、`fade-up`、`zoom-in`、`draw`、`count`、`bar`、`custom`），渲染后抽帧断言"每拍的帧间差异超过阈值"，且末帧是完整版面。
-2. **D1**：同一 fixture 的 `data-teach-stage` 页，抽帧断言元素尺寸/颜色按 `data-step` 单调变化（与本次实测的判据一致）。
+1. **D0**：`fixtures/teach/motion/` 每页一个变体（`dim`、`fade-up`、`zoom-in`、`draw`、`count`、`bar`、`custom`），渲染后抽帧断言"每拍的帧间差异超过阈值"，且末帧是完整版面。——**已做（2026-11-25，§13）**：落成 `test/teach-motion.test.ts`，八页（七种变体 + 一个 `--teach-dur: 0ms` 负对照），断言"段内至少 5 帧画面在变"与"末帧 = 全部节拍点亮后的 deck 截图"。
+2. **D1**：同一 fixture 的 `data-teach-stage` 页，抽帧断言元素尺寸/颜色按 `data-step` 单调变化（与本次实测的判据一致）。——**已做（2026-11-25，§13）**：抽帧数三种形色的像素，首帧是 step-1 灰、末帧是 step-3 洋红；删掉 `teachCue` 里的同步后该断言即失败（实测）。
 3. **D2**：`video_teach_plan` 对"某拍之后剩 200 ms 而 `teachTransition` 是 480"给出 warning；不声明时不报。
 4. **D3**：`fixtures/teach/transition/` 三句 slides，`meta.transition.durationMs: 400`。断言：① 段长 = `durationMs + exitMs`；② 第 2 段首帧与第 1 段末帧**像素相同**（证明接缝连续）；③ 成片时长 = `Σ(durationMs + exitMs)`；④ SRT 的第 2 句起点 = 第 1 句起点 + 第 1 句 `durationMs + exitMs`。
 5. **跨 engine**：`fixtures/teach/mixed/`（slides + manim）断言 slides 段的 `exitMs` 被降级为 0，且 plan 给了 warning。
@@ -349,12 +351,12 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 ## 11. 与 TODO 的对应
 
-- **B10** → 第 3 章（D0）
-- **B11** → 第 4 章（D1）
-- **B12** → 第 5 章（D2）
-- **B13** → 第 6、7 章（D3）
+- **B10** → 第 3 章（D0）· **已落成**
+- **B11** → 第 4 章（D1）· **已落成**
+- **B12** → 第 5 章（D2）· 未做
+- **B13** → 第 6、7 章（D3）· 未做
 
-skill 的改动（`video-teach-slides` 的动效食谱、`video-teach-storyboard` 的 `transition` 字段、`video-teach-iterate` 的"改一段要连带重录谁的尾转场"）在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。
+skill 的改动在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。D0/D1 的对应段落（`video-teach-slides` 的「动效：先定画面语言，再选类」）已随实现一起写进去；D2/D3 那两处（`video-teach-storyboard` 的 `transition` 字段、`video-teach-iterate` 的"改一段要连带重录谁的尾转场"）等代码落地再写。
 
 ## 12. 划界：不做什么
 
@@ -364,3 +366,52 @@ skill 的改动（`video-teach-slides` 的动效食谱、`video-teach-storyboard
 - 不为循环动画做帧数与体积优化。
 - 不把 `exitMs` 写进 `audio/<id>.wav`。
 - 不改"音频是时钟"与"一句一录"这两条地基。
+
+## 13. 实现记录：D0 与 D1（2026-11-25）
+
+D0（页内动效库）与 D1（页内手动 auto-animate）落成，**都不改代码**：全部在随包的模板 deck 与 skill 正文里，所以 `src/` 一行没动，工具面也没变。
+
+### 13.1 落了什么
+
+| 位置 | 内容 |
+|---|---|
+| `assets/teach/deck/index.html` | `:root { --teach-dur: 480ms; --teach-ease }` 与 `.reveal .slides .fragment { transition-duration/-timing-function }`（**只改时长**，保留 reveal 各变体的 `transition-property`）；四个类 `dim` / `draw` / `count` / `bar`；`.beat` 的"当前项高亮"；`teachCue` 末尾把 `[data-teach-stage]` 的 `data-step` 跟着拍数写成 `target + 1` |
+| `assets/skills/video-teach-slides.md` | 新一节「动效：先定画面语言，再选类」：两种画面语言、时长怎么改（含"覆盖 `transition` 会杀掉内置变体"）、类清单与内容类型对照、`data-teach-stage` 的五条边界、`fragment custom` 依次聚焦、四条禁用；原「动效用自带的 fragment 就够」那条收窄成"按与时钟的关系判断"（§3.4 要求）；检查清单补两条 |
+| `src/skills.ts` | `video-teach-slides` 的 routing description 带上动效 |
+| `fixtures/teach/motion/` | `sections.html`（八页：七种变体 + 一个 `--teach-dur: 0ms` 负对照）+ `storyboard.yaml`。**页面单独成文件**，测试用 `writeDeck` 把它装进真实模板再录，这样量的是随包模板的 CSS 与 `teachCue`，不是副本 |
+| `test/teach-motion.test.ts` | 两例：plan 在 fixture 上无待修项；渲染八段后逐页量"画面在动的帧数"与"末帧 = 全部节拍点亮后的 deck 截图"，并量 stage 页首末帧的颜色 |
+| `demo/motion/` | 同一份 `sections.html` 装进模板得到的样本项目（稿本 + deck + 封面页），用 DeepSeek 音色 `stella` 出片：`renders/motion/v001.mp4`，46.17 s |
+
+### 13.2 实测证据
+
+`test/teach-motion.test.ts` 一次跑完（本机，ffmpeg 9.1 + Playwright Chromium），八页每页两句节拍，30 fps 的成片里逐帧比：
+
+| 页 | 变体 | 句内"画面在变"的帧数 | 末帧与"全部点亮"的 deck 截图平均差 |
+|---|---|---|---|
+| s01-1 | `dim` | 10 | 0.1 |
+| s01-2 | `fade-up` | 24 | 0.1 |
+| s01-3 | `zoom-in` | 24 | 0.1 |
+| s01-4 | `draw` | 12 | 0.0 |
+| s01-5 | `count`（900 ms 滚动） | 38 | 0.0 |
+| s01-6 | `bar` | 14 | 0.0 |
+| s01-7 | `data-teach-stage` | 25 | 0.1 |
+| s01-8 | 对照 `--teach-dur: 0ms` | **2** | 0.0 |
+
+负对照是这套断言有牙的地方，两处都真跑过：
+
+- **把对照页的时长改回 480 ms**，该页从 2 帧变成 23 帧，测试失败在 "the 0 ms control tweened"。
+- **删掉 `teachCue` 里那段 `data-step` 同步**，stage 页从 25 帧掉到 13 帧，且末帧"step-3 颜色（洋红）0 px"，测试失败在 "the last frame is not in the step-3 colour"。
+
+样本成片上的同一件事（按 30 fps 数事件）：七种变体每拍的连续变化是 3–13 帧，最后一页（0 ms 对照）两次变化各**只有 1 帧**，峰值位移却相近——这就是"动起来"与"闪一下"的差别。
+
+### 13.3 实现时改掉的口径
+
+1. **`data-step = target + 1`**（§4.2 已改）：原文写 `Math.max(1, target)`，会让第一拍与"首拍之前"都落在 1 上，2 拍的页面只剩一次变形。
+2. **模板自己的 CSS 注释里不能出现字面量 `<section>`**：旧构建的页数统计只剥注释与 `<script>`、不剥 `<style>`，于是 CSS 注释里的一个 `<section>` 会让 deck 多出一页（`video_teach_plan` 因此报了"第 1 页只有 1 个 fragment"）。当前源码已剥 `<style>`（B1 那轮的修复），但这句注释改成"the section element"更稳——文档里写契约，注释里写标记名，两次都栽在同一个坑上（§B1 的第三轮审查也是这个）。
+
+### 13.4 它换不来什么
+
+- **跨句仍然是硬切**：每句独立录制再拼接，页转场拍不到，`data-teach-stage` 也只在当前页内接续。要连续得上 D3（B13）。
+- **`fade-in-then-out` 这类"一拍消失"的变体**现在能用，但消失之后的位置会留白，页内节拍仍按"一件事一到两次变化"规划。
+- **循环动画的帧数代价没处理**（§2）：装饰循环可用，别全片铺开。
+

@@ -71,7 +71,7 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-slides',
     description:
-      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、共享页的 deck 怎么写（teachPage 幂等、进页拍由录制器先打到位）、静态资源（图标内联、位图外链、只有「往上两层」一种路径）、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 时使用。',
+      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、共享页的 deck 怎么写（teachPage 幂等、进页拍由录制器先打到位）、动效怎么选（dim / fade-up / zoom-in / draw / count / bar 的食谱、只改时长不覆盖 transition、data-teach-stage 页内连续变形、fragment custom 依次聚焦、禁用清单）、静态资源（图标内联、位图外链、只有「往上两层」一种路径）、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 或给它加动效时使用。',
     file: 'video-teach-slides.md',
     userInvocable: false,
   },

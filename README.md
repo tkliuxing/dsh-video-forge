@@ -172,6 +172,16 @@ beat on a given word.
 | slide-style explanation where points appear one at a time | complex scene blocking and lighting changes |
 | a re-recordable script where changing one line re-renders one line | anything that has to look photographed |
 
+The bundled deck template carries an in-page motion library: brighten-what-is-said
+(`dim`), stroke-draw (`draw`), rolling numbers (`count`) and growing bars (`bar`),
+on top of reveal's own fade-up and zoom-in; one element can also morph through
+several shapes inside a page (mark the wrapper `data-teach-stage` and keep the
+shapes in CSS). Pacing is one variable, `--teach-dur`, 480 ms by default, and a
+page that wants another pace overrides it on that page instead of re-declaring
+the fragment `transition`. Whether a motion is safe to use is a question of its
+relation to the clock: what a beat triggers is deterministic, a loop that ignores
+the clock is not. Recipes and the ban list are in the `video-teach-slides` skill.
+
 `video_teach_plan` checks more than the file format: every slide sentence has to
 bring at least one picture change, the average gap between changes must stay
 under 8 s, a sentence should run 2 to 8 s, cue numbers must fit the deck's real
