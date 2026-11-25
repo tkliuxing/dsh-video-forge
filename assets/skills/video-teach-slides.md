@@ -95,3 +95,12 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 5. **改了这一页的 fragment 数，就重算这一句的 cues**。节拍比例由变化次数算出（见 `video-teach-storyboard`「页内节拍」），重算后只需要重渲染，不用重录旁白。
 
 改完跑 `video_teach_plan`：它会报出"哪句没有 cue""平均几秒才变一次画面"，这些都能在下一次录音之前发现。
+
+
+## SVG 里的元素也能当节拍
+
+`class="fragment"` 不限于 `<div>`：写在 SVG 的 `<g>` 上同样有效。`countDeckFragments` 数的是页面里的这个类名，`pageFragments` 按 `<section>` 切分，`<g>` 落在 section 内就算该页的节拍，`teachCue(k)` 对 `<g>` 与 `<div>` 一视同仁（SVG 的 `opacity` 也吃 CSS 类）。
+
+所以"一页内三张卡依次亮"不必拆成三页：一张 `<svg>` 里给三个 `<g>` 各加 `class="fragment"`，就是三个节拍。
+
+**顺序不要依赖 DOM。** 给每个节拍元素加 `data-beat="k"`，`teachCue(k)` 点亮 `data-beat ≤ k`。否则图元在 DOM 里排在文字前面时，点亮顺序会跟稿子对不上。

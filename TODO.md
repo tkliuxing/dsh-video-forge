@@ -53,13 +53,13 @@
 - **出处**：`docs/TEACH-VIDEO.md` §25（行 703–818，含 25.1 原因 / 25.3 改动点 / 25.5 编号反转 / 25.9 验收）· `docs/DESIGN.md` §23 末段（行 1603）· 决策摘要见记忆 `wu-teach-page-map-proposal-2026-11-24`
 - 实现记录：待
 
-### [ ] B2 把「SVG 元素级节拍」写成契约
+### [x] B2 把「SVG 元素级节拍」写成契约
 
 - **做什么**：在 `video-teach-slides` 里写明 `class="fragment"` 可以写在 SVG 的 `<g>` 上；并建议 deck 给每个节拍元素加 `data-beat="k"`，`teachCue(k)` 点亮 `data-beat ≤ k`，不依赖 DOM 顺序。
 - **为什么**：这条能力**现在就能用**（`countDeckFragments` 数正则、`<g>` 落在 `<section>` 内算进该页、`teachCue` 对 `<g>` 与 `<div>` 一视同仁），但文档没写。不写进契约，以后有人把正则收紧成「只数 section 直接子元素」，项目侧会静默坏掉。它也是「一页内三张卡依次亮」不必拆页的前提。
 - **成本/前提**：免费，只改 skill 正文。
 - **出处**：`docs/TEACH-VIDEO.md` §25.8（行 790–798）
-- 实现记录：待
+- 实现记录：2026-11-25 · `video-teach-slides` 新增「SVG 里的元素也能当节拍」：`<g class="fragment">` 是一个节拍、`data-beat="k"` 定顺序而不用 DOM 顺序；原来只在本轮「静态资源」节里以论证形式顺带提过一次，不算契约 · 顺带更正了 `<img src="…svg">` "点不亮"的错误说法（会被计数、能整块点亮，丢的是改色与部分点亮）· `pnpm check` 705 passed / 7 skipped · 未提交
 
 ---
 
