@@ -151,8 +151,8 @@ its environment variable, which wins over discovery.
 | `video_cancel` | Ask the provider to stop (distinct from `job_kill`, which only stops watching while the provider keeps working and billing) |
 | `video_teach_plan` | Validate a teaching manuscript (`storyboard.yaml`), estimate its spoken length, and report which local tools are missing. Free and offline |
 | `video_teach_narrate` | Synthesize the narration (DeepSeek speech by default, `DEEPSEEK_API_KEY`; volcengine optionally, the only provider with word timings) and write `timings.json`; `sentences` re-synthesizes only those lines |
-| `video_teach_render` | Render one segment per sentence from reveal.js slides and/or Manim scenes, then assemble `renders/<shot>/vNNN.mp4`; `sentences` re-records only those lines and leaves the other segments untouched |
-| `video_teach_export` | Write the SRT and `timeline.json` next to the film, and the decks under `deck/`. The SRT is cut on word timings; the default voice has none, so it gets one cue per sentence |
+| `video_teach_render` | Render one segment per sentence from reveal.js slides and/or Manim scenes, then assemble `renders/<shot>/vNNN.mp4` with the narration burned into the picture; `sentences` re-records only those lines and leaves the other segments untouched |
+| `video_teach_export` | Write the SRT and `timeline.json` next to the film, copy the decks under `deck/`, and screenshot `meta.cover` at 16:9 and 4:3. The SRT is cut on word timings; the default voice has none, so it gets one cue per sentence. It is the same cue text that was burned into the picture |
 
 ### Teaching videos
 
@@ -178,10 +178,13 @@ refused outright, and so is a deck missing the `teachReady` / `teachCue` /
 `teachPage` contract; that one is caught before any narration is paid for.
 
 Artifacts: the film lands at `renders/<shot>/vNNN.mp4` with `vNNN.json` beside
-it, and appears in the video panel. `video_teach_export` adds three more: an
-`.srt` next to the film, a `vNNN.timeline.json`, and the interactive decks under
-`deck/`. Subtitles stay a separate SRT file; they are not burned into the
-picture. The manuscript (`storyboard.yaml`),
+it, and appears in the video panel. The narration is burned into the picture, so
+the film can be posted as it is; burning needs an ffmpeg built with libass, and a
+build without it assembles the film unsubtitled and says so rather than failing.
+`video_teach_export` adds the rest: an `.srt` next to the film (the same cues,
+as a sidecar), a `vNNN.timeline.json`, the interactive decks under `deck/`, and
+`vNNN.cover-16x9.png` + `vNNN.cover-4x3.png` rendered from the cover page the
+manuscript names in `meta.cover`. The manuscript (`storyboard.yaml`),
 `slides/<segment>/`, `scenes/*.py`, `timings.json` and `audio/` belong to the
 project and are worth committing; `.dsh-video/`, `deck/` and `renders/` are
 regenerable. The `video-teach-*` skills cover the manuscript format, the

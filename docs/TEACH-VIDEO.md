@@ -1,6 +1,6 @@
 # 教学视频路线（2026-11-20 起，已实现）
 
-> 状态：**已实现**。§1–§12 是决策与规划，§13 起是逐轮实施记录，§25 是唯一未实现的提案，§26 是两份承诺了但没交付的产物清单。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；规划部分按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
+> 状态：**已实现**。§1–§12 是决策与规划，§13 起是逐轮实施记录，§25 是唯一未实现的提案，§26 是「最初漏交的两种产物」在 2026-11-25 补齐的记录（烧入字幕、封面）。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；规划部分按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
 >
 > 相关：`DESIGN.md` §4（工具面）、§9（产物与播放）、§15（未决与风险）、§17.2（产物落点）、§19（视频面板）、§22（skill 结构）；多幕并行派发的规程单独写在 [`TEACH-PARALLEL-ACTS.md`](TEACH-PARALLEL-ACTS.md)。
 
@@ -24,7 +24,7 @@
 | HTML 出帧 | Playwright 实时录屏，**按句分段**（一句一段 WebM） |
 | 中间格式 | `storyboard.yaml` 是唯一手写入口 |
 | 集成形态 | 现有插件加工具 + 中文 skill，与在线生成路线共存 |
-| 交付物 | 16:9 1080p mp4 · SRT · 可交互 HTML deck · 时间轴 JSON（原目标是六项，另两项**烧入字幕**与**封面**尚未实现，见 §26） |
+| 交付物 | 六项：16:9 1080p mp4（旁白可烧进画面）· 外部 SRT · 可交互 HTML deck · 时间轴 JSON · 16:9 封面 · 4:3 封面（后两项 2026-11-25 补齐，实现与实测见 §26） |
 | 首个真验收 | 一条 3 分钟混合样片：既有 Manim 段也有幻灯片段，旁白讲到哪画面走到哪（选题 π²/6，2026-11-20 定） |
 
 ## 3. 与现有仓库的接缝（读代码确认，2026-11-20）
@@ -75,9 +75,12 @@ renders/<shot>/vNNN.mp4 + .srt + .timeline.json + cover.png + deck/
   timings.json               # 权威时间轴（句级 + 词级）
   scenes/s02.py …            # Manim 段，一句一文件
   slides/s01/                # reveal.js deck，一句一页、一名词一 fragment
+  cover/index.html           # 封面页（可选）：同一页在 16:9 与 4:3 下截图，见 §26.2
   captures/*.webm            # 录屏中间件（不入库）
-  renders/<shot>/vNNN.mp4    # 成片，与在线生成的片子同一套版本编号
+  renders/<shot>/vNNN.mp4    # 成片（旁白已烧进画面），与在线生成的片子同一套版本编号
   renders/<shot>/vNNN.json   # 旁边的描述文件（prompt/参数/用量的位置继续留给生成路线）
+  renders/<shot>/vNNN.cover-16x9.png   # 封面两种画幅，与成片同版本号
+  renders/<shot>/vNNN.cover-4x3.png
   deck/                      # 可交互 HTML 产物
 ```
 
@@ -95,6 +98,7 @@ teach:                        # 教学路线（实际实现就叫 teach，见 sr
 ```yaml
 meta:
   title: 为什么 1+1/4+1/9+… = π²/6
+  cover: cover/index.html     # 可选：封面页，缺省则 export 不出封面（不会拿成片首帧顶替）
 segments:
   - id: s01
     engine: slides
@@ -126,8 +130,8 @@ segments:
 |---|---|---|
 | `video_teach_plan` | 校验 `storyboard.yaml`、拆句、产出渲染计划与耗时预估 | 只读 |
 | `video_teach_narrate` | 逐句 TTS、落 `timings.json`（词级） | 付费 + 网络 |
-| `video_teach_render` | 分段渲染 → CFR → concat → 混音 → 字幕；可只重录指定句 | 子进程 + 写工作区 |
-| `video_teach_export` | `deck/` 静态 HTML、外部 SRT、时间轴 JSON（**封面尚未实现**，见 §26） | 写工作区 |
+| `video_teach_render` | 分段渲染 → CFR → concat → 混音 → 烧字幕（`subtitles=` + `force_style`）；可只重录指定句 | 子进程 + 写工作区 |
+| `video_teach_export` | `deck/` 静态 HTML、外部 SRT、时间轴 JSON、封面 16:9 + 4:3（`meta.cover` 声明时） | 写工作区 |
 
 四条通用约束（由现有代码约束导出，不是新定的）：
 
@@ -167,16 +171,16 @@ segments:
 
 ## 9. 里程碑
 
-| 阶段 | 内容 | 验收 | 状态（2026-11-24 核对） |
+| 阶段 | 内容 | 验收 | 状态（2026-11-25 核对） |
 |---|---|---|---|
 | M0 | `storyboard.yaml` / `timings.json` 的 schema 与校验，目录约定 | 非法稿的报错能指出行号与具体键 | ✅ §13 |
 | M1 | 单句最小闭环：TTS → 录屏 → CFR → 段 mp4 | 一句 3 秒，音画对齐误差 < 50ms | ✅ §13 |
 | M2 | 多句拼接 + 只重录某句 | 改第 3 句不触发前两句重录 | ✅ §14 |
 | M3 | Manim 段接入 + 跨引擎拼接 | 两段不同引擎拼成一条，无音画错位 | ✅ §14（第三句走 Manim，落在同一路径形状） |
-| M4 | SRT / 烧字幕 / 封面 / deck 双产物 | 六种产物齐全 | ⚠️ 四种（mp4 / SRT / deck / 时间轴 JSON）；**烧入字幕与封面未实现**，见 §26 |
+| M4 | SRT / 烧字幕 / 封面 / deck 双产物 | 六种产物齐全 | ✅ 六种（2026-11-25 补齐后两项：烧入字幕进 mp4、封面出 16:9 与 4:3 两张），实现与实测见 §26 |
 | M5 | 工具化 + skill 落地 + 3 分钟混合样片 | 从头看一遍不出戏 | ✅ 工具与 skill §15，样片 §16 |
 
-**M0–M3、M5 已落地（2026-11-20）**，证据在 §13–§16。代码：`src/teach/storyboard.ts`（解析与校验）、`voice.ts`（TTS 客户端）、`slides.ts`（CDP 录屏）、`manim.ts`（Manim 段）、`ffmpeg.ts`（探测/CFR/拼接/混流）、`deck.ts`（reveal.js 脚手架）、`pipeline.ts`（plan/narrate/render/assemble + 分段复用）。**M4 差两项**（烧入字幕、封面），现状与两条出路的取舍见 §26。
+**M0–M5 全部落地（M0–M3、M5 于 2026-11-20，M4 于 2026-11-25）**，证据在 §13–§16 与 §26。代码：`src/teach/storyboard.ts`（解析与校验）、`voice.ts`（TTS 客户端）、`slides.ts`（CDP 录屏）、`manim.ts`（Manim 段）、`ffmpeg.ts`（探测/CFR/拼接/混流）、`deck.ts`（reveal.js 脚手架）、`pipeline.ts`（plan/narrate/render/assemble + 分段复用）。M4 的两项缺口（烧入字幕、封面）与它们的实现记录见 §26。
 
 ## 10. 本机环境现状（2026-11-20 实测）
 
@@ -364,6 +368,8 @@ curl -sS https://openspeech.bytedance.com/api/v3/tts/unidirectional \
 | `video_teach_narrate` | 逐句 TTS，写 `timings.json`；`sentences: [...]` 只重合成指定句，其余从既有 timings 里原样保留 | 不渲染画面 |
 | `video_teach_render` | 逐句渲染（slides/manim），按需拼成 `renders/<shot>/vNNN.mp4` 并写旁描述 JSON；`sentences: [...]` 只重录指定句，其余复用磁盘上的段 | 不合成语音 |
 | `video_teach_export` | 写 `vNNN.srt`（按词定时的字幕）、`vNNN.timeline.json`、把 deck 抄进 `deck/<segment>/` | 不重新渲染、不重新合成 |
+
+> 2026-11-25 之后这两行的产物各多一样：`render` 拼片时把旁白烧进画面，`export` 按 `meta.cover` 出 16:9 与 4:3 两张封面，见 §26。表里保留的是这一轮的形状。
 
 **拒绝优先于花钱**，五条都在离线测试里钉住：只读或权限未知的会话直接拒绝；`storyboard` 路径逃出工作区拒绝；没有 `ARK_VOICE_API_KEY` 拒绝并**点名这个引用**（`ARK_API_KEY` 不是它）；未知句子 id 拒绝并列出稿件里有哪些；没有旁白就渲染、没有成片就导出，都拒绝并说明先跑哪一个。
 
@@ -816,35 +822,72 @@ storyboard 多两个可选键，`rules.ts` 三处检查，`slides.ts` 一次额�
 1. **素材真伪没有机器判定**。截图有四种状态（拍到 / 拍不到 / 拍到但与旁白矛盾 / 拍到但不能整图上镜），现在全靠人在 README 表格里记。做法是把它们收进一份 `shots.yaml`（`status` / `crop` / `must_show` / `forbidden`），角标「真实截图 / 界面示意」由判定结果生成，而不是由人写。
 2. **图元被等比缩小到读不清**。库里的图元只按设计宽度画，塞进窄列后整体缩到 0.72，字号跌破 24 px。要在图元上声明最小可用宽度，自检里断言宿主列宽不小于它，不满足就要求重排，而不是缩放。
 
-## 26. 尚未交付的两种产物：烧入字幕与封面（2026-11-24 核对）
+## 26. 两种曾经漏交的产物：烧入字幕与封面（2026-11-25 补齐）
 
-### 26.1 现状：目标六种，实际四种
+### 26.1 现状：六种齐全
 
-§2 的目标交付物写了六项，§9 的 M4 验收写「六种产物齐全」。按 2026-11-24 的代码核对，实际产出四种：
+§2 的目标交付物是六项，§9 的 M4 验收写「六种产物齐全」。2026-11-25 之前实际只交付四种，两项缺口在本轮补齐：
 
 | 产物 | 谁产出 | 状态 |
 |---|---|---|
 | 16:9 1080p mp4 | `video_teach_render`（`pipeline.ts` → `ffmpeg.ts` 的 CFR / concat / 混音） | ✅ |
-| 外部 SRT | `video_teach_export`（`buildSrt`） | ✅ |
+| 外部 SRT | `video_teach_export`（`buildSrt`，`src/teach/subtitles.ts`） | ✅ |
 | 可交互 HTML deck | `video_teach_export`（把 `segment.deck` 抄进 `deck/<段>/`） | ✅ |
 | 时间轴 JSON | `video_teach_export`（`vNNN.timeline.json`） | ✅ |
-| **烧入字幕** | — | ❌ 未实现 |
-| **封面** | — | ❌ 未实现 |
+| **烧入字幕** | `video_teach_render` 的 assemble 阶段（`muxNarration` 加 `subtitles=` 滤镜链） | ✅ 2026-11-25 |
+| **封面 16:9 / 4:3** | `video_teach_export`（`src/teach/cover.ts`，`meta.cover` 声明时） | ✅ 2026-11-25 |
 
-核对方式：`src/teach/` 全树 grep，没有一处与这两种产物有关。`subtitle` 的 5 处命中全在 `voice.ts`，指的是**向 TTS 请求字级时间戳**（`enable_subtitle: true`），不是烧进画面；`burn` 零命中；两处 `-vf` 都是 CFR 编码的 `scale/pad/setsar/fps/tpad`，没有 `subtitles=`；`slides.ts:170` 的 `cover slide` 指 deck 的第一页，与产物无关。`ffmpeg.ts` 的混流只处理音频与时长取舍，`tools.ts` 的 export 只写 `srt` / `timeline.json` / deck 副本。所以 M4 的「六种产物齐全」不成立，实际交付四种。
+### 26.2 怎么补的（决策与实现）
 
-### 26.2 两条出路，需要拍板
+**烧字幕。** assemble 时给混流加一条 `-vf subtitles=burn.srt:force_style='…'`（`src/teach/ffmpeg.ts` 的 `muxNarration`）。三处细节：
 
-**出路 A：补实现。** 两项都不难，都要动代码。
+- SRT 是 `buildSrt(timings)` 在 assemble 当场写进 `.dsh-video/teach/burn.srt` 的，和 `video_teach_export` 写出的外部 `.srt` 是**同一个函数的同一段文本**，所以画面里的字和平台读到的字不会差一条 cue。
+- 滤镜拿的是**文件名**而不是绝对路径，进程的 `cwd` 设成那个目录：ffmpeg 的滤镜链转义把路径里的冒号或引号变成解析错误，绕开比转义稳。
+- 烧字幕必须重编码视频（滤镜不能作用在 copy 的帧上），所以这一条路径是 `libx264 -preset veryfast -crf 18`，与分段编码同一组参数；不烧时仍然 `-c:v copy`。
 
-- **烧字幕**：在 `assemble` 阶段给 `-vf` 加一条 `subtitles=renders/<shot>/vNNN.srt`（配 `force_style` 定字号与边距，字幕必须落在画面底部 900–1080 那条带里）。前提是本机 ffmpeg 构建带 `libass`，**这一点没有实测过**，ffmpeg 9.0.2 若是精简构建就会静默忽略滤镜或直接报错。代价：`render` 多一条滤镜链，字幕样式多一份要维护的常量。它与 `DESIGN.md` §1 非目标里的「不做自动配音/字幕烧录」不冲突：那条针对**自动生成**字幕，教学路线的字幕来自作者写好的稿子，本来就已知。
-- **封面**：两条便宜的路，取成片首帧（`-frames:v 1`），或在 deck 首页截一张（`teachPage(0)` + Playwright 截图，与 §13 的 CDP 录屏同一条路径，不需要额外依赖）。代价：`export` 多一段，且要想清楚封面的构图规则（哪一页适合当封面）。
+**前提的实测（本轮最花时间的部分）。** `docs` 原文写着「本机 ffmpeg 是否带 libass 没有实测过」，实测结果是**不带**：`ffmpeg 9.0.2_1`（Homebrew 现在的精简公式，11 个依赖）里 `ffmpeg -filters | grep subtitles` 为 0，`-h filter=subtitles` 直接报 `Unknown filter`，`drawtext` 也没有（没有 freetype/fontconfig）。替代品是 core 里的 `ffmpeg-full`（47 个依赖，含 libass / freetype / fontconfig），装完 `subtitles`、`ass`、`drawtext` 都在，但它是 **keg-only**：`/opt/homebrew/opt/ffmpeg-full/bin`，不进 PATH。
 
-**出路 B：撤掉承诺。** 把这两项从 §2 的交付物、§6 的工具表与 M4 的验收里删掉，只保留外部 SRT（字幕由平台或用户自己烧，封面由用户自取首帧）。代价是少两种产物，但文档与实现一致，不用为一个没人验证过的承诺维护代码。
+因此新增一条设置 `teachFfmpegBinPath`（目录，内含 `ffmpeg` 与 `ffprobe`；空则 `TEACH_FFMPEG_BIN`，再 PATH 查找），和既有的 `pythonPath` / `texBinPath` / `chromiumPath` 同一套解析顺序。依赖探测多一项 `probeFilter('subtitles')`：
 
-在拍板之前，文档按**「目标六种、已交付四种」**标：§2 的交付物、§6 的工具表与 §9 的 M4 状态列都已改成这个口径，不再把烧字幕与封面写成已交付。
+- 缺 libass **不阻塞渲染**（旁白已经付费，拒绝只会让人花两次钱），但 assemble 时明确不烧，并把原因写进结果的 `subtitles` 字段与消息；`video_teach_plan` 提前警告一次，附上装什么的提示。
+- 探测与实际烧录用的是**同一个** ffmpeg（`mediaTools(paths)` 一处解析），不会出现「探测说有、烧录说没有」。
 
-### 26.3 为什么这两项能一直漏着
+**封面。** 结论：封面是**作者写的一页 HTML**，不是成片首帧，也不是 deck 首页。两条便宜路都不成立——首帧通常是半句话加动画中途，缩到 300 px 宽读不出任何东西；deck 首页是幻灯片，不是海报。所以：
+
+- 稿件新增 `meta.cover`（工作区相对路径，通常 `cover/index.html`）。缺省时 `video_teach_export` **不出封面**并在消息里说明，不拿首帧顶替（`TODO.md` A2 里「要先定构图规则，否则每支片子都要人挑」的答案是：封面本来就要人设计，自动挑帧只能挑到"不那么难看的一帧"）。
+- 出两种画幅：16:9 = 1920×1080，4:3 = 1440×1080（等高，只改宽，作者用一个 media query 就能同时适配）。用与录屏同一个 Chromium（`src/teach/slides.ts` 的 `playwright-core`），每种画幅一个独立 context，因为视口是 context 属性、改视口会留旧布局。
+- 页面契约比 deck 轻：没有 `teachReady` / `teachCue`，等 `document.fonts.ready` 加 150 ms 稳定后截图；截完数一次颜色，纯色直接报错（说明样式没加载、脚本报错，或版面只在 16:9 下存在）。
+- 产物落在成片旁边、同版本号：`vNNN.cover-16x9.png`、`vNNN.cover-4x3.png`，所以重渲一支新片不会覆盖旧片的封面，导出旧版本时也不会串号。
+
+### 26.3 实测数字（2026-11-25）
+
+字号是 ASS 单位：libass 按 PlayResY 缩放到画幅，而 ffmpeg 把 SRT 转 ASS 时用的是 288 高的画布，所以 1080p 下每个单位 ×3.75。
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `fontSize` | 18（≈67 px 行高） | 1080p 下占画面 5.8%，与常见平台字幕同档 |
+| `marginV` | 12（≈45 px 离底边） | 与下沿留白，且不压 §17 建议的安全区 |
+| `outline` | 1.5 | 2.5 在这个字号下把中文细笔画吃掉（已对比过 1 / 1.5 / 2） |
+
+- 单行字幕：字形占 **行 969–1032**（63 px 高），落在承诺的 900–1080 带内。
+- 45 字长句自动折两行：**行 911–1023**，仍在带内；出现第三行时块顶会越过 900，而 §17 的「一句 ≤8 秒 / ≈32 字」预算已经排除这种句子。
+- 封面：`probe` 复核为 1920×1080 与 1440×1080，纯色自检通过（同一页在两种画幅下都画出了东西）。
+- 字体：`PingFang SC`，fontconfig 在本机解析到 Hiragino Sans GB，中文与拉丁字形都正确；`TEACH_SUBTITLE_FONT` 可覆盖。
+
+**端到端证据**：两份测试，一份一件产物 —— `test/teach-burn.test.ts`（需要带 libass 的 ffmpeg：`TEACH_FFMPEG_BIN=/opt/homebrew/opt/ffmpeg-full/bin pnpm test`）与 `test/teach-cover.test.ts`（需要一个能启动的 Chromium）。
+
+- 烧字幕（`teach-burn.test.ts`）：解帧数暗像素，断言只出现在行 900–1080，且两句的字形列范围不同（证明不是冻结帧）；`burn_subtitles: false` 时整帧无暗像素，结果的 `subtitles` 写明「not burned」。
+- 封面（`teach-cover.test.ts`）：两张封面的尺寸、外部 SRT 的文本与烧入的一致；没声明 `meta.cover` 时 `covers` 为空且消息说明，不拿首帧顶替。
+
+### 26.4 运维提醒
+
+- **本机现状（2026-11-25 装完后实测）**：`/opt/homebrew/bin/ffmpeg` 与 `ffprobe` 现在都指向 `Cellar/ffmpeg-full/9.1`（`ffmpeg -version` = 9.1，`subtitles` 滤镜在位），所以默认 PATH 就能烧，不用改设置。原来的 9.0.2 keg 还在（`Cellar/ffmpeg/9.0.2_1`），`brew unlink ffmpeg-full && brew link ffmpeg` 可以退回；退回后要么接受不烧，要么把设置里的 ffmpeg 目录指到 `/opt/homebrew/opt/ffmpeg-full/bin`（或导出 `TEACH_FFMPEG_BIN`）。
+- 设置项留着是为了**别的机器**：PATH 上不是带 libass 的构建、或不想改系统链接时，指一个目录即可。指向不存在的目录会报 `missing (no ffmpeg in …)`，不会静默回退到 PATH。
+- 不指也不出错：plan 警告、render 的 `subtitles` 写「not burned: …」、外部 SRT 照旧产出。
+- **改台词后只跑 export 会让两种字幕分叉**：烧进画面的字幕在 assemble 时生成，export 只写外部 SRT。改了旁白要重跑 `narrate → render`，或者接受「画面里是旧字幕、文件是新字幕」。
+- 换封面页不需要重渲视频：`video_teach_export` 会按当前 `meta.cover` 重出两张 PNG，文件名跟着最新版本号走。
+
+### 26.5 为什么这两项曾经一直漏着
 
 因为**没有任何验证路径覆盖过产物清单**：
 
@@ -852,6 +895,6 @@ storyboard 多两个可选键，`rules.ts` 三处检查，`slides.ts` 一次额�
 - live 样片验收看的是 mp4 的时长、音画对齐与段数（§16.3），产物表里没有这两项就不在检查范围内；
 - `README.zh-CN.md` 的产物描述（第 141 行）只写「成片在 `renders/<镜头>/vNNN.mp4`，旁边 `vNNN.json`」：SRT / deck / 时间轴 JSON 都没列，更不会提醒还缺两项。
 
-于是「M4 完成」是从**执行记录**推出来的（工具有了、SRT 有了），不是从**产物清单**核出来的。这两件事在别的里程碑上刚好重合，在这里不重合，就漏了。
+于是「M4 完成」是从**执行记录**推出来的（工具有了、SRT 有了），不是从**产物清单**核出来的。这两件事在别的里程碑上刚好重合，在这里不重合，就漏了。补齐时把这条也补上了：`test/teach-burn.test.ts` 与 `test/teach-cover.test.ts` 是**对产物清单**的断言（画面里有没有字、字在哪、两张封面多大），不是对返回键的断言。
 
 教训写在这里：**里程碑收尾时逐项对产物清单，而不是对「工具都实现了吗」**。工具在、清单缺一项，是最容易被执行记录掩盖的失败。

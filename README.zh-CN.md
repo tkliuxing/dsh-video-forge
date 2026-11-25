@@ -119,8 +119,8 @@ DeepSeek 用 `DEEPSEEK_API_KEY`，火山用 `ARK_VOICE_API_KEY`。两者都是�
 | `video_cancel` | 请供应商停下（与 `job_kill` 不同：后者只是停止盯守，供应商照旧干活照旧计费） |
 | `video_teach_plan` | 校验教学稿 `storyboard.yaml`、估时、检查内容与时间线的配合（哪句没有画面变化、fragment 是否越界、场景有没有被复用），并报告本机缺哪个外部程序。免费、不联网 |
 | `video_teach_narrate` | 合成旁白（默认 DeepSeek 语音 `DEEPSEEK_API_KEY`；火山 `volcengine` 可选，唯一带字级时间戳），写 `timings.json`；`sentences` 只重合成指定句 |
-| `video_teach_render` | 一句一段地从 reveal.js 幻灯片与/或 Manim 场景渲染，再拼成 `renders/<镜头>/vNNN.mp4`；`sentences` 只重录指定句，其余段不动。渲染后抽样帧颜色，把可疑静帧点名 |
-| `video_teach_export` | 写成片旁的 SRT 与 `timeline.json`，并把 deck 导出到 `deck/`。SRT 按词级时间戳切；默认音色没有词级时间戳，就一句一条 |
+| `video_teach_render` | 一句一段地从 reveal.js 幻灯片与/或 Manim 场景渲染，再拼成 `renders/<镜头>/vNNN.mp4`，旁白烧进画面；`sentences` 只重录指定句，其余段不动。渲染后抽样帧颜色，把可疑静帧点名 |
+| `video_teach_export` | 写成片旁的 SRT 与 `timeline.json`，把 deck 导出到 `deck/`，并把 `meta.cover` 那一页按 16:9 与 4:3 各截一张封面。SRT 按词级时间戳切；默认音色没有词级时间戳，就一句一条。它与烧进画面的是同一份 cue 文本 |
 
 ### 教学视频
 
@@ -142,8 +142,10 @@ DeepSeek 用 `DEEPSEEK_API_KEY`，火山用 `ARK_VOICE_API_KEY`。两者都是�
 也会直接拒绝，这一类在录音花钱之前就能发现。
 
 产物：成片在 `renders/<镜头>/vNNN.mp4`，旁边 `vNNN.json`，并出现在视频面板里。
-`video_teach_export` 另外给三样：成片旁的 `.srt` 字幕、`vNNN.timeline.json`，
-以及 `deck/` 下的可交互幻灯片。字幕是独立的 SRT 文件，不烧进画面。
+旁白已经烧进画面，成片可以直接发平台；烧字幕需要带 libass 的 ffmpeg，缺它时片子照样拼出来，
+只是结果里写明「没烧」而不会失败。`video_teach_export` 给其余几样：成片旁的 `.srt`
+（同一份 cue 的旁挂文件）、`vNNN.timeline.json`、`deck/` 下的可交互幻灯片，以及
+`vNNN.cover-16x9.png` 与 `vNNN.cover-4x3.png`（由稿件里 `meta.cover` 指的封面页截图）。
 `storyboard.yaml`、`slides/<段>/`、`scenes/*.py`、`timings.json`、`audio/` 属于项目、值得进版本库；
 `.dsh-video/`、`deck/`、`renders/` 可以重建。稿子格式、两种引擎的约定、只重录一句的做法见
 `video-teach-*` 系列 skill。

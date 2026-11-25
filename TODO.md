@@ -19,24 +19,24 @@
 
 ## A. 交付缺口：文档承诺了，代码没有
 
-这两条最硬，因为 `docs/TEACH-VIDEO.md` §2 的交付物清单与 §9 的 M4 验收写的就是它们。现状核对见同文件 §26。
+这两条最硬，因为 `docs/TEACH-VIDEO.md` §2 的交付物清单与 §9 的 M4 验收写的就是它们。现状核对与实现记录见同文件 §26（A1/A2 均在 2026-11-25 补齐）。
 
-### [ ] A1 烧入字幕
+### [x] A1 烧入字幕
 
 - **做什么**：在 `assemble` 阶段给 ffmpeg 的 `-vf` 加 `subtitles=renders/<shot>/vNNN.srt`，配 `force_style` 定字号与边距，字幕落在画面底部 900–1080 那条带里。
 - **为什么**：目标交付物六项里的第五项；成片要能直接发平台，多数平台不吃外挂 SRT。
 - **成本/前提**：本机 ffmpeg 9.0.2 是否带 `libass` **没有实测过**。不带时滤镜会被忽略或直接报错，先跑 `ffmpeg -filters | grep subtitles` 再动手。
-- **出处**：`docs/TEACH-VIDEO.md` §2（行 27）· §9 M4 状态列（行 176）· §26.2 出路 A（行 840）
-- **已确认不冲突**：`docs/DESIGN.md` §1 非目标的「不做自动配音/字幕烧录」针对**自动生成**字幕，教学路线的字幕来自作者写好的稿子。
-- 实现记录：待
+- **出处**：`docs/TEACH-VIDEO.md` §2（行 27）· §9 M4 状态列（行 180）· §26.2 怎么补的（行 840）
+- **已确认不冲突**：`docs/DESIGN.md` §1 非目标的「不做自动配音/字幕烧录」针对**自动生成**字幕，教学路线的字幕来自作者写好的稿子（该条正文已按此改写）。
+- 实现记录：2026-11-25 · `5d184ac` · **实测结论：本机 ffmpeg 9.0.2 不带 libass**（`ffmpeg -filters | grep subtitles` 为 0、`-h filter=subtitles` 报 `Unknown filter`、`brew deps ffmpeg` 只有 11 个依赖、`drawtext` 也没有），改装 core 的 `ffmpeg-full` 9.1（`/opt/homebrew/opt/ffmpeg-full/bin`；装完 `/opt/homebrew/bin/ffmpeg` 与 `ffprobe` 实际已指向这台 9.1，所以本机默认 PATH 就能烧，设置项只是给别的机器留的口子）。代码：`src/teach/subtitles.ts`（`buildSrt` 从 `tools.ts` 移入 + `forceStyle`/`DEFAULT_SUBTITLE_STYLE`）、`muxNarration` 加 `subtitles=` 滤镜链（烧字幕时重编码视频，不烧仍 `copy`）、`assembleVideo` 把 SRT 写进 `.dsh-video/teach/burn.srt` 再烧；能力侧加 `probeFilter('subtitles')` 与新设置 `teachFfmpegBinPath`（空则 `TEACH_FFMPEG_BIN`，再 PATH），缺 libass 不阻塞渲染但 plan 警告 + render 结果的 `subtitles` 字段写明原因。验证：`TEACH_FFMPEG_BIN=/opt/homebrew/opt/ffmpeg-full/bin pnpm test`（`test/teach-burn.test.ts` 解帧断言行 969–1032 落在 900–1080 带内、`burn_subtitles: false` 时整帧无暗像素）；`pnpm test` 704 passed / 7 skipped，`pnpm run build` 通过
 
-### [ ] A2 封面
+### [x] A2 封面
 
 - **做什么**：`video_teach_export` 加一段产出一张封面图。两条便宜的路：取成片首帧（`-frames:v 1`），或在 deck 首页截一张（`teachPage(0)` + Playwright 截图，与 `src/teach/slides.ts` 的 CDP 录屏同一条路径，不需要新依赖）。
 - **为什么**：目标交付物六项里的第六项。缺它时 `video_teach_export` 的工具描述与实际产物不符。
 - **成本/前提**：要先定封面的构图规则（哪一页适合当封面），否则每支片子都要人挑。
-- **出处**：`docs/TEACH-VIDEO.md` §2（行 27）· §6 工具表（行 130）· §9 M4（行 176）· §26.2（行 841）
-- 实现记录：待
+- **出处**：`docs/TEACH-VIDEO.md` §2（行 27）· §6 工具表（行 134）· §9 M4（行 180）· §26.2（行 840）
+- 实现记录：2026-11-25 · `6f8409a` · **构图规则已定（用户 2026-11-25）**：封面是**作者单独写的一页 HTML**，用无头浏览器截图，出 **16:9 与 4:3 两种画幅**；成片首帧与 deck 首页这两条「便宜路」都否掉了（首帧是半句话加动画中途，缩到 300 px 读不出；deck 首页是幻灯片不是海报）。代码：稿件新增 `meta.cover`（`storyboard.ts` 解析 + 拒绝越界路径）、新模块 `src/teach/cover.ts`（`playwright-core` 一次启动、每种画幅一个 context，1920×1080 与 1440×1080，等 `document.fonts.ready`，截完数颜色，纯色直接报错）、`video_teach_export` 产物 `vNNN.cover-16x9.png` / `vNNN.cover-4x3.png`；未声明 `meta.cover` 时不出封面并在消息里说明（不拿首帧顶替）。样例：`fixtures/teach/sample/cover/index.html`（含 4:3 media query）。验证：`test/teach-cover.test.ts` 两例（两张封面的尺寸与 SRT 文本和烧入一致；没声明 `meta.cover` 时 `covers` 为空且消息说明），另用 `probe` 复核 1920×1080 / 1440×1080
 
 ---
 
@@ -69,7 +69,7 @@
 - **为什么**：规程现在是文档，只有读过它的人才会照做。写进 skill 才会在派发的那一刻被模型看到。这是记忆里 `rule-corrections-land-in-skills` 的同一件事：只写文档，下一次会在相邻问题上再返工一遍。
 - **成本/前提**：免费，改 `assets/skills/` 两份正文 + `src/skills.ts` 的 routing description；`test/guide-consistency.test.ts` 会扫正文里的工具名。
 - **出处**：[`docs/TEACH-PARALLEL-ACTS.md`](docs/TEACH-PARALLEL-ACTS.md) §5（提示词最小集合）· §6（回收与合并）· §8（禁止事项）
-- 实现记录：2026-11-24 · `video-teach-storyboard` 新增「多幕并行：把稿本拆成一幕一份」（契约、为什么隔离、派发前四件事、三件不委托）；`video-teach-iterate` 新增「逐幕返工与合并」（逐幕验收四项、回收用脚本、合并三步、三条硬约束）与两条常见坑（拿文案当音频证据、反向覆盖 audio）；`src/skills.ts` 两份 routing description 都带上「多幕并行」· `pnpm test` 697 passed / 7 skipped，`pnpm run build` 通过（未提交）
+- 实现记录：2026-11-24 · `video-teach-storyboard` 新增「多幕并行：把稿本拆成一幕一份」（契约、为什么隔离、派发前四件事、三件不委托）；`video-teach-iterate` 新增「逐幕返工与合并」（逐幕验收四项、回收用脚本、合并三步、三条硬约束）与两条常见坑（拿文案当音频证据、反向覆盖 audio）；`src/skills.ts` 两份 routing description 都带上「多幕并行」· `pnpm test` 697 passed / 7 skipped，`pnpm run build` 通过 · `3f98832`
 
 ---
 
@@ -85,7 +85,7 @@
 
 ### [ ] C2 GUI 里过一次设置页与面板
 
-- **做什么**：点开设置页看一次探测结果（需重载插件）；把一段成片放进工作区 `renders/` 后在视频面板点开。顺带看一眼「教学视频」小节的折叠状态与两个 key 的标题行。
+- **做什么**：点开设置页看一次探测结果（需重载插件）；把一段成片放进工作区 `renders/` 后在视频面板点开。顺带看一眼「教学视频」小节的折叠状态与两个 key 的标题行，以及 2026-11-25 新增的 **ffmpeg 目录**输入框与探测结果里的 `subtitles:` 一行。
 - **为什么**：§24 是在隔离实例里验证的，真实宿主上没点过；「面板只列本工作区片子」这条（`docs/DESIGN.md` §19.6）也只测过播种台账。
 - **成本/前提**：免费，要重载插件。
 - **出处**：`docs/TEACH-VIDEO.md` §23「仍未做」第 2 条（行 674）· `docs/DESIGN.md` §19.6（行 1150）
@@ -179,7 +179,7 @@
 - **为什么**：现在这五件事手工做了五次（五个目录 × 9.3 MB），漏一步就是一个坑：漏 `.python-version` → `spread-page-beats.py` 崩在 import；漏拷 deck → 渲染出旧图（a02-6 在三个版本里留着旧图）。手工重复五次的东西，第五次一定会漏。
 - **成本/前提**：免费。已落为 `assets/teach/runs.py prepare`（形态见 D10）。
 - **出处**：[`docs/TEACH-PARALLEL-ACTS.md`](docs/TEACH-PARALLEL-ACTS.md) §4（派发前五件事）· §10（脚手架）
-- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `prepare` 子命令（未提交）· 合成项目上验过：切稿本 2 句、拷 deck/materials/script、写 `.python-version`、记基线 sha256；`prepare` 后重跑可同步被改过的 deck 副本
+- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `prepare` 子命令（`be684bb`）· 合成项目上验过：切稿本 2 句、拷 deck/materials/script、写 `.python-version`、记基线 sha256；`prepare` 后重跑可同步被改过的 deck 副本
 
 ### [x] C14 `collect-runs` 脚本：回收 + 逐句段长校验
 
@@ -187,7 +187,7 @@
 - **为什么**：手工 `cp` 犯过一次致命错误——为了恢复被删的目录，把主项目的旧 `audio/` 拷进了 run 目录，覆盖掉刚录的新音频，结果三个版本都带旧声音而没人发现。逐句段长校验能在拼片前抓到"重录了但没重渲"这类错位。
 - **成本/前提**：免费。已落为 `assets/teach/runs.py collect`。
 - **出处**：[`docs/TEACH-PARALLEL-ACTS.md`](docs/TEACH-PARALLEL-ACTS.md) §6（回收）· §7（验收）· §10（脚手架）
-- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `collect` 子命令（未提交）· 真实项目 `video-hypatia` 五幕 `--dry-run` 全部 exit 0（a02 104 / a03 92 / a04 52 / a05 58 / a06 34 个文件，逐句段长与 timings 一致）；合成项目上验过三条失败路径：缺音频、段长偏差 500ms（点名句子）、`--force` 照现状拷。**先校验后写**：任何一项不过就退出 1，主项目零改动
+- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `collect` 子命令（`be684bb`）· 真实项目 `video-hypatia` 五幕 `--dry-run` 全部 exit 0（a02 104 / a03 92 / a04 52 / a05 58 / a06 34 个文件，逐句段长与 timings 一致）；合成项目上验过三条失败路径：缺音频、段长偏差 500ms（点名句子）、`--force` 照现状拷。**先校验后写**：任何一项不过就退出 1，主项目零改动
 
 ### [x] C15 run 目录副本漂移检查
 
@@ -195,7 +195,7 @@
 - **为什么**：渲染读的是副本，不是主项目；主项目改完不同步，渲染出旧内容而且工具不会报错（它只知道自己读的那份）。现在 `assemble-act.py` 里已有一条 md5 告警，但只在拼片时触发，太晚。
 - **成本/前提**：免费。已落为 `assets/teach/runs.py drift`。
 - **出处**：[`docs/TEACH-PARALLEL-ACTS.md`](docs/TEACH-PARALLEL-ACTS.md) §9 第 3 条（副本漂移）· §10（脚手架）
-- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `drift` 子命令（未提交）· 真实项目五幕全部一致 exit 0；改主项目 deck 后正确报不一致 exit 1，重跑 `prepare` 后恢复
+- 实现记录：2026-11-24 · `assets/teach/runs.py` 的 `drift` 子命令（`be684bb`）· 真实项目五幕全部一致 exit 0；改主项目 deck 后正确报不一致 exit 1，重跑 `prepare` 后恢复
 
 ---
 
@@ -289,7 +289,7 @@
   - 选 python 不选 node：`prepare` 要读写 `storyboard.yaml`，而随包分发的 node 脚本拿不到插件的 `node_modules`（`yaml` 是插件运行时依赖）；项目侧已依赖 PyYAML，缺它时明确报错退出 3。
   - 分发：`package.json` 的 `files` 已含 `assets`，`assets/teach/runs.py` 随包走，不用改打包配置。用法是拷进项目 `script/runs.py`，跟项目一起走版本控制。
   - 不选 ③（提升成工具）：会让工具面变复杂，且与「一个会话一个工作区」的模型冲突——并发调度属于项目侧编排，不属于工具。
-- 实现记录：2026-11-24 · `assets/teach/runs.py`（未提交）· 五幕 170 句 dry-run 全通过
+- 实现记录：2026-11-24 · `assets/teach/runs.py`（`be684bb`）· 五幕 170 句 dry-run 全通过
 
 ---
 
