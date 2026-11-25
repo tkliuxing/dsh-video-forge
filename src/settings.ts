@@ -100,6 +100,16 @@ export interface TeachSettings {
   voiceAuthRefDeepseek: string
   /** Credential reference for the volcengine voice; empty falls back to {@link DEFAULT_VOICE_AUTH_REFS}. */
   voiceAuthRefVolcengine: string
+  /**
+   * Directory holding both `ffmpeg` and `ffprobe`; empty means `TEACH_FFMPEG_BIN`,
+   * then a PATH lookup.
+   *
+   * The setting exists because a libass-enabled build is not always the one on
+   * PATH: Homebrew's plain `ffmpeg` formula ships without libass (and without
+   * `drawtext`) while the full build is keg-only, so burning subtitles needs a
+   * way to point at it (found 2026-11-25 while implementing docs/TEACH-VIDEO.md §26).
+   */
+  ffmpegBinPath: string
   /** Python interpreter that has Manim; empty means `TEACH_PYTHON`, then `python3` on PATH. */
   pythonPath: string
   /** TeX bin directory holding both `latex` and `dvisvgm`; empty means `TEACH_TEXBIN`, then discovery. */
@@ -131,6 +141,7 @@ export const DEFAULT_VOICE_AUTH_REF = DEFAULT_VOICE_AUTH_REFS.volcengine!
 export const DEFAULT_TEACH_SETTINGS: TeachSettings = {
   voiceAuthRefDeepseek: DEFAULT_VOICE_AUTH_REFS.deepseek!,
   voiceAuthRefVolcengine: DEFAULT_VOICE_AUTH_REFS.volcengine!,
+  ffmpegBinPath: '',
   pythonPath: '',
   texBinPath: '',
   chromiumPath: '',
@@ -173,6 +184,7 @@ export function teachSettings(settings: VideoForgeSettings): TeachSettings {
   return {
     voiceAuthRefDeepseek: pick(raw.voiceAuthRefDeepseek, DEFAULT_VOICE_AUTH_REFS.deepseek!),
     voiceAuthRefVolcengine: pick(raw.voiceAuthRefVolcengine, DEFAULT_VOICE_AUTH_REFS.volcengine!),
+    ffmpegBinPath: pick(raw.ffmpegBinPath, ''),
     pythonPath: pick(raw.pythonPath, ''),
     texBinPath: pick(raw.texBinPath, ''),
     chromiumPath: pick(raw.chromiumPath, ''),

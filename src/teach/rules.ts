@@ -424,12 +424,22 @@ export function sampleTimes(durationMs: number, count = 4): number[] {
  */
 
 /** Which part of the route a program belongs to. */
-export type DependencyScope = 'required' | 'slides' | 'manim'
+export type DependencyScope = 'required' | 'slides' | 'subtitles' | 'manim'
 
 /** The raw probe result; the caller owns how each line was obtained. */
 export interface DependencyProbe {
   ffmpeg: string
   ffprobe: string
+  /**
+   * Whether the ffmpeg above carries the `subtitles` filter, i.e. was built with
+   * libass.
+   *
+   * A plain `ffmpeg` on PATH may not: Homebrew's current formula ships without
+   * libass and without `drawtext`, so burning fails with "No such filter"
+   * (measured 2026-11-25). Never blocking — the picture renders either way, and
+   * refusing here would waste narration that was already paid for.
+   */
+  subtitles: string
   /** Chromium path, or a note that Playwright's own lookup will answer. */
   chromium: string
   /** The Python interpreter, or `missing`. */
@@ -467,10 +477,22 @@ export interface DependencyAssessment {
 const INSTALL: Record<string, string> = {
   ffmpeg: 'install ffmpeg (macOS: `brew install ffmpeg`; Debian: `apt install ffmpeg`)',
   ffprobe: 'it ships with ffmpeg, so install that (macOS: `brew install ffmpeg`)',
+  subtitles: 'this ffmpeg was built without libass, so the picture is assembled with no burned-in lines and only the external SRT exists. Get a build that has libass (macOS: `brew install ffmpeg-full`, then point the plugin\'s ffmpeg directory setting at /opt/homebrew/opt/ffmpeg-full/bin; Debian: `apt install ffmpeg` already has it) and re-run video_teach_render. Nothing is re-narrated or re-recorded: the segments on disk are reused',
   python3: 'install a Python 3.10+ and put Manim in it: `python3 -m venv ~/.local/venvs/teach-video && ~/.local/venvs/teach-video/bin/pip install manim`, then point TEACH_PYTHON at that interpreter',
   manim: 'install Manim into the interpreter this host uses: `pip install manim` (or set TEACH_PYTHON to a Python that already has it)',
   latex: 'install a TeX (macOS: `brew install --cask basictex`, or TinyTeX) and put its bin on TEACH_TEXBIN',
   dvisvgm: 'BasicTeX ships `latex` but NOT `dvisvgm`, so a basictex-only install fails with "latex error converting to dvi". Use TinyTeX (`curl -sL https://yihui.org/tinytex/install-bin-unix.sh | sh`, binaries in ~/Library/TinyTeX/bin/universal-darwin) or `tlmgr install dvisvgm` on a writable TeX, then point TEACH_TEXBIN at that bin directory',
+}
+
+/**
+ * What to install for one finding.
+ *
+ * Exported because a non-blocking absence still deserves its hint: a build
+ * without libass does not stop the render, it silently costs the burned-in
+ * lines, and the plan says so with the same wording a refusal would use.
+ */
+export function installHint(name: string): string | null {
+  return INSTALL[name] ?? null
 }
 
 const MISSING = new Set(['missing', 'not installed'])
@@ -479,8 +501,9 @@ const MISSING = new Set(['missing', 'not installed'])
 export function isMissing(state: string): boolean {
   const text = state.trim()
   // `not installed (No module named manim)` carries the reason in parentheses, so
-  // the test is a prefix rather than a word split.
-  return MISSING.has(text) || text.startsWith('not installed')
+  // the test is a prefix rather than a word split. `missing (no ffmpeg in …)`
+  // does the same for a path the operator configured and got wrong.
+  return MISSING.has(text) || text.startsWith('not installed') || text.startsWith('missing ')
 }
 
 /**
@@ -517,6 +540,7 @@ export function assessDependencies(board: Storyboard, probe: DependencyProbe, on
 
   add('ffmpeg', 'required', probe.ffmpeg)
   add('ffprobe', 'required', probe.ffprobe)
+  add('subtitles', 'subtitles', probe.subtitles)
   add('chromium', 'slides', probe.chromium)
   add('python3', 'manim', probe.python3)
   add('manim', 'manim', probe.manim)

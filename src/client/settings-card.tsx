@@ -68,6 +68,7 @@ export interface ClientConfigShape {
    */
   teachVoiceAuthRefDeepseek?: string
   teachVoiceAuthRefVolcengine?: string
+  teachFfmpegBinPath?: string
   teachPythonPath?: string
   teachTexBinPath?: string
   teachChromiumPath?: string
@@ -730,6 +731,16 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         })}
         <div style={ROW}>
           <label style={{ ...FIELD, flex: '2 1 240px' }}>
+            <span style={MUTED}>{t('config.ffmpegBinPath')}</span>
+            <input
+              style={INPUT}
+              placeholder="/opt/homebrew/opt/ffmpeg-full/bin"
+              value={effective.teachFfmpegBinPath ?? ''}
+              disabled={readOnly}
+              onChange={event => { setField('teachFfmpegBinPath', event.target.value) }}
+            />
+          </label>
+          <label style={{ ...FIELD, flex: '2 1 240px' }}>
             <span style={MUTED}>{t('config.pythonPath')}</span>
             <input
               style={INPUT}
@@ -767,7 +778,7 @@ export function SettingsCard(props: SettingsCardProps): ReactNode {
         </div>
         {teach === null ? null : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            {(['ffmpeg', 'ffprobe', 'chromium', 'python3', 'manim', 'latex', 'dvisvgm'] as const).map(name => {
+            {(['ffmpeg', 'ffprobe', 'subtitles', 'chromium', 'python3', 'manim', 'latex', 'dvisvgm'] as const).map(name => {
               // A host that answers without the dependency block is a version skew,
               // not a reason to take the whole card down.
               const state = teach.dependencies?.[name] ?? 'unknown'

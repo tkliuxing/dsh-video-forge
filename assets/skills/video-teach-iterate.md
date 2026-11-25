@@ -59,6 +59,7 @@
 - **改了台词却没重跑 narrate**：`video_teach_render` 会比对稿件与 `timings.json`，句子对不上就拒绝，并说明是哪一句 —— 别绕过它，绕过就会得到一条音画错位的片子。
 - **只改 `say` 不改 `cues`**：词变了，`at_word` 指向的词可能消失，校验会拒绝。改台词时顺手看一眼 cues。
 - **音色改了却只重录一句**：`timings.json` 里记着合成用的音色，`video_teach_plan` 会报 `stale`。音色是整片的，别半途换。
+- **只跑 export 就想改画面里的字幕**：烧进画面的字幕是 `video_teach_render` **拼片时**生成的，export 只写外部 SRT。改了台词只跑 export，会得到「画面里旧字幕、文件里新字幕」的两份时间轴。要改画面里的字，必须重跑 `narrate → render`。
 - **重录后忘了 export**：SRT 与 `timeline.json` 是按成片时间轴生成的外部字幕，改了片子要重新 `video_teach_export`，否则字幕对不上新版。
 - **加了页尾停留却没重算 cues**：`at_progress` 的分母变长，动作整体后移、最后一拍贴到句尾。先补停留，再按变化次数重算。
 - **往 `timings.json` 里塞自定义键**：会被 render 拒绝（`unknown key`）；标记放旁车文件。

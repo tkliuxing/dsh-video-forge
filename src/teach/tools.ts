@@ -42,9 +42,10 @@ import {
   renderSegments,
   type TeachPaths,
 } from './pipeline.ts'
-import { assessDependencies, type DependencyProbe } from './rules.ts'
+import { assessDependencies, installHint, isMissing, type DependencyProbe } from './rules.ts'
 import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
-import { probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
+import { mediaTools, probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
+import { buildSrt } from './subtitles.ts'
 
 /** Default manuscript file, relative to the workspace. */
 export const DEFAULT_STORYBOARD = 'storyboard.yaml'
@@ -237,16 +238,18 @@ async function voiceState(runtime: ToolRuntime, provider: string): Promise<strin
  */
 async function missingAssets(board: Storyboard, projectRoot: string): Promise<string[]> {
   const missing: string[] = []
+  const check = async (label: string, relative: string): Promise<void> => {
+    try {
+      const info = await stat(join(projectRoot, ...relative.split('/')))
+      if (!info.isFile()) missing.push(`${label}: ${relative} exists but is not a file`)
+    } catch {
+      missing.push(`${label}: ${relative}`)
+    }
+  }
   for (const segment of board.segments) {
     const relative = segment.engine === 'slides' ? segment.deck : segment.scene
     if (relative === null) continue
-    const absolute = join(projectRoot, ...relative.split('/'))
-    try {
-      const info = await stat(absolute)
-      if (!info.isFile()) missing.push(`${segment.id}: ${relative} exists but is not a file`)
-    } catch {
-      missing.push(`${segment.id} (${segment.engine}): ${relative}`)
-    }
+    await check(`${segment.id} (${segment.engine})`, relative)
   }
   return missing
 }
@@ -329,43 +332,6 @@ async function nextVersion(dir: string): Promise<number> {
     if (match !== null) highest = Math.max(highest, Number(match[1]))
   }
   return highest + 1
-}
-
-/** SRT cues from the word timings, wrapped at a readable width and timed by the words. */
-export function buildSrt(timings: Timings, maxChars = 18): string {
-  const pad = (value: number, width: number): string => String(value).padStart(width, '0')
-  const stamp = (ms: number): string => {
-    const clamped = Math.max(0, Math.round(ms))
-    return `${pad(Math.floor(clamped / 3_600_000), 2)}:${pad(Math.floor((clamped % 3_600_000) / 60_000), 2)}:${pad(Math.floor((clamped % 60_000) / 1000), 2)},${pad(clamped % 1000, 3)}`
-  }
-  const cues: { start: number, end: number, text: string }[] = []
-  let offset = 0
-  for (const sentence of timings.sentences) {
-    let current: { start: number, end: number, text: string } | null = null
-    for (const word of sentence.words) {
-      if (current === null) {
-        current = { start: offset + word.b, end: offset + word.e, text: word.t }
-        continue
-      }
-      if (current.text.length + word.t.length > maxChars) {
-        cues.push(current)
-        current = { start: offset + word.b, end: offset + word.e, text: word.t }
-        continue
-      }
-      current.text += word.t
-      current.end = offset + word.e
-    }
-    if (current !== null) cues.push(current)
-    // A provider without word timings (DeepSeek, the default) still has one
-    // thing worth subtitling: the sentence itself. Without this branch the SRT
-    // came out empty on the default route while the tool reported it as
-    // "word-timed" (found 2026-11-20 by the page-mode acceptance run).
-    if (sentence.words.length === 0 && sentence.text !== '') {
-      cues.push({ start: offset, end: offset + sentence.durationMs, text: sentence.text })
-    }
-    offset += sentence.durationMs
-  }
-  return `${cues.map((cue, index) => `${index + 1}\n${stamp(cue.start)} --> ${stamp(cue.end)}\n${cue.text}\n`).join('\n')}\n`
 }
 
 /** Whether these timings can drive a picture inside a sentence (see `deckDriveMode`). */
@@ -516,7 +482,18 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       // Only what actually stops this manuscript counts as missing: a slides-only
       // project is not "missing" a Python it will never run (§19).
       const missing = dependencies.filter(entry => entry.blocking).map(entry => entry.name)
-      const warnings = [...plan.warnings, ...audit.warnings, ...deckAudit.warnings]
+      // A build without libass does not stop the render, so it cannot be blocking —
+      // but it silently costs the burned-in lines, which is exactly the kind of
+      // absence this file exists to state rather than discover at the end.
+      const subtitlesMissing = isMissing(probed.subtitles)
+      const warnings = [
+        ...plan.warnings,
+        ...audit.warnings,
+        ...deckAudit.warnings,
+        ...(subtitlesMissing
+          ? [`subtitles will not be burned into the picture: ${probed.subtitles}. ${installHint('subtitles') ?? ''}`.trim()]
+          : []),
+      ]
       const picture = plan.voice.wordTimings
         ? `picture: cue-driven (voice "${plan.voice.provider}" reports word timings, so a fragment can fire on a spoken word)`
         : `picture: page-driven — voice "${plan.voice.provider}" reports no word timings, so each sentence starts its own deck page and its beats fire on at_progress shares of the measured length (not word-aligned; cue-driven fragments need volcengine)`
@@ -529,6 +506,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         `tools: ${assessment.summary}`,
         `required: ${dependencies.filter(entry => entry.scope === 'required').map(entry => `${entry.name} ${entry.state}`).join(', ')}`,
         `slides: ${dependencies.filter(entry => entry.scope === 'slides').map(entry => `chromium ${entry.state}`).join(', ')}`,
+        `subtitles: ${probed.subtitles} — burned into the picture at assembly when the build has libass, and always written as an external .srt by video_teach_export`,
         assessment.needsManim
           ? `manim: ${dependencies.filter(entry => entry.scope === 'manim').map(entry => `${entry.name} ${entry.state}`).join(', ')}`
           : 'manim: not needed by this manuscript',
@@ -648,6 +626,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       storyboard: { type: 'string', description: `Workspace-relative path of the manuscript. Defaults to ${DEFAULT_STORYBOARD}.` },
       sentences: { type: 'array', items: { type: 'string' }, description: 'Only these sentence ids (default: every sentence that has no segment yet, plus any named).' },
       assemble: { type: 'boolean', description: 'Concatenate and mux the finished video (default true).' },
+      burn_subtitles: { type: 'boolean', description: 'Burn the narration into the picture at assembly (default true). Needs an ffmpeg built with libass; when this build has no `subtitles` filter the film is assembled without burned-in lines and the result says so. The external .srt from video_teach_export is written either way.' },
       shot: { type: 'string', description: `Folder under renders/ for the finished video. Defaults to ${DEFAULT_SHOT}.` },
     },
     output: {
@@ -661,6 +640,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           output: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           task_id: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           duration_ms: { type: 'number', required: true },
+          subtitles: { type: 'string', required: true, description: 'burned: the lines are in the picture; not burned: why, and what still has them' },
           message: { type: 'string', required: true },
         },
       },
@@ -696,11 +676,14 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
 
       // Refuse before a single segment is rendered: a manim sentence with no
       // Manim would otherwise fail halfway through, after the slides were spent.
-      const assessment = assessDependencies(board, await probe(), only)
+      const probed = await probe()
+      const assessment = assessDependencies(board, probed, only)
       if (assessment.refusal !== null) throw new ConfigError(assessment.refusal)
 
       const paths = teachPaths(runtime.settings())
+      const media = mediaTools(paths)
       const tools = {
+        ...media,
         ...(paths.pythonPath === null ? {} : { pythonPath: paths.pythonPath }),
         ...(paths.texBinPath === null ? {} : { texBinPath: paths.texBinPath }),
       }
@@ -718,7 +701,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       // Self-check before assembly: a segment that drew nothing is worth knowing
       // about before the mux hides it inside a longer file.
       const durationById = new Map(timings.sentences.map(sentence => [sentence.id, sentence.durationMs]))
-      const suspects = await staticSegments(rendered, durationById, {}, exec.signal)
+      const suspects = await staticSegments(rendered, durationById, media, exec.signal)
 
       // Assembly is the only step that needs every sentence: a narrowed render
       // that is not assembling yet is a normal way to split a long run, so the
@@ -728,6 +711,15 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       let output: string | null = null
       let taskId: string | null = null
       let durationMs = totalDurationMs(timings)
+      // Why the picture may not carry burned-in lines, in the words the result
+      // uses. The decision is taken before assembly so the reason is the probe's,
+      // not a filter error's.
+      const wantBurn = args.burn_subtitles !== false
+      const burnUnavailable = isMissing(probed.subtitles) ? `${probed.subtitles}; ${installHint('subtitles') ?? ''}`.trim() : null
+      const burn = wantBurn && burnUnavailable === null
+      const burnState = burn
+        ? 'burned: the narration is in the picture; video_teach_export also writes the same cues as an external .srt'
+        : `not burned: ${args.burn_subtitles === false ? 'burn_subtitles: false was requested' : burnUnavailable ?? 'unknown reason'}`
       if (args.assemble !== false) {
         const shot = (args.shot ?? DEFAULT_SHOT).trim() || DEFAULT_SHOT
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(shot)) throw new ConfigError(`shot must be letters, digits, "-", "_" or ".", got "${shot}"`)
@@ -737,7 +729,18 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         const name = `v${String(version).padStart(3, '0')}`
         const target = join(dir, `${name}.mp4`)
         const staged = join(dir, `.${name}.staging.mp4`)
-        const assembled = await assembleVideo({ paths: workspace.paths, segments: plan.segments, video: board.video, output: staged, ...(exec.signal === undefined ? {} : { signal: exec.signal }) })
+        const assembled = await assembleVideo({
+          paths: workspace.paths,
+          segments: plan.segments,
+          video: board.video,
+          output: staged,
+          // The burned cues and the exported .srt are the same text from the same
+          // function, so a platform that shows the file's subtitles and a viewer
+          // reading the picture see one timeline (src/teach/subtitles.ts).
+          ...(burn ? { subtitles: { srt: buildSrt(timings) } } : {}),
+          tools: media,
+          ...(exec.signal === undefined ? {} : { signal: exec.signal }),
+        })
         await copyFile(staged, target)
         await writeFile(join(dir, `${name}.json`), `${JSON.stringify({
           kind: 'teach-video',
@@ -745,6 +748,9 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           storyboard: args.storyboard ?? DEFAULT_STORYBOARD,
           segments: plan.segments.map(segment => ({ id: segment.id, durationMs: segment.durationMs })),
           durationMs: assembled.durationMs,
+          // The sidecar is what a later reader has: whether the picture carries
+          // the lines is a fact about this file, not a setting anyone remembers.
+          subtitles: burn ? 'burned' : 'none',
           createdAt: new Date().toISOString(),
         }, null, 2)}\n`, 'utf8')
         const { rm } = await import('node:fs/promises')
@@ -771,6 +777,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         taskId = recorded.localId
       }
 
+      const subtitles = output === null ? 'nothing burned: no picture was assembled' : burnState
       const lines = [
         pageMode
           ? `picture: page mode with beats — voice "${timings.voice.provider}" reports no word timings, so each sentence starts on its own page and its beats fire on at_progress against the measured sentence length (not word-aligned)`
@@ -783,7 +790,8 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         output === null
           ? `assembly skipped (assemble: false)${plan.pending.length === 0 ? '' : `; ${plan.pending.length} sentence(s) still have no picture: ${plan.pending.join(', ')} — render them, then assemble`}`
           : `video: ${output} (${durationMs} ms, task ${taskId ?? 'unrecorded'})`,
-        output === null ? '' : 'still missing: SRT/deck export (video_teach_export)',
+        output === null ? '' : `subtitles: ${subtitles}`,
+        output === null ? '' : `still missing: SRT / timeline / decks (video_teach_export)`,
       ].filter(line => line !== '')
       return {
         rendered: plan.fresh,
@@ -792,6 +800,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         output,
         task_id: taskId,
         duration_ms: durationMs,
+        subtitles,
         message: lines.join('\n'),
       }
     },
@@ -801,6 +810,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
     name: 'video_teach_export',
     description: [
       'Export the side products of a teaching video: an SRT next to the finished mp4 (timed by the word timings), a timeline.json, and the reveal.js decks copied into deck/ so the slides can be opened and presented on their own.',
+      'The SRT is the same cue text that was burned into the picture at assembly, so a platform reading the file and a viewer reading the picture see one timeline.',
       'Run it after video_teach_render has produced the mp4 it should sit beside. Nothing here re-renders or re-narrates; a changed manuscript means re-running narrate and render first.',
     ].join(' '),
     parameters: {

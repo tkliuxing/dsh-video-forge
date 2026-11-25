@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 import { concatAudio, concatSegments, cutAudioSegment, encodeCfrSegment, muxNarration, probe, type MediaTools } from './ffmpeg.ts'
 import type { ManimTools } from './manim.ts'
 import { CHARS_PER_SECOND } from './rules.ts'
+import { DEFAULT_SUBTITLE_STYLE, forceStyle, type SubtitleStyle } from './subtitles.ts'
 import { DEFAULT_VOICE as DEFAULT_VOICE_PRIVATE } from './storyboard.ts'
 import { recordDeckSegment, type CueAt } from './slides.ts'
 import {
@@ -608,6 +609,16 @@ export interface AssembleOptions {
   video: { width: number; height: number; fps: number }
   /** Absolute path of the finished mp4. */
   output: string
+  /**
+   * The SRT text to burn into the picture, or null to assemble without any
+   * burned-in lines.
+   *
+   * The caller decides, not this function: whether the picture can carry
+   * subtitles at all depends on the ffmpeg build (libass), which the dependency
+   * probe answers before assembly. Passing null is a decision the tool states in
+   * its result — it is never an accident of a filter that happened to be missing.
+   */
+  subtitles?: { srt: string, style?: SubtitleStyle } | null
   tools?: MediaTools
   signal?: AbortSignal
 }
@@ -634,7 +645,17 @@ export async function assembleVideo(options: AssembleOptions): Promise<Assembled
   await concatSegments(options.segments.map(segment => segment.path), silent, options.tools ?? {}, options.signal)
   const audioFiles = options.segments.map(segment => join(options.paths.root, segment.audio ?? audioRelativeFor(options.paths, segment.id)))
   await concatAudio(audioFiles, narration, options.tools ?? {}, options.signal)
-  await muxNarration({ video: silent, audio: narration, output: options.output }, options.tools ?? {}, options.signal)
+  // The SRT is written next to the intermediate picture, not next to the
+  // finished mp4: at this point the mp4 is still a staging file in the renders
+  // folder, and `video_teach_export` owns the published `.srt`. Both are built by
+  // `buildSrt` from the same timings, so the two never disagree by a cue.
+  let burn: { file: string, forceStyle: string } | undefined
+  if (options.subtitles !== undefined && options.subtitles !== null) {
+    const srtFile = join(options.paths.root, options.paths.work, 'burn.srt')
+    await writeFile(srtFile, options.subtitles.srt, 'utf8')
+    burn = { file: srtFile, forceStyle: forceStyle(options.subtitles.style ?? DEFAULT_SUBTITLE_STYLE) }
+  }
+  await muxNarration({ video: silent, audio: narration, output: options.output, ...(burn === undefined ? {} : { subtitles: burn }) }, options.tools ?? {}, options.signal)
   const media = await probe(options.output, options.tools ?? {}, options.signal)
   return { path: options.output, durationMs: media.durationMs }
 }

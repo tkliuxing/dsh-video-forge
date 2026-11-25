@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { countFrameColors, probe } from '../src/teach/ffmpeg.ts'
 import { assembleVideo, narrateSentences, planSegments, renderSegments, type TeachPaths } from '../src/teach/pipeline.ts'
-import { buildSrt } from '../src/teach/tools.ts'
+import { buildSrt } from '../src/teach/subtitles.ts'
 import { allSentences, parseStoryboard, reconcileTimings, totalDurationMs } from '../src/teach/storyboard.ts'
 
 const LIVE = process.env.TEACH_VIDEO_SAMPLE === '1'

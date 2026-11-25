@@ -39,6 +39,7 @@ export interface Config {
   priceRefreshHours: Volatile<number>
   teachVoiceAuthRefDeepseek: Volatile<string>
   teachVoiceAuthRefVolcengine: Volatile<string>
+  teachFfmpegBinPath: Volatile<string>
   teachPythonPath: Volatile<string>
   teachTexBinPath: Volatile<string>
   teachChromiumPath: Volatile<string>
@@ -141,6 +142,8 @@ export const Config = z.object({
     .description('Credential reference for the DeepSeek voice (the key itself is stored through the credential service, never here)'),
   teachVoiceAuthRefVolcengine: z.string().default(DEFAULT_VOICE_AUTH_REFS.volcengine!).volatile()
     .description('Credential reference for the volcengine voice (the key itself is stored through the credential service, never here)'),
+  teachFfmpegBinPath: z.string().default('').volatile()
+    .description('Directory holding ffmpeg and ffprobe; empty tries TEACH_FFMPEG_BIN, then PATH. Burning subtitles needs a build with libass'),
   teachPythonPath: z.string().default('').volatile()
     .description('Python with Manim, for engine: manim segments; empty tries TEACH_PYTHON, then python3 on PATH'),
   teachTexBinPath: z.string().default('').volatile()
@@ -171,6 +174,7 @@ export function snapshot(config: Config): VideoForgeSettings {
     teach: {
       voiceAuthRefDeepseek: config.teachVoiceAuthRefDeepseek.get(),
       voiceAuthRefVolcengine: config.teachVoiceAuthRefVolcengine.get(),
+      ffmpegBinPath: config.teachFfmpegBinPath.get(),
       pythonPath: config.teachPythonPath.get(),
       texBinPath: config.teachTexBinPath.get(),
       chromiumPath: config.teachChromiumPath.get(),

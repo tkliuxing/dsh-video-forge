@@ -22,7 +22,7 @@ import { Ledger } from '../src/ledger.ts'
 import { SelectionStore } from '../src/selection.ts'
 import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
-import { assessDependencies, isMissing, type DependencyProbe } from '../src/teach/rules.ts'
+import { assessDependencies, installHint, isMissing, type DependencyProbe } from '../src/teach/rules.ts'
 import { registerTeachTools } from '../src/teach/tools.ts'
 import { parseStoryboard } from '../src/teach/storyboard.ts'
 import { hostWorkspaceFs } from '../src/workspace-fs.ts'
@@ -66,6 +66,7 @@ segments:
 const ALL_PRESENT: DependencyProbe = {
   ffmpeg: '/opt/homebrew/bin/ffmpeg',
   ffprobe: '/opt/homebrew/bin/ffprobe',
+  subtitles: 'present (subtitles, ffmpeg)',
   chromium: 'playwright default lookup',
   python3: '/Users/x/.local/venvs/teach-video/bin/python3',
   manim: 'manim 0.22.1',
@@ -167,6 +168,25 @@ describe('dependency tiers', () => {
     expect(isMissing('not installed (No module named manim)')).toBe(true)
     expect(isMissing('playwright default lookup')).toBe(false)
     expect(isMissing('missing')).toBe(true)
+    // A path the operator configured and got wrong is still absent, and the
+    // reason travels with it instead of reading as "present".
+    expect(isMissing('missing (no ffmpeg in /opt/homebrew/opt/ffmpeg-full/bin)')).toBe(true)
+  })
+
+  it('reports an ffmpeg without libass as a finding, never as a gate', () => {
+    // Burning subtitles is a deliverable, not a prerequisite: a build without
+    // libass still renders the picture, so refusing here would waste narration
+    // that was already paid for.
+    const noLibass = 'missing (this ffmpeg build has no subtitles filter)'
+    const assessment = assessDependencies(parseStoryboard(SLIDES_ONLY), { ...ALL_PRESENT, subtitles: noLibass })
+    expect(assessment.blocking).toEqual([])
+    expect(assessment.refusal).toBeNull()
+    const entry = assessment.entries.find(finding => finding.name === 'subtitles')
+    expect(entry?.scope).toBe('subtitles')
+    expect(entry?.state).toBe(noLibass)
+    expect(entry?.blocking).toBe(false)
+    expect(installHint('subtitles')).toContain('libass')
+    expect(installHint('subtitles')).toContain('ffmpeg-full')
   })
 })
 
@@ -248,6 +268,19 @@ describe('video_teach_plan with optional Manim', () => {
     })
     const exec = await runtimeFor(cwd, { ...ALL_PRESENT, dvisvgm: 'missing' })
     await expect(tool('video_teach_plan').execute({}, exec)).rejects.toThrow(/s02-1, s02-2[\s\S]*dvisvgm[\s\S]*TinyTeX[\s\S]*engine: slides/)
+  })
+
+  it('warns in the plan when this ffmpeg cannot burn subtitles, without refusing', async () => {
+    definitions.clear()
+    const cwd = await workspace({
+      'storyboard.yaml': SLIDES_ONLY,
+    'slides/s01/index.html': CUE_DECK,
+    })
+    const exec = await runtimeFor(cwd, { ...ALL_PRESENT, subtitles: 'missing (this ffmpeg build has no subtitles filter)' })
+    const result = await tool('video_teach_plan').execute({}, exec) as { warnings: string[], message: string, dependencies: { name: string, blocking: boolean }[] }
+    expect(result.warnings.some(warning => warning.includes('will not be burned') && warning.includes('libass'))).toBe(true)
+    expect(result.message).toContain('subtitles: missing')
+    expect(result.dependencies.find(entry => entry.name === 'subtitles')?.blocking).toBe(false)
   })
 
   it('refuses rendering for the same reason, before a segment is made', async () => {

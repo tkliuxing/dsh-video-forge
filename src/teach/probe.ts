@@ -18,6 +18,8 @@ import { constants } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { delimiter, join } from 'node:path'
 import type { DependencyProbe } from './rules.ts'
+import { isMissing } from './rules.ts'
+import { probeFilter, type MediaTools } from './ffmpeg.ts'
 import { discoverTex } from './tex.ts'
 import { DEFAULT_VOICE_AUTH_REFS, DEFAULT_VOICE_AUTH_REF, teachSettings, type TeachSettings, type VideoForgeSettings } from '../settings.ts'
 
@@ -25,6 +27,8 @@ import { DEFAULT_VOICE_AUTH_REFS, DEFAULT_VOICE_AUTH_REF, teachSettings, type Te
 export interface TeachPaths {
   /** The credential reference each voice provider resolves; one name per provider, never a key. */
   voiceAuthRefs: { deepseek: string, volcengine: string }
+  /** Directory holding ffmpeg and ffprobe; null means a PATH lookup. */
+  ffmpegBinPath: string | null
   pythonPath: string | null
   texBinPath: string | null
   chromiumPath: string | null
@@ -62,9 +66,29 @@ export function teachPaths(settings: VideoForgeSettings): TeachPaths {
       deepseek: voiceAuthRefFor(teach, 'deepseek'),
       volcengine: voiceAuthRefFor(teach, 'volcengine'),
     },
+    ffmpegBinPath: pick(teach.ffmpegBinPath, 'TEACH_FFMPEG_BIN'),
     pythonPath: pick(teach.pythonPath, 'TEACH_PYTHON'),
     texBinPath: pick(teach.texBinPath, 'TEACH_TEXBIN'),
     chromiumPath: pick(teach.chromiumPath, 'TEACH_CHROMIUM'),
+  }
+}
+
+/**
+ * The programs the media half of the pipeline runs, resolved the way every other
+ * path is resolved: the setting first, then the environment, then PATH.
+ *
+ * One place builds this so `ffmpeg` is the *same* binary everywhere — the one
+ * that gets probed for libass is the one that burns the subtitles. A pipeline
+ * that probed PATH's ffmpeg and then encoded with another build would report a
+ * capability it does not have.
+ */
+export function mediaTools(paths: TeachPaths): MediaTools {
+  const inside = (name: string): string | undefined => (paths.ffmpegBinPath === null ? undefined : join(paths.ffmpegBinPath, name))
+  const ffmpegPath = inside('ffmpeg')
+  const ffprobePath = inside('ffprobe')
+  return {
+    ...(ffmpegPath === undefined ? {} : { ffmpegPath }),
+    ...(ffprobePath === undefined ? {} : { ffprobePath }),
   }
 }
 
@@ -107,16 +131,41 @@ export async function probeManim(python: string): Promise<string> {
   })
 }
 
+/**
+ * Where one media program is, as a state string the dependency report can show.
+ *
+ * A configured directory that does not hold the program is reported with the
+ * directory named: "missing" alone would send the operator looking at PATH after
+ * they had explicitly pointed the setting somewhere else.
+ */
+async function locateProgram(name: string, binPath: string | null): Promise<string> {
+  if (binPath === null) return (await findExecutable(name)) ?? 'missing'
+  const candidate = join(binPath, name)
+  return (await isExecutable(candidate)) ? candidate : `missing (no ${name} in ${binPath})`
+}
+
+/** Whether one exact path is executable. */
+export async function isExecutable(path: string): Promise<boolean> {
+  return new Promise(resolve => {
+    access(path, constants.X_OK, error => { resolve(error === null || error === undefined) })
+  })
+}
+
 /** Measure what this machine has for the teaching route. */
 export async function probeDependencies(settings: VideoForgeSettings): Promise<DependencyProbe> {
   const paths = teachPaths(settings)
-  const ffmpeg = await findExecutable('ffmpeg')
-  const ffprobe = await findExecutable('ffprobe')
+  const ffmpeg = await locateProgram('ffmpeg', paths.ffmpegBinPath)
+  const ffprobe = await locateProgram('ffprobe', paths.ffmpegBinPath)
   const python = paths.pythonPath ?? await findExecutable('python3')
   const tex = await discoverTex(paths.texBinPath)
+  const media = mediaTools(paths)
   return {
-    ffmpeg: ffmpeg ?? 'missing',
-    ffprobe: ffprobe ?? 'missing',
+    ffmpeg,
+    ffprobe,
+    // Burning subtitles is the one capability a plain `ffmpeg` on PATH may lack:
+    // Homebrew's slim formula ships without libass, so the `subtitles` filter is
+    // absent and the filter graph fails at assemble time (measured 2026-11-25).
+    subtitles: isMissing(ffmpeg) ? 'unknown (no ffmpeg)' : await probeFilter(media, 'subtitles'),
     chromium: paths.chromiumPath ?? 'playwright default lookup',
     python3: python ?? 'missing',
     manim: python === null ? 'not installed' : await probeManim(python),

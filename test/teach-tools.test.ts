@@ -17,7 +17,8 @@ import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import { DEFAULT_ENDPOINTS } from '../src/settings.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { hostWorkspaceFs } from '../src/workspace-fs.ts'
-import { buildSrt, registerTeachTools } from '../src/teach/tools.ts'
+import { registerTeachTools } from '../src/teach/tools.ts'
+import { buildSrt } from '../src/teach/subtitles.ts'
 import type { Timings } from '../src/teach/storyboard.ts'
 
 const definitions = new Map<string, ToolDefinition>()
@@ -171,8 +172,11 @@ describe('video_teach_plan', () => {
     expect(result.sentences).toEqual([{ id: 's01-1', segment: 's01', engine: 'slides', chars: 14 }])
     expect(result.total_chars).toBe(14)
     expect(String(result.narration)).toContain('none')
+    // The product the plan can report for free: whether this ffmpeg can burn.
+    expect(String(result.message)).toContain('subtitles:')
     const dependencies = result.dependencies as { name: string, state: string }[]
     expect(dependencies.map(entry => entry.name)).toContain('ffmpeg')
+    expect(dependencies.map(entry => entry.name)).toContain('subtitles')
     expect(dependencies.map(entry => entry.name)).toContain('ARK_VOICE_API_KEY')
   })
 

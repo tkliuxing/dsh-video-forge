@@ -16,6 +16,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { basename, dirname } from 'node:path'
 
 /** What one media file says about itself. Every field is measured, never assumed. */
 export interface MediaProbe {
@@ -58,10 +59,10 @@ export interface MediaTools {
 const STDERR_TAIL = 4000
 
 /** Run one program to completion, keeping the tail of stderr for the error path. */
-function run(command: string, args: readonly string[], signal?: AbortSignal): Promise<void> {
+function run(command: string, args: readonly string[], signal?: AbortSignal, cwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let stderr = ''
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'], ...(cwd === undefined ? {} : { cwd }) })
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8')
       if (stderr.length > STDERR_TAIL) stderr = stderr.slice(-STDERR_TAIL)
@@ -179,7 +180,6 @@ export async function encodeCfrSegment(options: CfrOptions, tools: MediaTools = 
 /** Write a concat-demuxer list beside the output: the demuxer reads a file, never stdin. */
 async function writeConcatList(inputs: readonly string[], output: string): Promise<string> {
   const { mkdir, writeFile } = await import('node:fs/promises')
-  const { dirname } = await import('node:path')
   await mkdir(dirname(output), { recursive: true })
   const listPath = `${output}.concat.txt`
   const list = inputs.map(path => `file '${path.replaceAll("'", "'\\''")}'`).join('\n')
@@ -203,6 +203,23 @@ export interface MuxOptions {
   output: string
   /** Encode the audio track to AAC; `copy` would refuse an mp3-in-mp4 pairing in some builds. */
   audioBitrateKbps?: number
+  /**
+   * Burn a subtitle file into the picture.
+   *
+   * This is the one path that re-encodes the video: a filter cannot run on
+   * copied frames. It needs an ffmpeg built with libass — without it the
+   * `subtitles` filter does not exist at all, which the dependency probe reports
+   * before this is ever called (see `probeFilter`).
+   */
+  subtitles?: BurnSubtitles
+}
+
+/** A subtitle file plus the style to render it with. */
+export interface BurnSubtitles {
+  /** Absolute path of the .srt; its basename is what the filter is given. */
+  file: string
+  /** `force_style=` value: `FontName=…,Fontsize=…`, without the quotes. */
+  forceStyle: string
 }
 
 /**
@@ -220,16 +237,50 @@ export interface MuxOptions {
  */
 export async function muxNarration(options: MuxOptions, tools: MediaTools = {}, signal?: AbortSignal): Promise<void> {
   const command = tools.ffmpegPath ?? 'ffmpeg'
+  const burn = options.subtitles === undefined
+    ? []
+    : [
+        '-vf', `subtitles=${basename(options.subtitles.file)}:force_style='${options.subtitles.forceStyle}'`,
+        // A burn cannot copy frames, so the picture is encoded here. The settings
+        // match the per-segment encode in `encodeCfrSegment`: same preset, same
+        // CRF, same pixel format, so the second encode is not noticeably worse.
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
+      ]
   const args = [
     '-hide_banner', '-loglevel', 'error', '-y',
     '-i', options.video,
     '-i', options.audio,
-    '-c:v', 'copy',
+    ...(options.subtitles === undefined ? ['-c:v', 'copy'] : burn),
     '-c:a', 'aac', '-b:a', `${options.audioBitrateKbps ?? 192}k`,
     '-movflags', '+faststart',
     options.output,
   ]
-  await run(command, args, signal)
+  // The filter is given the subtitle file's basename and run from that file's
+  // directory: ffmpeg's filter-graph escaping turns a path with a colon or a
+  // quote into a parse error, and no path is short enough to be worth that risk.
+  await run(command, args, signal, options.subtitles === undefined ? undefined : dirname(options.subtitles.file))
+}
+
+/**
+ * Whether this ffmpeg build has one named filter.
+ *
+ * The distinction matters because a missing filter is not a warning at run time,
+ * it is "No such filter: 'subtitles'": the whole mux fails after the segments
+ * were already rendered. Asking `-filters` first makes the answer part of the
+ * plan, before anything is paid for or rendered.
+ */
+export async function probeFilter(tools: MediaTools, name: string, signal?: AbortSignal): Promise<string> {
+  const command = tools.ffmpegPath ?? 'ffmpeg'
+  let listing: string
+  try {
+    listing = await runCapture(command, ['-hide_banner', '-filters'], signal)
+  } catch (error: unknown) {
+    return error instanceof MediaError ? `unknown (${error.message})` : 'unknown'
+  }
+  // `-filters` prints one filter per line as ` <flags> <name> <io> <description>`,
+  // name in the second column after the flag cluster.
+  const found = listing.split('\n').some(line => line.trim().split(/\s+/)[1] === name)
+  return found ? `present (${name}, ${basename(command)})` : `missing (this ffmpeg build has no ${name} filter)`
 }
 
 /** Concatenate the per-sentence audio files in the same order the picture is assembled. */

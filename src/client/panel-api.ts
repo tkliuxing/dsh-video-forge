@@ -115,6 +115,7 @@ export interface TeachOverview {
   paths: {
     /** The name each voice provider's key is stored under, as the settings resolve it. */
     voiceAuthRefs: { deepseek: string, volcengine: string }
+    ffmpegBinPath: string | null
     pythonPath: string | null
     texBinPath: string | null
     chromiumPath: string | null
@@ -122,6 +123,7 @@ export interface TeachOverview {
   dependencies: {
     ffmpeg: string
     ffprobe: string
+    subtitles: string
     chromium: string
     python3: string
     manim: string
