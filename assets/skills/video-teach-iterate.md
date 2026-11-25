@@ -59,8 +59,10 @@
 - **改了台词却没重跑 narrate**：`video_teach_render` 会比对稿件与 `timings.json`，句子对不上就拒绝，并说明是哪一句 —— 别绕过它，绕过就会得到一条音画错位的片子。
 - **只改 `say` 不改 `cues`**：词变了，`at_word` 指向的词可能消失，校验会拒绝。改台词时顺手看一眼 cues。
 - **音色改了却只重录一句**：`timings.json` 里记着合成用的音色，`video_teach_plan` 会报 `stale`。音色是整片的，别半途换。
-- **只跑 export 就想改画面里的字幕**：烧进画面的字幕是 `video_teach_render` **拼片时**生成的，export 只写外部 SRT。改了台词只跑 export，会得到「画面里旧字幕、文件里新字幕」的两份时间轴。要改画面里的字，必须重跑 `narrate → render`。
 - **重录后忘了 export**：SRT 与 `timeline.json` 是按成片时间轴生成的外部字幕，改了片子要重新 `video_teach_export`，否则字幕对不上新版。
+- **只跑 export 就想改画面里的字幕**：烧进画面的字幕是 `video_teach_render` **拼片时**生成的，export 只写外部 SRT。改了台词只跑 export，会得到「画面里旧字幕、文件里新字幕」的两份时间轴。要改画面里的字，必须重跑 `narrate → render`。
+- **想只换封面却把整片重渲**：封面是 `video_teach_export` 从 `meta.cover` 那一页截的，改封面页只需重跑 export；文件名跟着最新版本号走，旧片的封面不会被覆盖。
+- **封面只按 16:9 排版**：同一页还会在 4:3（1440×1080）下截一张，写死 `width: 1920px` 的版面会被裁掉两边。
 - **加了页尾停留却没重算 cues**：`at_progress` 的分母变长，动作整体后移、最后一拍贴到句尾。先补停留，再按变化次数重算。
 - **往 `timings.json` 里塞自定义键**：会被 render 拒绝（`unknown key`）；标记放旁车文件。
 - **用 mtime 判断补静默是否执行过**：精度差会重复补；用 `timings.json` 的 sha256。
@@ -75,8 +77,8 @@ video_teach_plan                                    # 看是哪句、哪行出�
 video_teach_narrate                                 # 改了台词就全量重录（已补过尾停留时尤其别只重录单句）
 # 给每句音频补尾静默，并改写 timings.json 的 durationMs（做法见「页尾停留」）
 # 按每页变化次数重算 cues（做法见 video-teach-storyboard「页内节拍」）
-video_teach_render                                  # 全片重渲染（免费）
-video_teach_export                                  # 重新出字幕与 deck
+video_teach_render                                  # 全片重渲染（免费），旁白重新烧进画面
+video_teach_export                                  # 重新出字幕、deck 与两张封面
 ```
 
 只改某一页的版面、台词与节拍都没变时，仍可按句重录：

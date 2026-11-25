@@ -111,6 +111,16 @@ export interface Storyboard {
   title: string
   voice: VoiceSpec | null
   video: VideoSpec
+  /**
+   * The cover page: an HTML file, relative to the project root, that
+   * `video_teach_export` screenshots at 16:9 and 4:3.
+   *
+   * A cover is *authored*, not sampled: a frame of the finished picture is
+   * usually mid-sentence and mid-animation, and a thumbnail has to read at
+   * 300 px wide. Null means the manuscript declares none, and export says so
+   * instead of quietly shipping the film's first frame under a "cover" name.
+   */
+  cover: string | null
   segments: Segment[]
 }
 
@@ -337,10 +347,14 @@ export function parseStoryboard(text: string): Storyboard {
 
   const metaProbe = at(doc, text, ['meta'])
   const meta = record(root.meta ?? {}, 'meta')
-  knownKeys(meta, 'meta', ['title', 'voice', 'video'], metaProbe.line)
+  knownKeys(meta, 'meta', ['title', 'voice', 'video', 'cover'], metaProbe.line)
   const title = requiredString(meta.title, metaProbe.fail, 'title is required')
   const voice = parseVoice(meta.voice, doc, text, ['meta', 'voice'])
   const video = parseVideo(meta.video, doc, text, ['meta', 'video'])
+  const coverProbe = at(doc, text, ['meta', 'cover'])
+  const cover = meta.cover === undefined || meta.cover === null
+    ? null
+    : projectPath(meta.cover, (message: string) => coverProbe.fail(`meta.cover ${message}`))
 
   // The cue syntax depends on the voice: `at_word` is only meaningful when the
   // provider reports word timings, so the parser needs the provider before it
@@ -398,7 +412,7 @@ export function parseStoryboard(text: string): Storyboard {
     segments.push({ id, engine, deck, scene, sentences })
   })
 
-  return { title, voice, video, segments }
+  return { title, voice, video, cover, segments }
 }
 
 /** Every sentence in document order, which is the order the timeline concatenates them in. */

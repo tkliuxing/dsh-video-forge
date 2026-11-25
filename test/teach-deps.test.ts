@@ -280,6 +280,8 @@ describe('video_teach_plan with optional Manim', () => {
     const result = await tool('video_teach_plan').execute({}, exec) as { warnings: string[], message: string, dependencies: { name: string, blocking: boolean }[] }
     expect(result.warnings.some(warning => warning.includes('will not be burned') && warning.includes('libass'))).toBe(true)
     expect(result.message).toContain('subtitles: missing')
+    // No cover page declared: the plan says so rather than letting export surprise anyone.
+    expect(result.warnings.some(warning => warning.includes('no meta.cover'))).toBe(true)
     expect(result.dependencies.find(entry => entry.name === 'subtitles')?.blocking).toBe(false)
   })
 

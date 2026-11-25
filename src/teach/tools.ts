@@ -45,6 +45,7 @@ import {
 import { assessDependencies, installHint, isMissing, type DependencyProbe } from './rules.ts'
 import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
 import { mediaTools, probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
+import { coverOutputs, renderCover, COVER_SIZES } from './cover.ts'
 import { buildSrt } from './subtitles.ts'
 
 /** Default manuscript file, relative to the workspace. */
@@ -251,6 +252,9 @@ async function missingAssets(board: Storyboard, projectRoot: string): Promise<st
     if (relative === null) continue
     await check(`${segment.id} (${segment.engine})`, relative)
   }
+  // The cover is a deliverable the plan can check for free: discovering a typo in
+  // `meta.cover` at export time means the film is already rendered.
+  if (board.cover !== null) await check('meta.cover', board.cover)
   return missing
 }
 
@@ -493,6 +497,9 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         ...(subtitlesMissing
           ? [`subtitles will not be burned into the picture: ${probed.subtitles}. ${installHint('subtitles') ?? ''}`.trim()]
           : []),
+        ...(board.cover === null
+          ? ['no meta.cover page: video_teach_export will deliver no cover (a cover is an authored HTML page rendered at 16:9 and 4:3, not a frame of the film)']
+          : []),
       ]
       const picture = plan.voice.wordTimings
         ? `picture: cue-driven (voice "${plan.voice.provider}" reports word timings, so a fragment can fire on a spoken word)`
@@ -507,6 +514,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         `required: ${dependencies.filter(entry => entry.scope === 'required').map(entry => `${entry.name} ${entry.state}`).join(', ')}`,
         `slides: ${dependencies.filter(entry => entry.scope === 'slides').map(entry => `chromium ${entry.state}`).join(', ')}`,
         `subtitles: ${probed.subtitles} — burned into the picture at assembly when the build has libass, and always written as an external .srt by video_teach_export`,
+        `cover: ${board.cover === null ? 'none (add meta.cover to get a 16:9 and a 4:3 PNG from video_teach_export)' : `${board.cover} → rendered at ${COVER_SIZES.map(size => `${size.width}×${size.height}`).join(' and ')} by video_teach_export`}`,
         assessment.needsManim
           ? `manim: ${dependencies.filter(entry => entry.scope === 'manim').map(entry => `${entry.name} ${entry.state}`).join(', ')}`
           : 'manim: not needed by this manuscript',
@@ -791,7 +799,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           ? `assembly skipped (assemble: false)${plan.pending.length === 0 ? '' : `; ${plan.pending.length} sentence(s) still have no picture: ${plan.pending.join(', ')} — render them, then assemble`}`
           : `video: ${output} (${durationMs} ms, task ${taskId ?? 'unrecorded'})`,
         output === null ? '' : `subtitles: ${subtitles}`,
-        output === null ? '' : `still missing: SRT / timeline / decks (video_teach_export)`,
+        output === null ? '' : `still missing: SRT / timeline / decks${board.cover === null ? '' : ' / cover'} (video_teach_export)`,
       ].filter(line => line !== '')
       return {
         rendered: plan.fresh,
@@ -809,8 +817,9 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
   ctx.tools.register(defineTool({
     name: 'video_teach_export',
     description: [
-      'Export the side products of a teaching video: an SRT next to the finished mp4 (timed by the word timings), a timeline.json, and the reveal.js decks copied into deck/ so the slides can be opened and presented on their own.',
+      'Export the side products of a teaching video: an SRT next to the finished mp4 (timed by the word timings), a timeline.json, the reveal.js decks copied into deck/ so the slides can be opened and presented on their own, and — when the manuscript names meta.cover — two covers, 16:9 and 4:3, screenshotted from that page.',
       'The SRT is the same cue text that was burned into the picture at assembly, so a platform reading the file and a viewer reading the picture see one timeline.',
+      'A cover is an authored HTML page, not a frame of the film: a frame is mid-sentence and mid-animation, and a poster has to read at 300 px wide. The page is loaded once per shape (1920×1080 and 1440×1080) in the Chromium the slides use, so write the layout with a media query. No meta.cover means no cover, and the result says so.',
       'Run it after video_teach_render has produced the mp4 it should sit beside. Nothing here re-renders or re-narrates; a changed manuscript means re-running narrate and render first.',
     ].join(' '),
     parameters: {
@@ -825,6 +834,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           srt: { type: 'string', required: true },
           timeline: { type: 'string', required: true },
           decks: { type: 'array', required: true, items: { type: 'string' } },
+          covers: { type: 'array', required: true, items: { type: 'string' }, description: 'one PNG per shape, empty when the manuscript declares no meta.cover' },
           message: { type: 'string', required: true },
         },
       },
@@ -869,16 +879,43 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         }
       }
 
+      // The cover is rendered here, not at render time: it belongs to the same
+      // version number as the mp4 beside it, and a cover does not depend on the
+      // narration at all, so re-rendering the film must not force a new cover.
+      const covers: string[] = []
+      if (board.cover !== null) {
+        const host = teachPaths(runtime.settings())
+        try {
+          const rendered = await renderCover({
+            page: join(workspace.projectRoot, ...board.cover.split('/')),
+            workDir: join(workspace.paths.root, workspace.paths.work, 'cover'),
+            outputs: coverOutputs(shotDir, stem),
+            chromiumPath: host.chromiumPath,
+            ...(exec.signal === undefined ? {} : { signal: exec.signal }),
+          }, mediaTools(host))
+          for (const cover of rendered) covers.push(`renders/${shot}/${stem}.cover-${cover.size.id}.png`)
+        } catch (error: unknown) {
+          throw new ConfigError(
+            `could not render the cover from ${board.cover}: ${error instanceof Error ? error.message : String(error)}. `
+            + 'The cover page is screenshotted by the same Chromium the slides use, so check that one is installed (set the Chromium path on the settings page) and that the page loads its own styles',
+          )
+        }
+      }
+
       return {
         srt: `renders/${shot}/${stem}.srt`,
         timeline: `renders/${shot}/${stem}.timeline.json`,
         decks,
+        covers,
         message: [
           // DeepSeek reports no word timings, so its SRT is one cue per sentence:
           // saying "word-timed" there was a claim the file did not support.
           `srt: renders/${shot}/${stem}.srt (${timings.sentences.length} sentence(s), ${timingsWordTimings(timings) ? 'word-timed' : 'one cue per sentence, no word timings'})`,
           `timeline: renders/${shot}/${stem}.timeline.json`,
           decks.length === 0 ? 'no reveal.js decks to export' : `decks: ${decks.join(', ')}`,
+          covers.length === 0
+            ? 'cover: none — the manuscript declares no meta.cover page, and a frame of the film is not a cover (add meta.cover: cover/index.html to get one)'
+            : `cover: ${covers.map((path, index) => `${path} (${COVER_SIZES[index]!.width}×${COVER_SIZES[index]!.height})`).join(', ')}`,
         ].join('\n'),
       }
     },

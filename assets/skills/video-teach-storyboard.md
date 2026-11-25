@@ -26,6 +26,7 @@ meta:
   video:
     size: [1920, 1080]                            # 可选，默认就是 1080p
     fps: 30                                       # 可选
+  cover: cover/index.html                         # 可选：封面页。缺省就没有封面（不会拿成片首帧顶替）
 segments:
   - id: s01
     engine: slides
@@ -91,11 +92,30 @@ video_teach_plan        # 校验 + 估时 + 报告本机缺哪个可执行
 video_teach_narrate     # 合成旁白（相邻句合并成一次请求），写 timings.json（付费、联网）
 # 需要页尾停留：给每句音频尾部补静默并改写 durationMs（见 video-teach-iterate）
 # 尾停留定了之后：按每页变化次数重算 cues（见上文「页内节拍」）
-video_teach_render      # 逐句渲染并拼成 renders/<shot>/vNNN.mp4
-video_teach_export      # SRT、timeline.json、deck/
+video_teach_render      # 逐句渲染、拼成 renders/<shot>/vNNN.mp4，并把旁白烧进画面
+video_teach_export      # SRT、timeline.json、deck/，以及两张封面
 ```
 
 `video_teach_plan` 不花钱，报错会指出**行号与具体键**；它还会读 deck HTML，检查录制器要用的三个全局（`teachReady`、`teachCue`、页模式下的 `teachPage`）与页数是否够用。先跑它，再花钱。cues 的数值依赖 `durationMs`，所以顺序是**先定尾停留、再算 cues、最后渲染**。
+
+## 封面：单独一页 HTML，两种画幅
+
+封面是**作者写的一页**，不是成片首帧，也不是 deck 的首页：首帧通常是半句话加动画中途，缩到 300 px 读不出东西。做法：
+
+- 稿件里写 `meta.cover: cover/index.html`（相对稿本目录）。不写就没有封面，`video_teach_export` 会明说，不会拿首帧顶替。
+- 这一页会被截图**两次**：1920×1080（16:9）与 1440×1080（4:3），落到成片旁边 `vNNN.cover-16x9.png` / `vNNN.cover-4x3.png`。两种画幅等高、只改宽，所以版面用一个 media query 写一次：
+
+```html
+<style>
+  body { margin: 0; height: 100vh; background: #0f172a; color: #f8fafc }
+  h1 { font-size: clamp(40px, 6vw, 90px); margin: 0 }
+  @media (max-aspect-ratio: 4/3) { h1 { font-size: 72px } }  /* 4:3 下别让标题出界 */
+</style>
+```
+
+- 契约比 deck 轻：**不需要** `teachReady` / `teachCue` / `teachPage`。截图前等 `document.fonts.ready` 加 150 ms，所以别写无限动画（会截到中间态），也别依赖需要点击才出现的内容。
+- 截完会数一次颜色：整页只有一种颜色就当失败（说明样式没加载或脚本报错），不会悄悄出一个纯色封面。
+- **一句话能读清、缩到手机列表能认出**：一个主标题 + 至多一行副标题就够了。片长、期号这类信息放副标题，不要放第三行。
 
 ## 常见错误
 
@@ -106,6 +126,8 @@ video_teach_export      # SRT、timeline.json、deck/
 - **手写固定的 `at_progress`（比如 0.4 / 0.72）** —— 它和这一页有几个动作无关，加上尾停留后会把动作推到句尾；按「页内节拍」的公式算。落在 20%–80% 之外仍会 warning（太靠两端容易被换气吞掉）。
 - **用尾停留代替句内节拍** —— 尾停留只负责最后一屏看得住，动作本身仍要在念完之前播完；顺序是先补尾停留、再按变化次数重算 cues。
 - **改了 deck 的 fragment 数却没重算 cues** —— 节拍会落空或挤在句尾；重算后只需要重渲染。
+- **改了台词只跑 `video_teach_export`** —— 烧进画面的字幕是 `video_teach_render` 拼片时生成的，export 只写外部 SRT。不重跑 `narrate → render` 就会出现「画面里旧字幕、文件里新字幕」。
+- **把封面画成 16:9 固定宽度的版面** —— 4:3 那张会被裁掉两边；用 media query 或流式宽度，别写死 `width: 1920px`。
 - 段落误当句子塞进一条 `say` —— 会触发字数上限，也会让那一段的重录代价变成整段。
 - **一句里塞两个句号** —— 合成时会被切成两句，但时间轴只认这一条的 id，句间停顿与词时间戳就对不上。一句话只写一个句末标点。
 - **句子之间没用句号** —— 合并合成时插件会补上，但如果你用逗号或分号写“句子”，听起来只有逗号级换气，句子边界会糊。

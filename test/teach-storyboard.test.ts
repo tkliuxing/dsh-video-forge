@@ -65,6 +65,20 @@ describe('storyboard parsing', () => {
     ])
   })
 
+  it('reads the cover page, and keeps it optional', () => {
+    const withCover = parseStoryboard(STORYBOARD.replace('  video:', '  cover: cover/index.html\n  video:'))
+    expect(withCover.cover).toBe('cover/index.html')
+    // Absent is null, not a guessed path: export must not invent a cover.
+    expect(parseStoryboard(STORYBOARD).cover).toBeNull()
+  })
+
+  it('refuses a cover that points outside the project', () => {
+    for (const hostile of ['/etc/passwd', '~/.ssh/id_rsa', '../elsewhere/cover.html']) {
+      const broken = STORYBOARD.replace('  video:', `  cover: ${hostile}\n  video:`)
+      expect(() => parseStoryboard(broken), hostile).toThrow(/meta.cover must/)
+    }
+  })
+
   it('applies the default delivery geometry when meta.video is absent', () => {
     const board = parseStoryboard('meta:\n  title: t\nsegments:\n  - id: s\n    engine: slides\n    sentences:\n      - { id: a, say: 好。 }\n')
     expect(board.video).toEqual({ width: 1920, height: 1080, fps: 30 })

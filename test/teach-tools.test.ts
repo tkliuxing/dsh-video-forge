@@ -172,8 +172,10 @@ describe('video_teach_plan', () => {
     expect(result.sentences).toEqual([{ id: 's01-1', segment: 's01', engine: 'slides', chars: 14 }])
     expect(result.total_chars).toBe(14)
     expect(String(result.narration)).toContain('none')
-    // The product the plan can report for free: whether this ffmpeg can burn.
+    // Both shipped products are reported by the plan, not discovered at export:
+    // whether this ffmpeg can burn, and whether a cover page is declared.
     expect(String(result.message)).toContain('subtitles:')
+    expect(String(result.message)).toContain('cover: none')
     const dependencies = result.dependencies as { name: string, state: string }[]
     expect(dependencies.map(entry => entry.name)).toContain('ffmpeg')
     expect(dependencies.map(entry => entry.name)).toContain('subtitles')

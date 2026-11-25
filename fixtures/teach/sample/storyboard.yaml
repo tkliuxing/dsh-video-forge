@@ -7,6 +7,9 @@ meta:
   video:
     size: [1920, 1080]
     fps: 30
+  # 封面页：一张 HTML，导出时按 16:9（1920×1080）与 4:3（1440×1080）各截一张。
+  # 不写这一行就没有封面 —— 不会拿成片首帧顶替。
+  cover: cover/index.html
 segments:
   - id: s01
     engine: slides

@@ -74,8 +74,8 @@
    | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 逐句合成时语气会漂 |
 
    默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**只有需要"讲到某个词、画面动一下"时才换 volcengine** —— 那是它唯一不可替代的能力。
-3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。渲染完会抽样帧颜色，把"看着像静帧"的段点名。
-4. `video_teach_export`：写 SRT、`timeline.json`，并把 deck 导出到 `deck/`。
+3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
+4. `video_teach_export`：写 SRT、`timeline.json`，把 deck 导出到 `deck/`，并按 `meta.cover` 那一页截 16:9 与 4:3 两张封面。
 
 **两条出片经验**（细节见 `video-teach-storyboard` / `video-teach-iterate`）：
 
@@ -84,7 +84,7 @@
 
 **外部依赖分三档，只有用到的才装**（在线生成路线一样都不需要）：
 
-- **任何工程都要**：`ffmpeg`、`ffprobe`。
+- **任何工程都要**：`ffmpeg`、`ffprobe`。**烧字幕需要带 libass 的构建**：Homebrew 现在的 `ffmpeg` 公式没有 libass（连 `drawtext` 都没有），要用 `brew install ffmpeg-full` 并把设置里的 ffmpeg 目录指到 `/opt/homebrew/opt/ffmpeg-full/bin`（或 `TEACH_FFMPEG_BIN`）。不指也不出错，只是片子不带字幕、结果里写明原因。
 - **只画幻灯片才要**：Chromium。`playwright-core` 随插件装，浏览器本身可用 `TEACH_CHROMIUM` 指定，或用 Playwright 自己的缓存。
 - **只有 `engine: manim` 的句子才要**：装 Manim 的 Python（`pip install manim`，用 `TEACH_PYTHON` 指过去）、TeX（推荐 TinyTeX）、以及 `dvisvgm`。**BasicTeX 有 `latex` 但没有 `dvisvgm`**，只装它会报 `latex error converting to dvi`；把 `TEACH_TEXBIN` 指到含两者的 bin 目录。
 
@@ -92,7 +92,7 @@
 
 **成本**：渲染免费（本机 CPU/GPU），唯一的钱是 TTS 按字符计。三分钟中文旁白约八百多字，按 5 元/万字符算约四毛，实际以账单为准。
 
-**成片与产物**：动态画面在 `renders/<镜头>/vNNN.mp4`，旁边的 `vNNN.json` 记录它由哪份稿件、哪几句构成；中间产物在项目根下（`audio/`、`timings.json`、`scenes/`、`slides/`、`.dsh-video/`），哪些该进版本库见 `video-teach-iterate`。
+**成片与产物**：动态画面在 `renders/<镜头>/vNNN.mp4`（旁白已烧进画面，可以直接发平台），旁边的 `vNNN.json` 记录它由哪份稿件、哪几句构成；同一目录还有 `.srt`、`.timeline.json`、`.cover-16x9.png`、`.cover-4x3.png`；中间产物在项目根下（`audio/`、`timings.json`、`scenes/`、`slides/`、`.dsh-video/`），哪些该进版本库见 `video-teach-iterate`。
 
 **什么场景不该用这条路**：真人出镜、实拍质感的镜头、复杂场景调度与光影变化。这些是在线模型擅长的，教学路线做不了，硬做只会得到生硬的矢量画面。
 

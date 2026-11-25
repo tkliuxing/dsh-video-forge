@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>封面：π²/6</title>
+<!--
+  封面页示例（meta.cover 指到这里）。
+
+  同一页会被截两次：1920×1080（16:9）与 1440×1080（4:3）。等高、只改宽，所以
+  版面写成流式的，用 media query 调 4:3 下的字号与留白，别写死 1920px。
+
+  契约比 deck 轻：不需要 teachReady / teachCue / teachPage。截图前会等
+  document.fonts.ready 加 150 ms，所以不要放无限动画（会截到中间态）。
+-->
+<style>
+  :root { color-scheme: dark }
+  * { box-sizing: border-box }
+  html, body { margin: 0; height: 100% }
+  body {
+    background: radial-gradient(circle at 78% 18%, #1e3a8a 0%, #0b1120 58%, #060a14 100%);
+    color: #f8fafc;
+    font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+  }
+  .wrap { padding: 0 9%; display: flex; flex-direction: column; gap: 26px }
+  .kicker { font-size: 26px; letter-spacing: .32em; color: #93c5fd; text-transform: uppercase }
+  h1 { margin: 0; font-size: clamp(56px, 7.2vw, 132px); line-height: 1.06; letter-spacing: -.01em }
+  .sum { display: flex; align-items: baseline; gap: .28em; font-size: clamp(30px, 3.6vw, 60px); color: #cbd5f5 }
+  .sum b { color: #fbbf24; font-weight: 600 }
+  .foot { font-size: clamp(20px, 1.8vw, 30px); color: #94a3b8; margin-top: 12px }
+  .rule { width: 148px; height: 6px; background: #fbbf24; border-radius: 3px }
+  /* 4:3：画面更窄，标题降一档、留白收紧，避免标题折成三行 */
+  @media (max-aspect-ratio: 4/3) {
+    .wrap { padding: 0 7%; gap: 20px }
+    h1 { font-size: 88px }
+    .sum { font-size: 40px }
+  }
+</style>
+<div class="wrap">
+  <div class="rule"></div>
+  <div class="kicker">TEACHING SAMPLE</div>
+  <h1>为什么这些倒数<br>加起来等于 π²/6</h1>
+  <div class="sum"><span>1 + 1/4 + 1/9 + 1/16 + …</span><b>= π²/6</b></div>
+  <div class="foot">一条片子里同时有幻灯片讲解与 3b1b 式数学动画</div>
+</div>
