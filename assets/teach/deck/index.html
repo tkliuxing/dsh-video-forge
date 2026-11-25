@@ -33,8 +33,9 @@
 <script src="./reveal.js"></script>
 <script>
 // The contract the recorder drives (src/teach/slides.ts): `teachCue(n)` shows cue
-// step n, `teachReady` says the deck has finished laying out. A deck can be any
-// reveal.js document as long as it defines these two.
+// step n, `teachPage(n)` shows page n (page mode), `teachReady` says the deck has
+// finished laying out. A deck can be any reveal.js document as long as it defines
+// these three.
 //
 // reveal.js 6 exports a singleton: `Reveal`'s UMD build has no usable
 // constructor, and `new Reveal(config)` leaves the singleton uninitialised, so
@@ -73,17 +74,33 @@ window.teachCue = function teachCue(index) {
 }
 
 /**
- * Page mode: show page `index` (0-based, horizontal) and stay there.
+ * Page mode: show page `index` (0-based, horizontal) with **none of its beats
+ * lit**, and stay there.
  *
  * This is the drive mode for a voice provider that reports no word timings
- * (DeepSeek). One page per sentence: the recorder calls this once at the start of
- * the sentence and holds the page for the sentence's measured length. There is
- * no `teachCue` in this mode, because a cue would be a moment nobody measured.
+ * (DeepSeek). The recorder calls this at the start of a sentence and holds the
+ * page for the sentence's measured length; the sentence's `at_progress` beats
+ * then arrive through `teachCue`. Because page mode times its beats by measured
+ * length after all, a page-mode deck DOES use `teachCue`.
  *
- * A deck for this mode has one `<section>` per sentence, in manuscript order.
+ * The third argument is the fragment to land on, and `-1` means "before the
+ * first". Passing `0` here lit the page's first beat the moment the page
+ * switched, so the manuscript's first cue (fragment 1) found that beat already
+ * shown and did nothing — every page opened one beat too bright, and a shared
+ * page with `enter: 0` opened bright when the manuscript said it starts dark
+ * (found 2026-11-25 while implementing shared pages, docs/TEACH-VIDEO.md §25).
+ *
+ * The recorder calls this once per sentence, then replays the shared page's
+ * `enter` state through `teachCue` before the capture starts. So this function
+ * has to be idempotent and must not remember anything: every sentence is a fresh
+ * page load.
+ *
+ * A deck for this mode has one section element per page. By default a page
+ * belongs to one sentence, in manuscript order; a manuscript that declares
+ * `page` shares one page across several sentences.
  */
 window.teachPage = function teachPage(index) {
-  Reveal.slide(Math.max(0, Number(index) || 0), 0, 0)
+  Reveal.slide(Math.max(0, Number(index) || 0), 0, -1)
 }
 </script>
 </body>

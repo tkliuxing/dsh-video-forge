@@ -42,16 +42,17 @@
 
 ## B. 提案：方案已写，代码零行
 
-### [ ] B1 一页承载多句（`page` / `enter`）
+### [x] B1 一页承载多句（`page` / `enter`）
 
-- **做什么**：`storyboard.yaml` 的 sentence 加两个可选键 `page`（同段多句共享一个 `<section>`）与 `enter`（进页时先显示到第几拍）。三处改动 + 四条校验。
+- **做什么**：`storyboard.yaml` 的 sentence 加两个可选键 `page`（同段多句共享一个 `<section>`）与 `enter`（进页时先显示到第几拍）。三处改动 + 四条校验（落成后的实际改动点与校验全集见 `docs/TEACH-VIDEO.md` §25.3 与 §25.6 的两张表，这里不重述数量）。
+- **落成时追加**：校验比提案多了几条（`enter` 让画面倒退、共享页整句无变化、共享页缺 `teachCue`、页数数不出来），以及解析期的「`enter` 没写 `page`」；模板 deck 的 `teachPage` 有个既有缺陷（切页时点亮第一拍，使每页第一条 cue 永远不生效），一并修掉。
 - **为什么**：三页讲同一件事的三个次第时，页面元素框实测完全重合，观众仍读成翻页（泄漏只有页码与左侧标题）。不改代码的极限是「固定页码 + 常驻标题 + 变化下沉到细节行」，让同一版面**看起来**像一页。
-- **改动点**：`src/teach/storyboard.ts:387`（键白名单）· `src/teach/pipeline.ts:498`（页号）· `src/teach/slides.ts:173`（切页后开录前的那次 `teachCue`）
-- **校验**：`src/teach/rules.ts` 加四条 —— 同页跨句 fragment 递增、`page` 单调不减、`enter` 小于本句首个 cue、按页映射核对页数
+- **改动点**：`src/teach/storyboard.ts`（键白名单 + `pageSlots`）· `src/teach/pipeline.ts`（`renderSegments` 的页号与 `enter`）· `src/teach/slides.ts`（切页后开录前的那次 `teachCue`）· `assets/teach/deck/index.html`（`teachPage` 切页不带亮）
+- **校验**：`src/teach/rules.ts` 的 `pageFindings` + `auditDecks`（拒绝与 warning 的完整清单见 `docs/TEACH-VIDEO.md` §25.6 的表）
 - **不要走**：把多句合一句（86 字约 17 秒，超 `MAX_SENTENCE_SECONDS = 8`）· 在 deck 里放「页号 → 句号」映射表（句序一调整就静默错位）
 - **验收**：`fixtures/teach/shared-page/` 三句共享一页、`enter: 0/1/2`；抽帧断言第 2 句首帧 = 第 1 句末帧；老 fixture 行为不变
-- **出处**：`docs/TEACH-VIDEO.md` §25（行 703–818，含 25.1 原因 / 25.3 改动点 / 25.5 编号反转 / 25.9 验收）· `docs/DESIGN.md` §23 末段（行 1603）· 决策摘要见记忆 `wu-teach-page-map-proposal-2026-11-24`
-- 实现记录：待
+- **出处**：`docs/TEACH-VIDEO.md` §25（行 709–873，含 25.1 原因 / 25.3 改动点 / 25.5 编号反转 / 25.6 校验 / 25.9 验收 / 25.12 实现记录）· `docs/DESIGN.md` §23 末段（行 1604）· 决策摘要见记忆 `wu-teach-page-map-proposal-2026-11-24`
+- 实现记录：2026-11-25 · 未提交 · **代码**：`storyboard.ts` 加 `page`/`enter`（白名单、非负整数、`enter` 无 `page` 解析期拒绝）与 `pageSlots`/`pageSlotOf`/`pagesUsed`（只算不判；`PageSlot` 给 `page`/`enter`/`lit`，缺省 `enter` 承接同页上一句留在屏幕上的拍数）；`pipeline.ts` 用 slots 驱动录制器，`planStoryboard` 的页数改成稿件实际用的页数；`slides.ts` 在切页与 300 ms 等待之间调 `teachCue(enter)`，所以 t=0 就带进页状态；`rules.ts` 的 `pageFindings`（挪页却只声明一部分 / 页回退 / `enter`≥首个 cue / `enter` 让画面倒退——后两条同句只报一条）与 `auditDecks`（声明页不存在→拒绝；多余页 / `enter` 超页 / 共享页整句不动 / 页数数不出来→warning；无 cue 但 `enter>0` 缺 `teachCue`→拒绝），词级时间戳下给一条「这两个键不生效」的 warning。**修掉三处既有缺陷**：模板 deck 的 `teachPage` 用 `Reveal.slide(n, 0, 0)` 切页即点亮第一拍（第一条 cue 永远不生效、`enter: 0` 无法兑现，改 `-1`）；`page-mode` 与新的 shared-page deck 的节拍元素只有 `data-beat` 没写 `class="fragment"`；注释/脚本里的字面量 `<section>` 与 `class="fragment"` 被当成真标记（`deckPageFragments`/`countDeckFragments` 现在只看标记，模板注释也改了措辞）。**验证**：`fixtures/teach/shared-page/` 三句共享一页 `enter: 0/1/2`，`video_teach_plan` 除一条 page-mode 说明外无待修项（`rhythm:`/`picture:` 两行一并断言）；`test/teach-shared-page.test.ts` 真渲染三句并抽帧，`litBands` 依次 `0→1 / 1→2 / 2→3`（第 2 句首帧必须是 1），另有一例用 `writeDeck` 生成的真实 deck 走 plan（越界页必须被拒绝，且不许出现「有页永远录不到」的假告警）；`test/teach-deck.test.ts` 拿真实模板 deck 驱动，断言切页后 0 拍亮（旧行为下第一个断言就失败，已实测）；`test/teach-rules.test.ts` 有「注释/脚本不算页」的负例（旧实现下失败，已实测）；`pnpm check` 全绿（数量与证据见 `docs/TEACH-VIDEO.md` §25.12）。**skill 侧**：`video-teach-storyboard` 新增「一页承载多句」（语法、会被拒绝的写法、共享页下「没 cue 不算缺陷」的豁免失效、`volcengine` 与 Manim 段不生效、跨句仍硬切）、`video-teach-slides` 新增「一页承载多句」（`teachPage` 幂等且切页不带亮、进页拍由录制器打到位、编号跨句递增、无 cue 也要 `teachCue`、三条页数边界），`video-teach-iterate` 补「老 deck 手改 `teachPage` 后只重渲」，两份 routing description 同步。**流程**：独立审查三轮（每轮都是 0 上下文的新子任务；后两轮只复核上一轮的修复）。第一轮抓到 1 条阻断（模板 deck 切页点亮第一拍）与 11 条应当修，第二轮修回写口径，第三轮抓到 1 条阻断（模板 deck 注释里的字面量 `<section>` 让自己的页数多算一页，于是假告警、并漏掉「声明页不存在」的拒绝）与 7 条应当修，均已修并补了对应负例；清单见 `docs/TEACH-VIDEO.md` §25.12 末段
 
 ### [x] B2 把「SVG 元素级节拍」写成契约
 

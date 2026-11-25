@@ -112,7 +112,9 @@ Two speech providers are supported, and the manuscript picks one with
   (`stella`, `tide`), no speed control, **no word timestamps** — the picture is
   therefore driven by page: one slide page per sentence, with beats inside it
   placed by `at_progress` (a 0–1 share of the sentence's measured length). Those
-  beats ride on meaning, not on syllables. Credential reference
+  beats ride on meaning, not on syllables. A manuscript can also give several
+  consecutive sentences one page with `page` and `enter`, so the layout holds
+  still while the picture evolves on it. Credential reference
   `DEEPSEEK_API_KEY`.
 - `volcengine`: the only provider that returns word-level timestamps, so the
   only one that can fire a fragment on the word that is being spoken
@@ -159,9 +161,10 @@ its environment variable, which wins over discovery.
 A teaching video is narrated by TTS and drawn on this machine, so it needs no
 provider key and costs nothing to render. The narration is the clock: each
 sentence's audio sets that sentence's length. The default voice reports no word
-timings, so the picture advances one page per sentence and the beats inside a
-page are placed by proportion (see the two voice providers above); only
-`volcengine` can fire a beat on a given word.
+timings, so the picture advances one page per sentence (or one page shared by
+several, when the manuscript says `page`) and the beats inside a page are placed
+by proportion (see the two voice providers above); only `volcengine` can fire a
+beat on a given word.
 
 | Use it for | Do not use it for |
 |---|---|

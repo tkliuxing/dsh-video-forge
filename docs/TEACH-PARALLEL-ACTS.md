@@ -31,7 +31,7 @@
 | 根 | 由什么决定 | 落在里面的东西 |
 |---|---|---|
 | `workspace.root` | 会话的 `header.cwd`（父会话，创建后不可改） | `renders/<shot>/`（`src/teach/tools.ts:734`）、`deck/<段>/`（export 抄的） |
-| `projectRoot` | `dirname(storyboard)`（`src/teach/tools.ts:125`） | `audio/`、`timings.json`、`.dsh-video/teach/<id>/segment.mp4`（`src/teach/pipeline.ts:118`、`:531`） |
+| `projectRoot` | `dirname(storyboard)`（`src/teach/tools.ts:125`） | `audio/`、`timings.json`、`.dsh-video/teach/<id>/segment.mp4`（`src/teach/pipeline.ts` 的 `TeachPaths`、`segmentPath`） |
 
 **稿本放在哪，状态就在哪；成片永远回主项目。** 这一条同时给出两件事：状态隔离（五幕互不覆盖），成片汇聚（不需要事后搬文件）。
 

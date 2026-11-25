@@ -4,12 +4,13 @@
 
 ## 最小骨架
 
-教学工具认的 deck 契约是三个全局，按驱动模式用其中两个：
+教学工具认的 deck 契约是三个全局，两个驱动模式都会用到其中至少两个（页模式 + 共享页时三个全用）：
 
 ```html
 <script>
-  // 页模式：切到第 n 页（从 0 开始，与句子的顺序一一对应）
-  window.teachPage = function teachPage(n) { /* 显示第 n 页 */ }
+  // 页模式：切到第 n 页，并且**这一页一个拍都不亮**（模板用 Reveal.slide(n, 0, -1)；
+  // 传 0 会在切页时点亮第一拍，于是稿件的第一条 cue 永远不生效）
+  window.teachPage = function teachPage(n) { /* 显示第 n 页，节拍全暗 */ }
   // 页内节拍：显示到第 n 步（从 1 开始，对应 cues 里的 fragment）
   window.teachCue = function teachCue(n) { /* 显示到第 n 步 */ }
   // 版式就绪后置 true，录屏要等这一帧
@@ -19,10 +20,10 @@
 
 两种驱动模式对应两种 provider：
 
-- **页模式 + 页内节拍（默认，`deepseek`）**：一句一页，句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(句序号)`，再按时长比例调 `teachCue(fragment)`。一页 n 个 fragment → n+1 次画面变化（换页算第一次），节拍比例由这个数算出（见 `video-teach-storyboard` 的「页内节拍」）。
+- **页模式 + 页内节拍（默认，`deepseek`）**：一句一页（稿件声明 `page` 时连续几句共用一页，见下文「一页承载多句」），句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(该句的页)`，再按时长比例调 `teachCue(fragment)`，共享页还会在开录前调一次 `teachCue(enter)`。一页 n 个 fragment → n+1 次画面变化（换页算第一次），节拍比例由这个数算出（见 `video-teach-storyboard` 的「页内节拍」）。
 - **纯 cue 模式（`volcengine`）**：全片一个或少数几页，`teachCue` 按词触发（`at_word`）。
 
-页模式下 deck 的结构就是"一个 `<section>` 对应一句"，顺序必须与稿件一致，页数不能少于该段的句数（少了后面几句会停在最后一页，`video_teach_plan` 会点名）。
+页模式下 deck 的结构默认是"一个 `<section>` 对应一句"，顺序必须与稿件一致，页数不能少于该段的句数（少了后面几句会停在最后一页，`video_teach_plan` 会点名）。稿件写 `page` 时几句共用一个 `<section>`，此时页数以稿件声明的为准，见下文「一页承载多句」。
 
 **fragment 编号按页算**，因为 reveal.js 的 fragment 是页内概念，模板的 `teachCue(n)` 数的是当前页的 fragment（并在页末夹住，保证一个 cue 永远不会翻页）：第 1 页写 1、2、3，第 2 页又从 1 开始。稿子里的 `fragment` 因此也是**每页从 1 起**（`video-teach-storyboard` 的编号规则同此）。纯 cue 模式下全片只有一页，编号自然就是全片递增。
 
@@ -73,12 +74,29 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 - 引用前确认文件存在，然后跑项目自己的校验器（建项目时写的 `script/check-materials.py`，`python3` 跑）：引用缺失、路径形状不对、图标用 `<img>`、台账缺行，它一次报出来。
 - 项目还没有 `materials/` 时，先按 `video-project` 的建项目第 2 步建（布局、`catalog.yaml`、`README.md`）。教学项目的 deck 走同一套目录，不另起一份。
 
+## 一页承载多句（稿件里写了 `page`）
+
+稿件的 `page` 让几句共用一个 `<section>`，deck 侧只需要把三件事做对（`video-teach-storyboard` 的「一页承载多句」是稿子那一侧）：
+
+1. **`teachPage(n)` 要幂等，并且切到那一页时一个拍都不亮**。共用一页的几句都会调同一个 `n`，而每句都是一次新的 `page.goto`，所以 deck 每次都从第 0 页起来、再被切到 `n`。切换动画重放无所谓（它发生在开录之前），但"开页就亮着第一拍"是错的：稿件的第一条 cue 会因此永远不生效，`enter: 0` 也没法兑现。reveal.js 的写法是 `Reveal.slide(n, 0, -1)`，`-1` 表示停在第 0 个 fragment 之前。
+2. **进页状态由录制器打，deck 不要自己记**。每句开录前录制器的顺序是：`teachPage(n)` → `teachCue(enter)` → 等 300 ms 过场 → 开录。所以第 2 句的 t=0 就已经是上一句结尾的那一屏，deck 不需要、也不该用 `localStorage`、`history.state` 或全局变量去"接着上一句"。`page.goto` 之后这些本来也不该被信任。
+3. **编号跨句递增**。共享页内 `fragment` 从第 1 句一路数到第 3 句（1、2、3），所以 `teachCue(k)` 只要"点亮 `data-beat ≤ k`"就自然对。如果 deck 按 DOM 顺序数前 k 个元素（模板就是这么做的），而稿子让第二句从 1 重新编号，`teachCue(1)` 会把已经亮着的再确认一次，画面不动——问题出在稿子的编号，不在 deck 的计数方式。
+
+另外：**共享页要求 deck 定义 `teachCue`，即使整段一条 cue 都没有**，因为录制器要用它把 `enter` 打回去。这条 `video_teach_plan` 在花钱前就会检查。
+
+排版上没有新东西，但上限更快撞到：**一页三句、每句两拍**是这类页面的常态规划，再多就该问是不是这几句不该挤在一页（每页 5 个 fragment 的上限仍然成立）。
+
+页数与节拍数有几处边界，`video_teach_plan` 会分别处理：稿件声明的页号超过 deck 的页数会被**拒绝**（那一页根本不存在，句子会停在录制器上一次停的地方）；`enter` 超过该页的 fragment 数只是 warning（deck 会夹在页末，但页面一开就全亮，通常不是你要的）；页数**数不出来**（deck 没有 `<section>`，页在 JS 里生成）时也给一条 warning，说清页号没被核对过——别让它变成静默通过。
+
+`page` / `enter` 只对 `engine: slides` 的段有意义；Manim 段由场景自己的时长决定，写上去不会有任何效果。
+
 ## 检查清单
 
 - `teachReady` 确实被置为 true（放在 `initialize()` 的 `then` 里，不要放在 `DOMContentLoaded`）。
 - 首屏（`teachCue` 还没被调用时）就是可以直接开录的版面，不要空白页。
+- 页模式下切到一页时**一个拍都不亮**（模板 `teachPage` 用 `Reveal.slide(n, 0, -1)`）：第一拍留给稿件的第一条 cue。传 `0` 会让每页的第一拍提前亮起，于是它对应的那条 cue 永远不生效（后面的节拍照常），`enter: 0` 也无法兑现。
 - 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍时）、检查 `teachPage`（页模式下），缺了在**录音之前**就拒绝。
-- 每页的 fragment 数与稿件里这一句的 cue 数一一对应；多出来的 fragment 永远不显示（页末夹住）。页内节拍数 = fragment 数 + 1（换页算第一次变化）。
+- 每页的 fragment 数与稿件里这一页的 cue 数一一对应；多出来的 fragment 永远不显示（页末夹住）。页内节拍数 = fragment 数 + 1（换页算第一次变化）。共享页按整页数，不是按句数。
 - 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
 
@@ -89,7 +107,7 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 写 deck 时守住五条：
 
 1. **一句至少一个 fragment**。一句话讲三个要点就拆三个 fragment，别让一句只停在一个静态版面上。
-2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。
+2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。只有真标记算数：注释与 `<script>` 里的 `class="fragment"` 不算节拍；整份 deck 数不出来时（节拍在 JS 里生成）plan 会明说一句，不会静默跳过。
 3. **同一页别塞超过 5 个 fragment**。reveal 会缩放适配，行数一多字号就被压到看不清；正文超过 10 行就该换页。
 4. **`teachCue(n)` 是"显示到第 n 步"**，`Reveal.getIndices().f` 是零基下标，两者差一。模板里已经处理，自己写 deck 时注意别再把 `f` 直接当目标值。
 5. **改了这一页的 fragment 数，就重算这一句的 cues**。节拍比例由变化次数算出（见 `video-teach-storyboard`「页内节拍」），重算后只需要重渲染，不用重录旁白。

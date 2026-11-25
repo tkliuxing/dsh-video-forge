@@ -95,6 +95,29 @@ export interface Sentence {
   /** Exactly what the voice says. Trimmed, and never empty. */
   say: string
   cues: Cue[]
+  /**
+   * Which deck page this sentence is recorded on (0-based), or null for "its own
+   * page" — the sentence's index inside the segment, which is the only page
+   * mapping a manuscript without `page` has (docs/TEACH-VIDEO.md §25).
+   *
+   * Two sentences naming the same page share it: the deck shows one page while
+   * several sentences are recorded, so the picture evolves instead of turning.
+   */
+  page: number | null
+  /**
+   * How many beats of that page are already lit when the recording starts, or
+   * null for "whatever the previous sentence on this page left lit" (0 when this
+   * sentence opens the page).
+   *
+   * Each sentence is a separate page load, so the deck's DOM is empty at t=0 and
+   * the enter state has to be replayed by the recorder before the capture starts
+   * (src/teach/slides.ts). Writing `enter` out is optional: the derived value is
+   * equivalent, and writing it only makes the manuscript readable without
+   * simulating it. Writing a value *larger* than the derived one is a deliberate
+   * cut at t=0; a smaller one is refused, because a beat would disappear
+   * (src/teach/rules.ts `pageFindings`).
+   */
+  enter: number | null
 }
 
 export interface Segment {
@@ -239,6 +262,12 @@ function projectPath(value: unknown, fail: (message: string) => never): string {
 
 function positiveInt(value: unknown, fail: (message: string) => never, what: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) fail(`${what} must be a positive whole number`)
+  return value as number
+}
+
+/** A page number or a beat count: zero is meaningful for both, so the floor is 0 rather than 1. */
+function nonNegativeInt(value: unknown, fail: (message: string) => never, what: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) fail(`${what} must be a whole number of 0 or more`)
   return value as number
 }
 
@@ -398,7 +427,7 @@ export function parseStoryboard(text: string): Storyboard {
     ;(raw.sentences as unknown[]).forEach((sentenceEntry, sentenceIndex) => {
       const there = at(doc, text, ['segments', index, 'sentences', sentenceIndex])
       const sentence = record(sentenceEntry, `sentences[${sentenceIndex}]`)
-      knownKeys(sentence, `segments[${index}].sentences[${sentenceIndex}]`, ['id', 'say', 'cues'], there.line)
+      knownKeys(sentence, `segments[${index}].sentences[${sentenceIndex}]`, ['id', 'say', 'cues', 'page', 'enter'], there.line)
       const sentenceId = requiredString(sentence.id, there.fail)
       if (!SLUG.test(sentenceId)) there.fail(`id "${sentenceId}" must be letters, digits, "-", "_" or "."`)
       // Sentence ids are the join key with timings.json and with the audio files, so they are unique document-wide.
@@ -407,7 +436,16 @@ export function parseStoryboard(text: string): Storyboard {
       const say = requiredString(sentence.say, there.fail, 'say is required')
       if (say.length > MAX_SAY_CHARS) there.fail(`say is ${say.length} characters; keep one sentence under ${MAX_SAY_CHARS}`)
       const cues = parseCues(sentence.cues, say, voiceProvider, doc, text, ['segments', index, 'sentences', sentenceIndex, 'cues'])
-      sentences.push({ id: sentenceId, say, cues })
+      // `page` and `enter` are about which deck page a sentence is recorded on and
+      // how it looks at t=0. Both are declared here and judged as a set by
+      // `auditManuscript` (the rules need the neighbouring sentences); this parses
+      // the shape only, the way it does for every other key (docs/TEACH-VIDEO.md §25).
+      const page = sentence.page === undefined || sentence.page === null ? null : nonNegativeInt(sentence.page, there.fail, 'page')
+      const enter = sentence.enter === undefined || sentence.enter === null ? null : nonNegativeInt(sentence.enter, there.fail, 'enter')
+      if (enter !== null && page === null) {
+        there.fail('enter needs page on the same sentence: use page to say which page this sentence is on, or drop enter and let the previous sentence on its page decide what is already lit')
+      }
+      sentences.push({ id: sentenceId, say, cues, page, enter })
     })
     segments.push({ id, engine, deck, scene, sentences })
   })
@@ -418,6 +456,58 @@ export function parseStoryboard(text: string): Storyboard {
 /** Every sentence in document order, which is the order the timeline concatenates them in. */
 export function allSentences(storyboard: Storyboard): { segment: Segment, sentence: Sentence }[] {
   return storyboard.segments.flatMap(segment => segment.sentences.map(sentence => ({ segment, sentence })))
+}
+
+/** Where one sentence's recording sits: which page is on screen, how much of it is already lit, and how much it leaves lit. */
+export interface PageSlot {
+  /** 0-based deck page, from `page` or (unshared) the sentence's index inside its segment. */
+  page: number
+  /** Beats already lit when the capture starts, from `enter` or from the sentence before it on that page. */
+  enter: number
+  /** Beats lit when the sentence ends: its last beat, or `enter` when it fires none. */
+  lit: number
+}
+
+/**
+ * Resolve `page` / `enter` for every sentence of a segment (page mode only).
+ *
+ * The derivation is what makes `enter` optional without making it vague: a
+ * shared page is a continuous timeline, so a sentence that does not say how it
+ * enters inherits the beats the previous sentence on its page left lit — which is
+ * what the viewer would have seen had the page never been reloaded. A sentence
+ * that opens a page starts unlit (docs/TEACH-VIDEO.md §25.2).
+ *
+ * Returned per sentence, in manuscript order. Validation is not done here: the
+ * rules in src/teach/rules.ts judge the whole set, and doing it twice would print
+ * every finding twice.
+ */
+export function pageSlots(segment: Segment): PageSlot[] {
+  const slots: PageSlot[] = []
+  let previous: { page: number, lit: number } | null = null
+  for (const [index, sentence] of segment.sentences.entries()) {
+    const page = sentence.page ?? index
+    const lastCue: number | null = sentence.cues.length === 0 ? null : sentence.cues[sentence.cues.length - 1]!.fragment
+    const inherited: number = previous !== null && previous.page === page ? previous.lit : 0
+    const enter: number = sentence.enter ?? inherited
+    // What this sentence leaves lit: its last beat, or whatever `enter` put on
+    // screen when it fires no beat of its own.
+    const lit: number = lastCue === null ? enter : Math.max(lastCue, enter)
+    slots.push({ page, enter, lit })
+    previous = { page, lit }
+  }
+  return slots
+}
+
+/** The slot for one sentence of a segment, or null when the sentence is not in it. */
+export function pageSlotOf(segment: Segment, id: string): PageSlot | null {
+  const index = segment.sentences.findIndex(sentence => sentence.id === id)
+  if (index < 0) return null
+  return pageSlots(segment)[index] ?? null
+}
+
+/** How many deck pages a segment's manuscript actually uses, for the plan and the deck check. */
+export function pagesUsed(segment: Segment): number {
+  return pageSlots(segment).reduce((highest, slot) => Math.max(highest, slot.page + 1), 0)
 }
 
 /** Parse and validate `timings.json`, the voice step's output. */

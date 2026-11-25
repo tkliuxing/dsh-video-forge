@@ -1,6 +1,6 @@
 # 教学视频路线（2026-11-20 起，已实现）
 
-> 状态：**已实现**。§1–§12 是决策与规划，§13 起是逐轮实施记录，§25 是唯一未实现的提案，§26 是「最初漏交的两种产物」在 2026-11-25 补齐的记录（烧入字幕、封面）。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；规划部分按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
+> 状态：**已实现**。§1–§12 是决策与规划，§13 起是逐轮实施记录，§25（一页承载多句 `page` / `enter`）2026-11-24 提案、2026-11-25 实现，§26 是「最初漏交的两种产物」在 2026-11-25 补齐的记录（烧入字幕、封面）。决策来自 2026-11-20 的问答会话（`session-2d3dbdb3`，限于"仅对话"工具面，读不到本仓库）；规划部分按本仓库的实际形状重写了一遍，并把"会话里靠推测写的部分"改成读代码得到的事实，剩下的不确定性单独列在 §11。
 >
 > 相关：`DESIGN.md` §4（工具面）、§9（产物与播放）、§15（未决与风险）、§17.2（产物落点）、§19（视频面板）、§22（skill 结构）；多幕并行派发的规程单独写在 [`TEACH-PARALLEL-ACTS.md`](TEACH-PARALLEL-ACTS.md)。
 
@@ -351,7 +351,7 @@ curl -sS https://openspeech.bytedance.com/api/v3/tts/unidirectional \
 
 **这一轮补的两块**：
 
-1. **reveal.js 正式模板**。`assets/teach/deck/` 里随包发 reveal.js 6.0.2 的 `reveal.js` / `reveal.css` / `theme.css` 与它的 MIT LICENSE（共 744 KB），模板 `index.html` 把契约压到两个全局：`window.teachCue(index)` 与 `window.teachReady`。`teachCue` 用 `Reveal.nextFragment()` 循环到第 n 个 fragment（Reveal 没有"跳到第 n 个 fragment"的 API，循环是诚实的写法，而且幂等）。`writeDeck()` 把这份模板和三个运行时文件抄进项目，**默认拒绝覆盖已有 deck**——deck 是手稿，重新脚手架覆盖掉手改内容是这里最坏的失败模式。
+1. **reveal.js 正式模板**。`assets/teach/deck/` 里随包发 reveal.js 6.0.2 的 `reveal.js` / `reveal.css` / `theme.css` 与它的 MIT LICENSE（共 744 KB），模板 `index.html` 把契约压到三个全局：`window.teachCue(index)`、`window.teachPage(index)`（页模式）与 `window.teachReady`。`teachCue` 用 `Reveal.nextFragment()` 循环到第 n 个 fragment（Reveal 没有"跳到第 n 个 fragment"的 API，循环是诚实的写法，而且幂等）。`writeDeck()` 把这份模板和三个运行时文件抄进项目，**默认拒绝覆盖已有 deck**——deck 是手稿，重新脚手架覆盖掉手改内容是这里最坏的失败模式。
 2. **分段复用**。`segmentPath()` 定死每个句子的段路径；`planSegments()` 把"这次渲染的"和"磁盘上已有的"合成一条完整时间轴，缺哪句就报哪句。
 
 **资源路径的一个坑**：`skills.ts` 用 `new URL('../assets/skills/', import.meta.url)` 能同时适配源码与打包产物，是因为它就在 `src/` 顶层；`src/teach/deck.ts` 深一层，打包后会被折进 `lib/index.js`，同一行代码在两种形态下指向不同目录。改成从 `import.meta.url` 往上走、找到第一个带 `assets/teach/deck` 的祖先目录，两种形态都对。
@@ -601,11 +601,11 @@ curl -sS https://openspeech.bytedance.com/api/v3/tts/unidirectional \
 
 无词时间戳不等于"一句一张死图"。deck 契约从两个全局变成三个：
 
-- `teachPage(n)`：切到第 n 页（一句一页，页序 = 句子的顺序）。
+- `teachPage(n)`：切到第 n 页（默认一句一页，页序 = 句子的顺序；稿件用 `page` / `enter` 可以让连续几句共用一页，见 §25）。
 - `teachCue(n)`：页内显示到第 n 步。
 - `teachReady`：版式就绪。
 
-录制时：句子开始先 `teachPage(句序号)`，再按 cue 的偏移 `teachCue(fragment)`。因此"折线逐点长出来"这类演示仍然能做，只是节拍由**作者按语义给比例**，不是由词决定。
+录制时：句子开始先 `teachPage(该句的页)`，再按 cue 的偏移 `teachCue(fragment)`。因此"折线逐点长出来"这类演示仍然能做，只是节拍由**作者按语义给比例**，不是由词决定。共享页时在切页与开录之间还有一次 `teachCue(enter)`，把上一句留下的亮度先打回去（§25.3）。
 
 cue 因此有两种时间写法：
 
@@ -706,9 +706,9 @@ cue 因此有两种时间写法：
 
 **给使用者的一句话**：这一节在插件配置卡片里、默认展开，标题行右侧就是两个 key 的状态；改完设置下一次工具调用即生效，但宿主进程必须重启过才能加载带这两个字段的构建。
 
-## 25. 一页承载多句：`page` / `enter` 提案（2026-11-24，未实现）
+## 25. 一页承载多句：`page` / `enter`（2026-11-24 提案，2026-11-25 实现）
 
-这一节是**设计提案**，代码未动。它的依据是一条真实片子（`video-hypatia`，七幕 196 页）跑完整条路线后留下的证据，不是推演。
+这一节的依据是一条真实片子（`video-hypatia`，七幕 196 页）跑完整条路线后留下的证据，不是推演。2026-11-24 写的是提案，2026-11-25 按这一节落成代码，实现与验证记录在 §25.12；§25.3 与 §25.6 已按实际代码改写，理由与否决过的方案原样保留。
 
 ### 25.1 为什么需要它
 
@@ -726,8 +726,8 @@ a00-6、a00-7、a00-8 三页讲的是同一件事的三个次第（「第一个�
 
 要真的共享一页，插件必须额外知道两件事，而这两件事 deck 自己算不出来：
 
-1. **哪几句属于同一页**。现在的页号就是句在本段里的下标（`src/teach/pipeline.ts:498` 的 `findIndex`），deck 只是被动接收 `teachPage(n)`。
-2. **进入这一页时该亮到第几拍**。每句都是独立的 `page.goto` → `teachPage` → 等 300 ms 过场 → 开录（`src/teach/slides.ts:173`，`PAGE_TRANSITION_MS = 300`）。新导航会清空 DOM，上一句点亮的卡不会留到下一句，所以进页状态必须由录制器在开录之前打到位。
+1. **哪几句属于同一页**。页号原本就是句在本段里的下标（当时的 `findIndex` 在 `renderSegments`，现在由 `src/teach/storyboard.ts` 的 `pageSlots` 解析），deck 只是被动接收 `teachPage(n)`。
+2. **进入这一页时该亮到第几拍**。每句都是独立的 `page.goto` → `teachPage` → 等 300 ms 过场 → 开录（`src/teach/slides.ts` 的切页块，`PAGE_TRANSITION_MS = 300`）。新导航会清空 DOM，上一句点亮的卡不会留到下一句，所以进页状态必须由录制器在开录之前打到位。
 
 **两条不要走的路**：
 
@@ -745,17 +745,27 @@ sentences:
   - { id: a00-8, say: ..., page: 5, enter: 2 }
 ```
 
-`enter` 不写时按上一条规则推算，写出来只是为了读稿时能一眼看到进页状态，两种写法等价。
+`enter` 不写时按上一条规则推算（推算值 = 上一条句子留在屏幕上的拍数，不是它最后的 cue 编号；上一句若写了更大的 `enter`，留下的就是那个数）。写成与推算值相同的数时两种写法等价（写出来只是省得读稿的人自己推一遍）；写成**更大**的值是刻意在句首跳拍（合法，页面开录即多亮几拍），写成**更小**的值会被拒绝，因为那一拍会当场消失。
 
-### 25.3 三个改动点
+两个键都只能是非负整数。**`enter` 必须和 `page` 写在同一句上**（只写 `enter` 说不清是进哪一页），这一条在解析期就拒绝，因为它与相邻句无关，能直接报出行号。
+
+### 25.3 改动点（五处）
 
 | 位置 | 现在 | 改成 |
 |---|---|---|
-| `src/teach/storyboard.ts:387` | `knownKeys(sentence, …, ['id','say','cues'])` | 白名单加 `page`、`enter`；`page` 校验非负整数，`enter` 校验非负整数 |
-| `src/teach/pipeline.ts:498` | `page = segment.sentences.findIndex(...)` | `sentence.page ?? segment.sentences.findIndex(...)` |
-| `src/teach/slides.ts:173` | 切页后等 300 ms | `RecordDeckOptions` 加 `enter?: number`；切页后若 `enter > 0` 先 `teachCue(enter)`，再等 300 ms |
+| `src/teach/storyboard.ts` 的句子解析 | `knownKeys(…, ['id','say','cues'])` | 白名单加 `page`、`enter`；两者校验非负整数；`enter` 无 `page` 直接拒绝 |
+| `src/teach/storyboard.ts` 的 `pageSlots(segment)` | 无 | 逐句解析出 `{ page, enter }`：页号缺省＝句下标，`enter` 缺省＝同页上一句留下的最后一拍（本句是该页第一句为 0）。`pageSlotOf` 给渲染器取单句，`pagesUsed` 给 plan 与 deck 核对数页数 |
+| `src/teach/pipeline.ts` 的 `renderSegments` | `page = segment.sentences.findIndex(...)` | `pageSlots` 的结果同时给出 `page` 与 `enter`，一起传给录制器 |
+| `src/teach/slides.ts` 的切页块 | 切页后等 300 ms | `RecordDeckOptions` 加 `enter?: number \| null`；切页后若 `enter > 0` 先 `teachCue(enter)`，再等 300 ms |
+| `assets/teach/deck/index.html` 的 `teachPage` | `Reveal.slide(n, 0, 0)` | `Reveal.slide(n, 0, -1)`：切到一页时**一个拍都不亮** |
 
-第三条的顺序是硬要求：screencast 在 300 ms 之后才开，`teachCue(enter)` 必须落在这段等待里。否则第 2 句的 t=0 仍是「整页暗」，观众会看到第一张卡闪两次。
+`assets/teach/deck/index.html` 那一行是落成时发现的既有缺陷，不在原提案里：`Reveal.slide` 的第三个参数是「落到第几个 fragment」，传 `0` 等于落到第 0 个（已显示），也就是切页当场点亮第一拍。后果是第一拍永远等不到自己的 cue（`teachCue(1)` 看到已经亮着，直接跳过），观众看到的是「页面一开就亮一块」；共享页的 `enter: 0` 因此根本无法兑现。改 `-1`（停在第 0 个之前）后开页是暗的，`teachCue` 的每一步都有变化。`test/teach-deck.test.ts` 起一份真实模板 deck 驱动一遍来守这条：切页后可见拍数 0、`teachCue(1)` 后 1、`teachCue(2)` 后 2、重复 `teachCue(1)` 不变（拿旧行为跑这条测试会失败在第一个断言上）。
+
+**已经建好的项目不会自动修**：`writeDeck` 不覆盖既有 deck，所以老项目的 deck 里仍是 `Reveal.slide(n, 0, 0)`，第一拍照旧提前亮、第一条 cue 照旧空转。要修就手改 deck 里那一行（`0` → `-1`），然后只重渲，不用重录旁白（见 `video-teach-iterate` 的「只改画面时重跑什么」）。
+
+`src/teach/slides.ts` 那一行（切页块）的顺序是硬要求：screencast 在 300 ms 之后才开，`teachCue(enter)` 必须落在这段等待里。否则第 2 句的 t=0 仍是「整页暗」，观众会看到第一张卡闪两次。
+
+解析与校验分开，也是刻意的：`pageSlots` 只算不判。同一条规则在两处各判一次就会报两遍，而规则本身需要相邻句（`page` 单调、`enter` 承接），那属于 `rules.ts` 的活儿。
 
 ### 25.4 为什么用 `teachCue(enter)`，不扩展 `teachPage(n, enter)`
 
@@ -770,50 +780,63 @@ sentences:
 共享页的规则：**同一页内，fragment 跨句继续递增**（第 1 句 1，第 2 句 2，第 3 句 3）。两条规则并存，判定看页是否相同：
 
 - **不同页之间**不比较（§23 的现有行为）；
-- **同一页内**必须递增，否则结构性拒绝（照 `src/teach/rules.ts:201` 那段跨句检查的写法）。
+- **同一页内**必须递增，否则结构性拒绝（照 `auditManuscript` 里那段跨句检查的写法，实现在 `pageFindings`）。
 
 这不是推翻 §23，是补它的另一半：一句一页时页面之间没有共享状态，共享页时同一页就是一条连续时间线。
 
-### 25.6 校验改成按页映射核对（`src/teach/rules.ts`）
+### 25.6 校验：哪些写坏的稿子会被拒绝，哪些只提示（`src/teach/rules.ts`）
 
-| 行 | 现在 | 改成 |
-|---|---|---|
-| 330 | `pages < segment.sentences.length` 报 warning「Give each sentence its own `<section>`」 | 整段都声明了 `page` 时：`max(page) + 1 > deck 页数` → 拒绝（句子的页不存在）；`max(page) + 1 < deck 页数` → warning（多出来的页永远不会被录到）。没声明 `page` 的段保持现有 warning |
-| 334 | `segment.sentences.forEach((sentence, page) => …)` 拿句下标当页下标 | 用 `pageOfSentence[i]` 取该句所在页的 fragment 总数做上限核对 |
-| 新增 | 无 | 同页跨句 fragment 递增（§25.5） |
-| 新增 | 无 | `page` 必须单调不减：录制严格按句序进行，页号回退等于让画面倒着走 |
-| 新增 | 无 | `enter` 必须小于本句第一个 cue 的 `fragment`，否则这一拍在开录前就亮过了，cue 到时不会有变化 |
+`auditManuscript` 里新增 `pageFindings(segment)`，只在页模式（无词时间戳）跑；`auditDecks` 则把「句 → 页」的映射换成 `pageSlots` 的结果。提案时只有「四条拒绝 + 按页核对页数」，落成时多出几条：`enter` 让画面倒退、共享页整句无变化、共享页要 `teachCue` 却缺失、页数数不出来（后三条在原提案里看不见，是共享页把旧规则的豁免前提改掉了）。
 
-`page` 只声明一部分的做法要拒绝：一条句子的页归属和相邻句有关，半张声明会让进页状态没有唯一答案。
+下表是代码的全集，**类型列就是判据**，不另标「共几条」——那类计数随行数漂，上一版就写错过。写作侧该知道的收在 `video-teach-storyboard`，deck 侧该知道的收在 `video-teach-slides`：
+
+| 规则 | 类型 | 谁来判 | 说明 |
+|---|---|---|---|
+| 只给一部分句子声明 `page` | 拒绝 | `pageFindings` | 例外只有一种：句子写 `page: <它自己的下标>` **并且**写了 `enter`（「这一页一打开就亮着几拍」），这种声明不挪页，可以单独写。除此之外——声明了别的页，或只写了 `page: i` 没写 `enter`——都必须整段都写，否则共享关系与进页状态都无从判定 |
+| `page` 回退 | 拒绝 | `pageFindings` | 录制严格按句序，页号变小等于让画面倒着走 |
+| 同页内 fragment 没有递增 | 拒绝 | `pageFindings` | §25.5。因为缺省的 `enter` 就是上一句留下的拍数，这条与下一条在代码里是同一个判断，消息按「写出来的 `enter`」和「承接上一句」分两种措辞 |
+| `enter` 不小于本句首个 cue | 拒绝 | `pageFindings` | 那一拍开录前就亮过了，cue 到时不会有变化。给出的改法是**合法区间**（≥ 上一句留下的拍数、< 首个 cue），而不是「改小一点」——后者常常会被下一条规则再拒一次 |
+| 挪去的页 deck 没有 | 拒绝 | `auditDecks` | 段里有句子挪到别的页（`page` ≠ 它自己的下标）且 `max(page) + 1 > deck 页数`：那一页不存在。**只对挪页的段拒绝**；一句一页的段保持原有 warning（模板的 `teachPage` 会夹住，句子停在最后一页而不是失败） |
+| deck 有页永远录不到 | warning | `auditDecks` | `max(page) + 1 < deck 页数`，**只对挪页的段**：多出来的页一次也不会出现。没挪页时只比较句数与页数（原有 warning） |
+| 页内 fragment 上限 | warning | `auditDecks` | 上限改成取该句**所在页**的 fragment 数，而不是用句下标当页下标 |
+| `enter` 超过该页的 fragment 数 | warning | `auditDecks` | `enter` 是「这一页亮到第几拍」的声明，和 cue 一样受该页上限约束；超过时 deck 会夹在页末，页面一开就是全亮 |
+| `enter` 比同页上一句留下的少 | 拒绝 | `pageFindings` | 写出来的 `enter` 是权威值，比承接值小就意味着开录瞬间有一拍消失，画面倒退。同一句最多一条：若「首个 cue 不高于上一句留下的拍数」，那么**没有任何 `enter` 值**能同时满足两条，消息直接要求把节拍按整页重新编号 |
+| 共享页上整句画面不动 | warning + `silent` | `auditManuscript` | 同一页上既不开新页、也没有 cue 或更大的 `enter` 的那一句，整句期间画面不变。「没 cue 不算缺陷」的豁免只对独立成页的句子成立。逐句点名，因此「连续两句无变化」那条成对 warning 只在 cue 模式报（页模式报它等于同一个缺陷说两遍） |
+| 有 `enter > 0` 却缺 `teachCue` | 拒绝 | `auditDecks` | 整段一条 cue 都没有、但有 `enter > 0`（共享页或独立成页都可能）时，录制器仍要用 `teachCue` 打回进页状态；缺了在录音前拒绝，而不是录制时才发现 |
+| 页数数不出来 | warning | `auditDecks` | deck 没有 `<section>`（或页在 JS 里生成）而稿件声明了 `page`：页号无法核对，明说一句，不静默跳过 |
+| 节拍数数不出来（cue 模式） | warning | `auditDecks` | deck 的 `class="fragment"` 数不出来（节拍在 JS 里生成）时，整 deck 的越界核对无从做起：同样明说一句 |
+| `enter` 没写 `page` | 拒绝 | 解析期（`storyboard.ts`） | 这一条与相邻句无关，解析时就能带行号报出来 |
+
+词级时间戳（`volcengine`）下这两个键不生效——纯 cue 模式从不在句子之间换页。这条不改行为，只给一句 warning，否则作者会以为页号写了就该有变化。
 
 ### 25.7 不改的部分（划界）
 
 - **跨句仍然是硬切**。每句独立录制、单独编码、最后拼接，跨句过渡动画拍不到，本提案不改变这一点。观众感到「连续」的原因只能是版面、页码、几何三者一致。
 - **重录仍然只花一句的钱**。共享页不改变「一句一录像片段」，`sentences: ['a00-7']` 仍然只重渲那一段。
 - **页模式仍然没有词时间戳**。`enter` 与 `at_progress` 都与发音不逐字对齐。
-- **每页 fragment 上限仍是 5**（skill 里的排版约定）。共享页让这个数字更快撞到（三句 × 每句 2 拍 = 6），所以 skill 里要同时写：共享页按「一页三句、每句两拍」规划版面，超了就说明这几句不该挤在一页。
+- **每页 fragment 上限仍是 5**（skill 里的排版约定，**不由代码强制**：代码只核对「cue 不超出该页实际 fragment 数」，5 是排版判断）。共享页让这个数字更快撞到（三句 × 每句 2 拍 = 6），所以 skill 里要同时写：共享页按「一页三句、每句两拍」规划版面，超了就说明这几句不该挤在一页。
 
 ### 25.8 已成立但没写进契约的一条：SVG 元素也能当节拍
 
 同一条片子还依赖一个**现有实现已经支持、文档里却没写**的行为：`class="fragment"` 写在 SVG 的 `<g>` 上同样有效。
 
-- `countDeckFragments` 用正则数 `class="fragment"`（`src/teach/rules.ts:253`），`<g>` 会被数到；
+- `countDeckFragments` 用正则数 `class="fragment"`（`src/teach/rules.ts`；只看标记，注释与 `<script>` 里的字面量不算），`<g>` 会被数到；
 - `pageFragments` 按 `<section>` 切分，`<g>` 落在 section 内，算进该页；
 - `teachCue(k)` 是 deck 自己的 JS，点亮「当前页前 k 个」，`<g>` 与 `<div>` 一视同仁（SVG 的 `opacity` 同样吃 CSS 类）。
 
 这条让「一页内三张卡依次亮」不必拆三页，是**不改代码就能拿到**的能力。必须写成契约，否则以后有人把正则收紧成「只数 section 的直接子元素」，项目侧会静默坏掉。稳妥的写法是 deck 给每个节拍元素加 `data-beat="k"`，`teachCue(k)` 点亮 `data-beat ≤ k`，不依赖 DOM 顺序。
 
-### 25.9 验收（全部离线）
+### 25.9 验收（全部离线，2026-11-25 全部通过）
 
-1. 新 fixture `fixtures/teach/shared-page/`：三句共享一页，`enter: 0 / 1 / 2`。`video_teach_plan` 通过、零 warning，且不再出现「Give each sentence its own `<section>`」。
-2. 渲染该 fixture 后抽帧：第 2 句的首帧与第 1 句的末帧颜色集合相同，证明 `enter` 真的在开录前打到位。
-3. `rules.ts` 的负例：同页第二句的 fragment 从 1 重新开始 → 拒绝；`enter` ≥ 本句第一个 cue 的 `fragment` → 拒绝；只声明一半的 `page` → 拒绝；`page` 越界 → 拒绝。
-4. 老 fixture（`fixtures/teach/page-mode/`、`fixtures/teach/sample/`）行为不变：`pnpm test`、`pnpm run build`。
+1. 新 fixture `fixtures/teach/shared-page/`：三句共享一页，`enter: 0 / 1 / 2`。`video_teach_plan` 通过，除一条 page-mode 说明外没有待修项，且不再出现「Give each sentence its own `<section>`」。
+2. 渲染该 fixture 后抽帧：fixture 的版面是三块色带，按「亮了几块」断言 0→1 / 1→2 / 2→3，其中第 2 句的首帧必须是 1——等于第 1 句末帧的状态，证明 `enter` 真的在开录前打到位。
+3. `rules.ts` 的负例：同页第二句的 fragment 从 1 重新开始 → 拒绝；`enter` ≥ 本句第一个 cue 的 `fragment` → 拒绝；挪页的声明只给一半句子写 → 拒绝；`page` 越界 → 拒绝。
+4. 老 fixture（`fixtures/teach/page-mode/`、`fixtures/teach/sample/`）的**句 → 页映射**行为不变（没写 `page` 的段仍是一句一页）：`pnpm test`、`pnpm run build`。page-mode fixture 自身有三处与契约不一致被修掉（节拍元素补 `class="fragment"`、注释里不再出现字面量 `<section>`），所以它现在在 plan 里是干净的，这与「映射行为不变」不冲突。
 5. skill 同步：`video-teach-storyboard` 写 `page` / `enter` 与「跨句必然硬切」的事实，`video-teach-slides` 写共享页的 deck 怎么写（`teachPage` 幂等、进页拍由录制器先打到位、不依赖 DOM 残留）。
 
 ### 25.10 代价
 
-storyboard 多两个可选键，`rules.ts` 三处检查，`slides.ts` 一次额外调用与一个选项字段，两份 skill 各一段。换来的是「同一版面承载多句」从「靠固定页码伪装」变成契约里的一等能力，且判断依据（页归属 + 进页拍数）只有稿子一个出处。
+storyboard 多两个可选键，`rules.ts` 的页面检查、`slides.ts` 一次额外调用与一个选项字段，两份 skill 各一段。换来的是「同一版面承载多句」从「靠固定页码伪装」变成契约里的一等能力，且判断依据（页归属 + 进页拍数）只有稿子一个出处。
 
 ### 25.11 和它配套、但不改插件的两件事
 
@@ -821,6 +844,35 @@ storyboard 多两个可选键，`rules.ts` 三处检查，`slides.ts` 一次额�
 
 1. **素材真伪没有机器判定**。截图有四种状态（拍到 / 拍不到 / 拍到但与旁白矛盾 / 拍到但不能整图上镜），现在全靠人在 README 表格里记。做法是把它们收进一份 `materials/shots/shots.yaml`（`status` / `crop` / `must_show` / `forbidden`），角标由判定结果生成，而不是由人写。**已单独立文档展开：[`docs/TEACH-MATERIALS.md`](TEACH-MATERIALS.md)**（2026-11-25）：断言在拍摄时对 DOM 做，不在出片后对 PNG 做；`materials/shots/shots.yaml` 与 `storyboard/shots.yaml` 是两个不同的文件。同一份文档还定了 deck 静态资源（图标内联、位图外链）与抽卡参考图（立绘、首尾帧）的落点与台账。
 2. **图元被等比缩小到读不清**。库里的图元只按设计宽度画，塞进窄列后整体缩到 0.72，字号跌破 24 px。要在图元上声明最小可用宽度，自检里断言宿主列宽不小于它，不满足就要求重排，而不是缩放。
+
+### 25.12 实现与验证（2026-11-25）
+
+代码（§25.3 的五处改动 + 校验）：
+
+- `src/teach/storyboard.ts`：`Sentence` 加 `page` / `enter`，白名单与非负整数校验，`enter` 无 `page` 拒绝；新增 `pageSlots` / `pageSlotOf` / `pagesUsed`，只算不判（`PageSlot` 同时给出 `page` / `enter` / `lit`，`lit` 是这一句结束时页面亮到第几拍，规则用它判「画面有没有动」）。
+- `src/teach/pipeline.ts`：`renderSegments` 用 `pageSlots` 的 `{ page, enter }` 驱动录制器；`planStoryboard` 的页数改成稿件实际用到的页数（共享页比句子少），措辞不再说「一句一页」。
+- `src/teach/slides.ts`：`enter` 在切页与 300 ms 等待之间调用 `teachCue`，因此 t=0 就带着进页状态。
+- `src/teach/rules.ts`：`pageFindings` 的四类拒绝（见 §25.6：局部声明、页回退、`enter` 不小于首个 cue、`enter` 让画面倒退）。两条 `enter` 相关的拒绝同句最多报一条，且给出的改法都在合法区间内（≥ 上一句留下的拍数、< 首个 cue）；当这个区间为空时直接要求按整页重新编号，`auditDecks` 用同一份 `pageSlots` 做页数核对（越界拒绝、多余页 warning）、「该页 fragment 上限」、「`enter` 不超过该页 fragment 数」、「无 cue 但 `enter > 0` 时必须有 `teachCue`」与「页数数不出来时明说」；`auditManuscript` 另给两条：词级时间戳下「这两个键不生效」的 warning，以及共享页上整句画面不动的那一句记 `silent` 并点名。
+- 工具文字：`video_teach_plan` / `video_teach_render` / `video_teach_narrate` 的描述与结论行都不再说「每句一页」，改成「句子的页由稿件给（自己的，或 `page` 共享的）」；plan 的 `rhythm:` 行改用 `pagesUsed`，不再按句数报页数。
+- `assets/teach/deck/index.html`：`teachPage` 改成 `Reveal.slide(n, 0, -1)`，注释重写成「开页暗 + 共享页怎么接」（§25.3 的 deck 那一行）。
+
+测试（`pnpm check`：738 passed / 7 skipped，构建通过）：
+
+- `test/teach-storyboard.test.ts`：语法（`page` / `enter`、非负、`enter` 无 `page`）、`pageSlots` 的派生（承接上一句 / 开页为 0）、老 fixture 仍一句一页。
+- `test/teach-rules.test.ts`：每类拒绝各一例（局部声明——含「只写自己那一页但没写 `enter`」的负例与「自己那一页 + `enter`」的正例、页回退、`enter` 不小于首个 cue、「倒退且编号重启」只报一条并给出合法区间、`enter` 让画面倒退）；「推荐的修法必须能通过」单独一例；共享页整句无变化被点名；词级时间戳下的无效提示；`auditDecks` 的越界拒绝 / 多余页 warning / 按所在页核对 fragment 上限 / `enter` 超过该页 fragment 数 / 无 cue 但 `enter > 0` 时要求 `teachCue` / 页数与节拍数数不出来时的 warning。
+- `test/teach-deck.test.ts`：拿 `writeDeck` 生成的**真实模板 deck** 驱动一遍，断言切页后可见拍数为 0（旧行为是 1，这条测试在旧行为下第一个断言就失败）。
+- `test/teach-shared-page.test.ts`：fixture 走 `video_teach_plan`，除一条 page-mode 说明外没有待修项（`rhythm:` 与 `picture:` 两行一并断言，避免结论行和 warning 互相打架）；改坏第二句编号则在花钱前拒绝；**真渲染三句并抽帧**，`litBands` 依次断言 `0→1 / 1→2 / 2→3`，其中第 2 句首帧必须是 1（若 `enter` 打在开录之后，这里会是 0）。
+- 顺带修掉四处既有缺陷。前两处是 fixture 与契约不一致：`fixtures/teach/page-mode/` 与新的 shared-page deck 原来只用 `data-beat` 而没写 `class="fragment"`，插件按类名数不到节拍（`pageFragments` 会是 `[0,…]`，plan 报「该页 0 个 fragment」）；deck 注释里出现字面量 `<section>` 会被页分割正则当成一页。第三处是插件自己的模板 deck 切页即点亮第一拍（§25.3 的 deck 那一行），影响的是所有项目，不只是本轮的共享页；第四处是 `deckPageFragments` / `countDeckFragments` 把注释与 `<script>` 里的字面量当成真标记（`markupOnly`，见下段审查记录）。
+
+**独立审查三轮**（每轮都是 0 上下文的新子任务，只给规则、代码与验收口径；后两轮只复核上一轮的修复）。第三轮的阻断项是 `deckPageFragments` 与 `countDeckFragments` 把注释和 `<script>` 里的字面量当成真标记：出厂模板的脚本注释里写着 `<section>`，于是「一页 deck」被数成两页，§25.6 承诺的「声明页不存在→拒绝」在模板 deck 上失效（只降级成一句「page 2 … 有 0 个 fragment」），同时还冒出一条假的「有页永远录不到」告警——而文档明说项目 deck 就是这份模板的副本。改法两层：两个计数函数先剥掉 HTML 注释与 `<script>` / `<style>` 体（`markupOnly`），模板注释也改成不带尖括号的措辞；新增一条单元负例（旧实现下 `[2,1,1,0]`，现在 `[2]`）与一条用 `writeDeck` 生成真 deck 走 plan 的用例。第三轮另外修的：skill 承诺「独立成页也能写 `enter > 0`」但代码要求整段都写 `page`（把局部声明规则收窄成「只有**挪页**的声明才要求整段都写」，并为这个能力补了用例）；`enter` 倒退与 `enter`≥首个 cue 在同一个句子上叠报两条、两条给的改法互相矛盾（合并成一条）；§25.3 标题「三个改动点」与表内 5 行不符、正文按序号指代还会随行序漂（改成按名字指）；计数类表述从 §25.6、skill 与 `TODO.md` 里删掉，改成「类型列就是判据」；`enter`/`teachCue` 两条消息把「独立成页」说成「共享页」；`docs/TEACH-PARALLEL-ACTS.md` 与 §25.7 的指针/约定标注。
+
+第三轮修复由同一个审查者复核时，又找出三处**修复本身的问题**，值得单独记一笔，因为都是「改法没经过自己的校验」这一类：① 上一段合并出来的消息里，「或写至少 M」这条出路在 `首个 cue ≤ 上一句留下的拍数` 时会被下一条规则反过来拒绝——现在判据改成「有没有合法区间」，区间为空就直接要求重新编号，并加了一条「推荐的修法必须能通过」的用例（先断言坏稿被拒，再把消息里说的改法写出来断言通过）；② 局部声明放宽成「声明等于自己下标」时，**没写 `enter`** 的空声明也被放过了（那正是「想共享第 0 页」的初手写法，上一轮还会被拒），现在放宽只覆盖「自己那一页 + `enter`」，负例补上；③ `auditDecks` 的越界检查还按「段里有人写过 `page`」触发，于是独立成页的合法声明会让**没声明过页**的那一句被拒绝，现在按「段里有句子挪页」触发，其余退回原有的句数 warning。另外补了一条 cue 模式下「节拍数数不出来」的 warning（此前会静默跳过，与本仓库「未知必须显式」冲突）。
+
+第一轮的阻断项一条：模板 deck 的 `teachPage` 在切页时就点亮第一拍，每页第一条 cue 因此永远不生效、`enter: 0` 无法兑现。这是本轮唯一一条只在真机上看得见的错误，fixture deck 的 `teachCue` 是幂等 setter 而不是 `nextFragment` 循环，所以端到端测试看不见它。修法见 §25.3 的 deck 那一行，并新增 `test/teach-deck.test.ts` 拿真实模板 deck 驱动一遍（旧行为下第一个断言就失败，已实测）。
+
+第一轮另外 11 条：plan 的 `rhythm:` 行仍按句数报页数、并与同一条消息里的 warning 打架（已改用 `pagesUsed`，测试直接断言那两行原文）；文档头部仍写「§25 未实现」；`enter` 让画面倒退无人管（新增第五条拒绝）；共享页上「这句没有 cue 也不算缺陷」的豁免已不成立（新增 silent 规则）；`teachCue` 缺失要到录制才报，而那时旁白已付过钱（改在 plan 拒绝）；页数数不出来时静默跳过（改 warning）；`video_teach_narrate` 的结论行仍说「每句一页」；模板 deck 的三段注释与新行为相反；三处代码行号指针过期（改成函数名，不再引行号）；三处「零 findings」说过头（改成「除一条 page-mode 说明外无待修项」）；验收记录里的测试数比实跑少一个（改成 731 passed / 7 skipped）。
+
+第二轮修的是回写口径：§25.6 的标题计数与表内行数不符（第三轮干脆把计数删掉，改成「类型列就是判据」）、§25.12 与 `DESIGN.md` 仍写「四条拒绝」、§25.2 与 skill 的「两种写法等价」与新增的「可以写更大的 `enter`」互相矛盾、`-1` 修复对已建项目意味着什么没写（老 deck 不自动修，手改一行后只重渲，`video-teach-iterate` 已补一条坑）、slides skill 把「第一条 cue 空转」写成了「每条 cue 都晚一步」、共享页逐句点名与「连续两句无变化」成对 warning 重复（成对警告改为只在 cue 模式报）、「页数数不出来」只写在 docs 而 skill 没提（两份 skill 各补一句）、开页句写 `enter > 0` 代码允许但没文档（skill 补一句）。
 
 ## 26. 两种曾经漏交的产物：烧入字幕与封面（2026-11-25 补齐）
 

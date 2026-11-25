@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>shared-page example</title>
+<!--
+  A shared page: one deck page carries the three beats that three sentences walk
+  through together (docs/TEACH-VIDEO.md §25, contract in the video-teach-slides
+  skill). The page element is a real `section`, because that is what the plugin
+  splits on to count the beats of each page.
+
+  Two things the recorder relies on, and the deck must not fight:
+
+  1. `teachPage(n)` is idempotent. Every sentence that names this page calls it
+     again, and each call happens after a fresh page load, so the deck always
+     starts on page 0 and is moved to n.
+  2. `teachCue(k)` means "show up to beat k", and the recorder calls it with the
+     resolved `enter` BEFORE the capture starts. So the deck never needs to
+     remember what the previous sentence left lit — and must not try to: a fresh
+     page load has no memory of it.
+-->
+<style>
+  html, body { height: 100%; margin: 0; background: #0b1020; color: #e8ecf4; font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
+  .page { position: relative; height: 100vh; }
+  .band { position: absolute; left: 0; width: 100%; height: 33.333%; box-sizing: border-box; opacity: 0.14; transition: opacity 180ms ease; }
+  .band.on { opacity: 1; }
+  .band.beat-1 { top: 0; background: #e05252; }
+  .band.beat-2 { top: 33.333%; background: #52c286; }
+  .band.beat-3 { top: 66.666%; background: #7aa2f7; }
+  .band h2 { position: absolute; bottom: 10px; left: 96px; margin: 0; font-size: 44px; color: #0b1020; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main id="deck">
+  <section class="page" data-page="0">
+    <div class="band fragment beat-1" data-beat="1"><h2>第一块 · 存</h2></div>
+    <div class="band fragment beat-2" data-beat="2"><h2>第二块 · 组织</h2></div>
+    <div class="band fragment beat-3" data-beat="3"><h2>第三块 · 看见</h2></div>
+  </section>
+</main>
+<script>
+// Minimal deck implementing the recorder contract without reveal.js. Beats are
+// numbered across the whole page, not per sentence, which is what a shared page
+// needs: `teachCue(2)` lights the first two regardless of which sentence is
+// recording.
+const pages = [...document.querySelectorAll('[data-page]')]
+const beatsOf = (index) => [...pages[index].querySelectorAll('[data-beat]')]
+let current = 0
+
+window.teachCue = function teachCue(step) {
+  for (const beat of beatsOf(current)) {
+    beat.classList.toggle('on', Number(beat.dataset.beat) <= Number(step))
+  }
+}
+
+window.teachPage = function teachPage(index) {
+  current = Math.max(0, Number(index) || 0)
+  pages.forEach((page, at) => page.classList.toggle('hidden', at !== current))
+}
+
+window.teachPage(0)
+window.teachReady = true
+</script>
+</body>
+</html>

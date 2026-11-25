@@ -1,0 +1,32 @@
+# Shared page: three sentences, one deck page, and the beats keep counting up
+# (1, 2, 3) because `teachCue(n)` means "show up to step n" — numbering the second
+# sentence from 1 again would re-confirm a beat that is already lit and the picture
+# would not move (docs/TEACH-VIDEO.md §25).
+#
+# Each sentence is its own page load, so the deck comes up empty every time; the
+# recorder replays `enter` before the capture starts, which is why sentence 2 opens
+# on exactly the frame sentence 1 ended on.
+meta:
+  title: 一页三句
+  voice:
+    speaker: stella
+  cover: cover/index.html
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 三块版面说的是同一件事，所以它们只有一页。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: s01-2
+        say: 第二句进来时第一块已经亮着，画面接着上一句。
+        page: 0
+        enter: 1
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+      - id: s01-3
+        say: 第三句进来时亮着两块，这一句点亮最后一块。
+        page: 0
+        enter: 2
+        cues: [{ fragment: 3, at_progress: 0.4 }]

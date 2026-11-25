@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { chromium } from 'playwright-core'
 import { describe, expect, it } from 'vitest'
 import { deckExists, DECK_ASSETS, escapeHtml, findAssetDirectory, writeDeck } from '../src/teach/deck.ts'
 import { planSegments, segmentPath, type TeachPaths } from '../src/teach/pipeline.ts'
@@ -62,6 +64,59 @@ describe('deck scaffolding', () => {
     await expect(writeDeck(dir, { title: 'second', slides: '' })).rejects.toThrow(/already exists/)
     await writeDeck(dir, { title: 'second', slides: '' }, true)
     expect(await readFile(join(dir, 'index.html'), 'utf8')).toContain('second')
+  })
+})
+
+/** Whether this machine can drive the scaffolded deck at all. */
+const CAN_DRIVE = await chromium.launch({ args: ['--hide-scrollbars'] })
+  .then(async browser => { await browser.close(); return true })
+  .catch(() => false)
+
+describe.skipIf(!CAN_DRIVE)('the scaffolded deck, driven like the recorder drives it', () => {
+  /** The state of one page: how many of its fragments reveal.js reports as shown. */
+  async function driveDeck(): Promise<{ onPageSwitch: number, afterCue1: number, afterCue2: number, idempotent: number }> {
+    const dir = join(await tempDir('deck-drive'), 'slides', 's01')
+    const slides = [
+      '<section><h1>第一页</h1><p class="fragment">一</p><p class="fragment">二</p></section>',
+      '<section><h1>第二页</h1><p class="fragment">甲</p><p class="fragment">乙</p><p class="fragment">丙</p></section>',
+    ].join('\n')
+    const entry = await writeDeck(dir, { title: '驱动测试', slides })
+    const browser = await chromium.launch({ args: ['--hide-scrollbars'] })
+    try {
+      const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } })
+      await page.goto(pathToFileURL(entry).href, { waitUntil: 'load' })
+      await page.waitForFunction(() => (globalThis as { teachReady?: boolean }).teachReady === true, undefined, { timeout: 15_000 })
+      const shown = () => page.evaluate(() => {
+        const reveal = (globalThis as unknown as { Reveal: { getIndices(): { f?: number } } }).Reveal
+        return (reveal.getIndices().f ?? -1) + 1
+      })
+      const cue = (n: number) => page.evaluate(step => (globalThis as unknown as { teachCue(step: number): void }).teachCue(step), n)
+      const goPage = (n: number) => page.evaluate(index => (globalThis as unknown as { teachPage(index: number): void }).teachPage(index), n)
+
+      // The recorder's order for a page: switch, (replay `enter`), wait, record.
+      await goPage(1)
+      const onPageSwitch = await shown()
+      await cue(1)
+      const afterCue1 = await shown()
+      await cue(2)
+      const afterCue2 = await shown()
+      await cue(1)
+      const idempotent = await shown()
+      return { onPageSwitch, afterCue1, afterCue2, idempotent }
+    } finally {
+      await browser.close()
+    }
+  }
+
+  it('opens a page with none of its beats lit, so the first cue still has somewhere to go', async () => {
+    // `Reveal.slide(n, 0, 0)` lit the page's first fragment on the switch, which
+    // made the manuscript's first cue a no-op and made `enter: 0` impossible to
+    // honour (found 2026-11-25, docs/TEACH-VIDEO.md §25).
+    const state = await driveDeck()
+    expect(state.onPageSwitch).toBe(0)
+    expect(state.afterCue1).toBe(1)
+    expect(state.afterCue2).toBe(2)
+    expect(state.idempotent).toBe(2)
   })
 })
 

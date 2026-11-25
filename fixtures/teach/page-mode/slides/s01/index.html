@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <title>page-mode example</title>
 <!--
-  Page mode: one <section> per sentence, in manuscript order. The recorder calls
+  Page mode: one page per sentence, in manuscript order (one `section` element
+  each, because that is what the plugin splits on to count a page's beats). The recorder calls
   `teachPage(sentenceIndex)` at the start of each sentence and then advances the
   beats inside that page on the manuscript's `at_progress` cues.
 
@@ -28,17 +29,17 @@
 <main id="deck">
   <section class="page" data-page="0">
     <h1>前几项部分和</h1>
-    <div class="row" data-beat="1">S₁ = 1.0000</div>
-    <div class="row" data-beat="2">S₂ = 1.2500</div>
-    <div class="row" data-beat="3">S₃ = 1.3611</div>
+    <div class="row fragment" data-beat="1">S₁ = 1.0000</div>
+    <div class="row fragment" data-beat="2">S₂ = 1.2500</div>
+    <div class="row fragment" data-beat="3">S₃ = 1.3611</div>
   </section>
   <section class="page hidden" data-page="1">
     <h1>再加更多项</h1>
-    <div class="row" data-beat="1">S₁₀₀ ≈ 1.6350</div>
+    <div class="row fragment" data-beat="1">S₁₀₀ ≈ 1.6350</div>
   </section>
   <section class="page hidden" data-page="2">
     <h1>极限</h1>
-    <div class="row" data-beat="1">π²/6 ≈ 1.6449</div>
+    <div class="row fragment" data-beat="1">π²/6 ≈ 1.6449</div>
   </section>
 </main>
 <script>

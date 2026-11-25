@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import {
   allSentences,
   cueOffsetMs,
+  pageSlots,
+  pagesUsed,
   parseStoryboard,
   parseTimings,
   reconcileTimings,
@@ -281,6 +283,91 @@ segments:
   })
 })
 
+describe('sharing one page across sentences (page / enter)', () => {
+  /** Three sentences on one page, the way §25.2 writes them. */
+  const SHARED = `meta:
+  title: t
+  voice:
+    provider: deepseek
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    sentences:
+      - id: a
+        say: 第一句先点亮一块。
+        page: 4
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句进来时第一块已经亮着。
+        page: 4
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+      - id: c
+        say: 第三句点亮最后一块。
+        page: 4
+        enter: 2
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+`
+
+  it('reads page and enter, and leaves them null when absent', () => {
+    const sentences = parseStoryboard(SHARED).segments[0]!.sentences
+    expect(sentences.map(sentence => [sentence.page, sentence.enter])).toEqual([[4, null], [4, null], [4, 2]])
+    const plain = parseStoryboard(SHARED.replace(/ +page: 4\n/g, '').replace('        enter: 2\n', ''))
+    expect(plain.segments[0]!.sentences.map(sentence => [sentence.page, sentence.enter])).toEqual([[null, null], [null, null], [null, null]])
+  })
+
+  it('refuses enter without page, because it names no page to enter', () => {
+    const broken = SHARED.replace('        page: 4\n        enter: 2', '        enter: 2')
+    expect(() => parseStoryboard(broken)).toThrowError(/enter needs page/)
+  })
+
+  it('refuses a negative page or enter', () => {
+    expect(() => parseStoryboard(SHARED.replace('page: 4', 'page: -1'))).toThrowError(/page must be a whole number of 0 or more/)
+    expect(() => parseStoryboard(SHARED.replace('enter: 2', 'enter: -2'))).toThrowError(/enter must be a whole number of 0 or more/)
+  })
+
+  it('derives the enter state from what the previous sentence on the page left lit', () => {
+    const [a, b, c] = pageSlots(parseStoryboard(SHARED).segments[0]!)
+    // `lit` is what each sentence leaves on screen, which is what the next one
+    // inherits (and what the rules read to judge a shared page).
+    expect(a).toEqual({ page: 4, enter: 0, lit: 1 })
+    // b says nothing: it inherits a's last beat.
+    expect(b).toEqual({ page: 4, enter: 1, lit: 2 })
+    // c writes it out, and the two ways must agree.
+    expect(c).toEqual({ page: 4, enter: 2, lit: 3 })
+  })
+
+  it('starts a sentence that opens a page unlit, and counts pages used', () => {
+    const script = `meta:
+  title: t
+  voice:
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    sentences:
+      - id: a
+        say: 第一页第三拍。
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+      - id: b
+        say: 第二页的第一句从零开始。
+        page: 1
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+`
+    const segment = parseStoryboard(script).segments[0]!
+    expect(pageSlots(segment).map(slot => slot.enter)).toEqual([0, 0])
+    // a is on its own index page (0); b declares page 1, so the manuscript uses two.
+    expect(pagesUsed(segment)).toBe(2)
+  })
+
+  it('parses the shared-page fixture', async () => {
+    const board = parseStoryboard(await readFile(fileURLToPath(new URL('../fixtures/teach/shared-page/storyboard.yaml', import.meta.url)), 'utf8'))
+    const segment = board.segments[0]!
+    expect(segment.sentences.map(sentence => sentence.page)).toEqual([0, 0, 0])
+    expect(pageSlots(segment).map(slot => slot.enter)).toEqual([0, 1, 2])
+  })
+})
+
 describe('the shipped fixtures', () => {
   const fixture = (name: string) => fileURLToPath(new URL(`../fixtures/teach/${name}/storyboard.yaml`, import.meta.url))
 
@@ -296,5 +383,15 @@ describe('the shipped fixtures', () => {
     const cues = board.segments.flatMap(segment => segment.sentences).flatMap(sentence => sentence.cues)
     expect(cues.length).toBeGreaterThan(3)
     expect(cues.every(cue => cue.atProgress !== null && cue.atWord === null)).toBe(true)
+  })
+
+  it('keeps the page-mode fixture one page per sentence, with no page keys', async () => {
+    // The old behaviour must not change: a manuscript that never says `page`
+    // still maps sentence index to page index.
+    const board = parseStoryboard(await readFile(fixture('page-mode'), 'utf8'))
+    const segment = board.segments[0]!
+    expect(segment.sentences.every(sentence => sentence.page === null)).toBe(true)
+    expect(pageSlots(segment).map(slot => slot.page)).toEqual([0, 1, 2])
+    expect(pageSlots(segment).every(slot => slot.enter === 0)).toBe(true)
   })
 })

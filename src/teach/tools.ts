@@ -43,7 +43,7 @@ import {
   type TeachPaths,
 } from './pipeline.ts'
 import { assessDependencies, installHint, isMissing, type DependencyProbe } from './rules.ts'
-import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
+import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, pagesUsed, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
 import { mediaTools, probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
 import { coverOutputs, renderCover, COVER_SIZES } from './cover.ts'
 import { buildSrt } from './subtitles.ts'
@@ -363,7 +363,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       'Validate a teaching-video manuscript (storyboard.yaml) without spending anything, and report what the machine is missing.',
       'A teaching video is narrated by TTS and drawn by reveal.js slides and/or Manim scenes, so its clock is the audio, not a model.',
       'Returns the sentence list in timeline order, the narration length estimate, content/timeline warnings, and the machine\'s dependencies sorted by what they are for: ffmpeg/ffprobe are always required, a Chromium is needed for slide segments, and Python with Manim plus a TeX with dvisvgm are needed ONLY when the manuscript has an engine: manim segment. A slides-only manuscript is reported as needing no Manim, and is never refused for the absence of a Python or a TeX.',
-      'It also checks the content against the timeline and against the decks: a cue-driven manuscript must give every slides sentence at least one cue and keep the average gap between picture changes under 8 s, a sentence\'s length must sit between 2 and 8 s, and two sentences must not share one Manim scene. It reads each deck for the globals the recorder calls (teachReady, teachCue, teachPage) and, in page mode, for one <section> per sentence with the beats numbered inside their own page — a deck that cannot be driven is refused here rather than at render time, after the narration was paid for. Warnings name the sentence id; a cue that names a fragment the deck does not have is refused outright.',
+      'It also checks the content against the timeline and against the decks: a cue-driven manuscript must give every slides sentence at least one cue and keep the average gap between picture changes under 8 s, a sentence\'s length must sit between 2 and 8 s, and two sentences must not share one Manim scene. It reads each deck for the globals the recorder calls (teachReady, teachCue, teachPage) and, in page mode, for the pages the manuscript uses — one per sentence unless the manuscript shares one with `page` / `enter` — with the beats numbered inside the page they belong to. A deck that cannot be driven is refused here rather than at render time, after the narration was paid for. Warnings name the sentence id; a cue that names a fragment the deck does not have is refused outright.',
       'Run this first: it names the line and the key of any manuscript mistake, and paying for narration or rendering a broken draft is the expensive way to learn the same thing.',
     ].join(' '),
     parameters: {
@@ -503,7 +503,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       ]
       const picture = plan.voice.wordTimings
         ? `picture: cue-driven (voice "${plan.voice.provider}" reports word timings, so a fragment can fire on a spoken word)`
-        : `picture: page-driven — voice "${plan.voice.provider}" reports no word timings, so each sentence starts its own deck page and its beats fire on at_progress shares of the measured length (not word-aligned; cue-driven fragments need volcengine)`
+        : `picture: page-driven — voice "${plan.voice.provider}" reports no word timings, so each sentence starts on its own deck page (or on the page it shares, when the manuscript says page) and its beats fire on at_progress shares of the measured length (not word-aligned; cue-driven fragments need volcengine)`
       const beats = board.segments.flatMap(segment => segment.sentences).reduce((sum, sentence) => sum + sentence.cues.length, 0)
       const lines = [
         `${plan.title}: ${plan.sentences.length} sentence(s), ${plan.totalChars} characters, about ${plan.estimatedSeconds} s spoken.`,
@@ -520,7 +520,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           : 'manim: not needed by this manuscript',
         missing.length === 0 ? '' : `blocking: ${missing.join(', ')} — see the install hint above`,
         !plan.voice.wordTimings
-          ? `rhythm: page mode — ${board.segments.filter(segment => segment.engine === 'slides').reduce((sum, segment) => sum + segment.sentences.length, 0)} page(s), one per slides sentence, plus ${beats} at_progress beat(s) inside them`
+          ? `rhythm: page mode — ${board.segments.filter(segment => segment.engine === 'slides').reduce((sum, segment) => sum + pagesUsed(segment), 0)} page(s) for ${board.segments.filter(segment => segment.engine === 'slides').reduce((sum, segment) => sum + segment.sentences.length, 0)} slides sentence(s), plus ${beats} at_progress beat(s) inside them`
           : audit.averageCueGapSeconds === null
             ? 'rhythm: no cues at all, the picture never changes'
             : `rhythm: one picture change every ${audit.averageCueGapSeconds.toFixed(1)} s on average (${audit.silent.length} silent sentence(s))`,
@@ -603,7 +603,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         `narrated ${result.narrated.length} sentence(s) in ${voice.speaker}: ${result.narrated.join(', ')}`,
         wordTimings
           ? 'word timings recorded: cues can fire on spoken words'
-          : `no word timings from "${voice.provider}": timings.json records voice.timestamps = none, so each sentence gets its own page and its beats fire on at_progress (a share of the measured length, not word-aligned). \`at_word\` cues are refused for this provider`,
+          : `no word timings from "${voice.provider}": timings.json records voice.timestamps = none, so each sentence gets its own page (or the page it shares, when the manuscript says page) and its beats fire on at_progress (a share of the measured length, not word-aligned). \`at_word\` cues are refused for this provider`,
         kept.length === 0 ? 'no earlier narration kept' : `kept ${kept.length} from timings.json: ${kept.join(', ')}`,
         `total narration ${result.durationMs} ms from ${result.requests} request(s); timings written to ${workspace.paths.timings}`,
         'next: video_teach_render (add sentences: [...] to re-record only some).',
@@ -624,7 +624,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
     name: 'video_teach_render',
     description: [
       'Render the picture for a narrated teaching manuscript — one segment per sentence, from reveal.js slides and/or Manim scenes — and optionally assemble the finished mp4.',
-      'The picture is driven by timings.json: each segment is cut to that sentence\'s real audio length. With a voice that reports word timings (volcengine) the deck advances fragments on the words the manuscript names. With one that reports none (deepseek, the default) the deck is in page mode: each sentence starts its own page, and its at_progress cues fire inside that page as shares of the measured length — not word-aligned, which is stated back rather than left implicit. Sentences not named in `sentences` keep the segment already on disk, so re-record one line without touching the others.',
+      'The picture is driven by timings.json: each segment is cut to that sentence\'s real audio length. With a voice that reports word timings (volcengine) the deck advances fragments on the words the manuscript names. With one that reports none (deepseek, the default) the deck is in page mode: each sentence starts on the page the manuscript gives it (its own, unless page/enter shares one with the sentences around it), and its at_progress cues fire inside that page as shares of the measured length — not word-aligned, which is stated back rather than left implicit. Sentences not named in `sentences` keep the segment already on disk, so re-record one line without touching the others.',
       'Rendering needs ffmpeg/ffprobe (everything) plus a Chromium for the slides; Python with Manim and a TeX with dvisvgm are needed only for the manim sentences actually being rendered. When those are missing this call refuses BEFORE rendering anything and names each missing program with what to install, so a slides-only manuscript is unaffected and a broken one costs nothing.',
       'With assemble (default true) the segments are concatenated, the narration is mixed in, and the result lands at renders/<shot>/vNNN.mp4 with a JSON sidecar. Shot names the folder under renders/ and defaults to ' + DEFAULT_SHOT + '.',
       'After rendering, each fresh segment is sampled for distinct frame colours and any segment that looks static is reported by name; the report is a heuristic hint, not a refusal.',
@@ -672,10 +672,10 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
 
       // A cue is a claim about a moment, and a provider that reports no word
       // timings cannot support that claim. The picture is therefore driven by page
-      // (one page per sentence). The render still runs — the narration is already
-      // paid for, and refusing here would charge the user and deliver nothing —
-      // but the degradation is stated in the result and in the closing message,
-      // never applied silently.
+      // (one page per sentence, or a page shared by several with `page`). The render
+      // still runs — the narration is already paid for, and refusing here would
+      // charge the user and deliver nothing — but the degradation is stated in the
+      // result and in the closing message, never applied silently.
       const pageMode = timings.voice.timestamps === 'none'
       // A page-mode manuscript must time its beats by progress; the parser already
       // refuses `at_word` there, so anything left is a `at_progress` cue and it
@@ -788,7 +788,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       const subtitles = output === null ? 'nothing burned: no picture was assembled' : burnState
       const lines = [
         pageMode
-          ? `picture: page mode with beats — voice "${timings.voice.provider}" reports no word timings, so each sentence starts on its own page and its beats fire on at_progress against the measured sentence length (not word-aligned)`
+          ? `picture: page mode with beats — voice "${timings.voice.provider}" reports no word timings, so each sentence starts on the page the manuscript gives it (its own, unless page shares it) and its beats fire on at_progress against the measured sentence length (not word-aligned)`
           : 'picture: cue-driven, fragments fire on the words the manuscript names',
         `rendered ${plan.fresh.length} segment(s)${plan.fresh.length === 0 ? '' : `: ${plan.fresh.join(', ')}`}`,
         plan.reused.length === 0 ? 'nothing reused' : `reused ${plan.reused.length}: ${plan.reused.join(', ')}`,

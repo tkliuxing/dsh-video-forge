@@ -29,6 +29,8 @@ import { recordDeckSegment, type CueAt } from './slides.ts'
 import {
   allSentences,
   cueOffsetMs,
+  pagesUsed,
+  pageSlotOf,
   parseTimings,
   serializeTimings,
   totalDurationMs,
@@ -87,9 +89,16 @@ export function planStoryboard(board: Storyboard): Plan {
     // length. Saying "the cues cannot fire" here contradicted what the render step
     // then printed for the same run, and an author who believed the warning would
     // delete working beats (found 2026-11-20 by the page-mode acceptance run).
-    const pages = board.segments.reduce((sum, segment) => sum + (segment.engine === 'slides' ? segment.sentences.length : 0), 0)
+    const slidesSegments = board.segments.filter(segment => segment.engine === 'slides')
+    const pages = slidesSegments.reduce((sum, segment) => sum + pagesUsed(segment), 0)
+    // Sentences may share a page (§25), so the page count is what the manuscript
+    // asks for rather than the sentence count. Telling an author "one page per
+    // sentence" over a manuscript that shares pages is the kind of claim this
+    // route exists to stop making.
+    const sharedPages = slidesSegments.some(segment => segment.sentences.some(sentence => sentence.page !== null))
     if (pages > 0) {
-      warnings.push(`voice provider "${voice.provider}" reports no word timings: slides run in page mode, one page per sentence (${pages} page${pages === 1 ? '' : 's'}), with \`at_progress\` beats inside a sentence placed by share of the measured length. Nothing is aligned to a spoken word; cue-driven fragments need volcengine`)
+      const count = `${pages} deck page${pages === 1 ? '' : 's'}${sharedPages ? ` for ${slidesSegments.reduce((sum, segment) => sum + segment.sentences.length, 0)} sentence(s), shared where the manuscript says \`page\`` : ' (one per sentence)'}`
+      warnings.push(`voice provider "${voice.provider}" reports no word timings: slides run in page mode, ${count}, with \`at_progress\` beats inside a sentence placed by share of the measured length. Nothing is aligned to a spoken word; cue-driven fragments need volcengine`)
     }
   }
   return {
@@ -492,15 +501,17 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
     }
 
     if (segment.deck === null) throw new Error(`segment "${segment.id}" has no deck`)
-    // Page mode numbers pages by the sentence's position inside its segment: the
-    // deck's first slide is the segment's first sentence. Writing the manuscript
-    // is therefore the only place that knows which page belongs to which line.
+    // Page mode numbers pages by the sentence's position inside its segment unless
+    // the manuscript says otherwise: `page` lets several sentences share one page,
+    // and `enter` says how much of it is already lit when the sentence starts. Both
+    // are resolved together by `pageSlots`, because the derived `enter` depends on
+    // the sentence before it on the same page (docs/TEACH-VIDEO.md §25).
     const mode = deckDriveMode(options.timings)
-    const page = mode === 'page' ? segment.sentences.findIndex(entry => entry.id === sentence.id) : null
-    if (mode === 'page' && (page === null || page < 0)) throw new Error(`sentence "${sentence.id}" is not in segment "${segment.id}"`)
+    const slot = mode === 'page' ? pageSlotOf(segment, sentence.id) : null
+    if (mode === 'page' && slot === null) throw new Error(`sentence "${sentence.id}" is not in segment "${segment.id}"`)
     const recorded = await recordDeckSegment({
       deckPath: join(options.paths.root, segment.deck),
-      ...(page === null ? {} : { page }),
+      ...(slot === null ? {} : { page: slot.page, enter: slot.enter }),
       // In page mode the cues are `at_progress` cues resolved against the
       // measured sentence length; in cue mode they are `at_word` cues.
       cues: cuesFor(timed, sentence.cues),

@@ -303,6 +303,326 @@ segments:
   })
 })
 
+describe('sharing a deck page across sentences (page / enter)', () => {
+  /** A page-mode manuscript; `sentences` is the YAML body of one segment. */
+  const sharedBoard = (sentences: string) => parseStoryboard(`meta:
+  title: t
+  voice:
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+${sentences}`)
+
+  const info = (patch: Partial<DeckInfo> = {}): DeckInfo => ({
+    path: 'slides/s01/index.html',
+    fragments: 3,
+    pageFragments: [3],
+    hasCue: true,
+    hasPage: true,
+    hasReady: true,
+    ...patch,
+  })
+
+  /** Three sentences on one page, numbered 1 / 2 / 3 across it. */
+  const SHARED = `      - id: a
+        say: 第一句先点亮一块，画面停在这块上。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句进来时第一块已经亮着。
+        page: 0
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+      - id: c
+        say: 第三句点亮最后一块就讲完了。
+        page: 0
+        enter: 2
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+`
+
+  it('accepts three sentences on one page, in the manuscript and against the deck', () => {
+    const board = sharedBoard(SHARED)
+    expect(auditManuscript(board)).toEqual({ structural: [], warnings: [], silent: [], averageCueGapSeconds: expect.any(Number) })
+    expect(auditDecks(board, new Map([['s01', info()]]))).toEqual({ structural: [], warnings: [] })
+  })
+
+  it('refuses numbering that restarts inside one page, naming the cause', () => {
+    // §25.5: teachCue is "show up to step k", so a restart re-confirms a lit beat.
+    const board = sharedBoard(SHARED.replace('cues: [{ fragment: 2, at_progress: 0.4 }]', 'cues: [{ fragment: 1, at_progress: 0.4 }]'))
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('"b"')
+    expect(audit.structural[0]).toContain('already lit')
+    expect(audit.structural[0]).toContain('across the whole page')
+  })
+
+  it('refuses enter that is not smaller than the sentence\'s first cue', () => {
+    const board = sharedBoard(SHARED.replace('enter: 2', 'enter: 3'))
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('"c"')
+    expect(audit.structural[0]).toContain('so the cue changes nothing')
+    // The repair names the whole legal window for `enter` (>= what the previous
+    // sentence left lit, < the first cue), not just "smaller than the cue".
+    expect(audit.structural[0]).toContain('Write enter in 2..2')
+  })
+
+  it('refuses a page number that goes backwards', () => {
+    const board = sharedBoard(`      - id: a
+        say: 第一句在第二页上。
+        page: 1
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句又回到第一页，画面会倒着走。
+        page: 0
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('"b"')
+    expect(audit.structural[0]).toContain('run backwards')
+  })
+
+  it('reports one finding, not two contradictory ones, when enter rewinds and the numbering restarts', () => {
+    // Both symptoms have one cause: the beats were not counted across the page.
+    const board = sharedBoard(`      - id: a
+        say: 第一句点亮两块，画面停在这里。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.3 }, { fragment: 2, at_progress: 0.6 }]
+      - id: b
+        say: 第二句又从第一块开始数，画面会倒退。
+        page: 0
+        enter: 1
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('go backwards')
+    expect(audit.structural[0]).toContain('no value of enter works')
+  })
+
+  it('only recommends a repair that its own rules accept', () => {
+    // The previous sentence leaves two beats lit and this one's first cue is 2, so no
+    // `enter` can both carry the state and let the cue fire. The finding has to say
+    // that, and the repair it names (count across the page, drop enter) must pass.
+    const broken = `      - id: a
+        say: 第一句点亮两块，画面停在这里。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.3 }, { fragment: 2, at_progress: 0.6 }]
+      - id: b
+        say: 第二句的第一条 cue 又落在第二拍上。
+        page: 0
+        enter: 1
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+`
+    const failed = auditManuscript(sharedBoard(broken))
+    expect(failed.structural).toHaveLength(1)
+    expect(failed.structural[0]).toContain('no value of enter works')
+    expect(failed.structural[0]).toContain('at least 3')
+
+    const repaired = `      - id: a
+        say: 第一句点亮两块，画面停在这里。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.3 }, { fragment: 2, at_progress: 0.6 }]
+      - id: b
+        say: 第二句接着第一句的点亮往下数。
+        page: 0
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+`
+    expect(auditManuscript(sharedBoard(repaired)).structural).toEqual([])
+  })
+
+  it('lets a sentence open its own page with beats already lit, without declaring page everywhere', () => {
+    // Naming your own page changes no mapping, so the half-a-map rule does not apply:
+    // only a moved page (or a bare `page: i` with nothing to say) makes sharing
+    // undecidable. Without this exception the skill's "a page can open pre-lit" would
+    // be unreachable for a one-page-per-sentence manuscript.
+    const board = sharedBoard(`      - id: a
+        say: 这一页一打开就已经亮着一块。
+        page: 0
+        enter: 1
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+      - id: b
+        say: 第二句自己一页，不需要写 page。
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+`)
+    expect(auditManuscript(board).structural).toEqual([])
+    // The page-count checks keep the older behaviour for it: a one-page deck and two
+    // sentences is a warning about the second sentence holding the last page, not a
+    // refusal naming a sentence that never declared a page.
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: [2] })]]))
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('will hold the last page'))).toBe(true)
+  })
+
+  it('still refuses a bare page declaration that names only its own position', () => {
+    // `page: 0` with no `enter` says nothing at all, and the likely intent is "share
+    // page 0" — the half-a-map refusal has to stay for it.
+    const board = sharedBoard(`      - id: a
+        say: 只给第一句写自己那一页，却没写 enter。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句什么都没写，容易让人以为要共享第一页。
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('declares page on 1 of its 2')
+  })
+
+  it('refuses half a page map, because the enter state has no unique answer', () => {
+    // The first sentence says nothing about its page; the other two share page 0.
+    const board = sharedBoard(`      - id: a
+        say: 这一句没有说自己在哪一页上。
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句说和第三句共用一页。
+        page: 0
+        cues: [{ fragment: 2, at_progress: 0.4 }]
+      - id: c
+        say: 第三句也写在同一页上。
+        page: 0
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('declares page on 2 of its 3')
+  })
+
+  it('refuses an enter that undoes a beat the previous sentence left lit', () => {
+    // The previous sentence ends with two beats lit; this one opens at one, so a
+    // beat would visibly disappear at the boundary.
+    const board = sharedBoard(`      - id: a
+        say: 第一句点亮两块，画面停在这里。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.3 }, { fragment: 2, at_progress: 0.6 }]
+      - id: b
+        say: 第二句却说只亮着一块，画面会退回去。
+        page: 0
+        enter: 1
+        cues: [{ fragment: 3, at_progress: 0.4 }]
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('"b"')
+    expect(audit.structural[0]).toContain('go backwards')
+  })
+
+  it('warns when a sentence on a shared page fires no beat, because nothing moves during it', () => {
+    const board = sharedBoard(`      - id: a
+        say: 第一句点亮一块。
+        page: 0
+        cues: [{ fragment: 1, at_progress: 0.4 }]
+      - id: b
+        say: 第二句和第一句共用一页，却没有任何节拍。
+        page: 0
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toEqual([])
+    expect(audit.silent).toEqual(['b'])
+    expect(audit.warnings.some(line => line.includes('"b"') && line.includes('the picture does not change at all during this sentence'))).toBe(true)
+  })
+
+  it('refuses a shared-page deck without teachCue when a sentence enters with beats already lit', () => {
+    // No cues at all, but `enter: 1` still has to be replayed through teachCue.
+    // No cues anywhere: the only thing the recorder has to replay is the page's
+    // `enter` state, and that goes through teachCue just the same.
+    const board = sharedBoard(`      - id: a
+        say: 这一页一打开就已经亮着一块。
+        page: 0
+        enter: 1
+      - id: b
+        say: 第二句接着说，但不再点亮新的东西。
+        page: 0
+        enter: 2
+`)
+    const audit = auditDecks(board, new Map([['s01', info({ hasCue: false })]]))
+    expect(audit.structural.some(line => line.includes('enter') && line.includes('teachCue'))).toBe(true)
+  })
+
+  it('says when a cue-driven deck\'s fragment count could not be read, instead of skipping the check', () => {
+    const board = parseStoryboard(`meta:
+  title: t
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+segments:
+  - id: s01
+    engine: slides
+    sentences:
+      - id: a
+        say: 这一句用词级时间戳推画面。
+        cues: [{ fragment: 1, at_word: 这一句 }]
+`)
+    const audit = auditDecks(board, new Map([['s01', info({ fragments: null })]]))
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('fragment count could not be read'))).toBe(true)
+  })
+
+  it('warns instead of silently skipping page numbers when the deck pages cannot be counted', () => {
+    const board = sharedBoard(SHARED)
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: null })]]))
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('could not be counted') && line.includes('not checked'))).toBe(true)
+  })
+
+  it('says page/enter do nothing when the voice reports word timings', () => {
+    // Cue mode never switches pages per sentence, so the two keys are inert.
+    const board = parseStoryboard(`meta:
+  title: t
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+segments:
+  - id: s01
+    engine: slides
+    sentences:
+      - id: a
+        say: 这一句用词级时间戳推画面。
+        page: 1
+        cues: [{ fragment: 1, at_word: 这一句 }]
+`)
+    const audit = auditManuscript(board)
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('page and enter do nothing here'))).toBe(true)
+  })
+
+  it('refuses a sentence whose declared page the deck does not have', () => {
+    const board = sharedBoard(SHARED.replace(/page: 0/g, 'page: 3'))
+    const audit = auditDecks(board, new Map([['s01', info()]]))
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('"a"')
+    expect(audit.structural[0]).toContain('page 4')
+  })
+
+  it('warns about deck pages the manuscript never reaches', () => {
+    const board = sharedBoard(SHARED)
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: [3, 1, 1] })]]))
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('only uses 1'))).toBe(true)
+  })
+
+  it('warns when enter claims more of the page than the deck has', () => {
+    // The page has two fragments but the manuscript promises it opens with three
+    // lit; teachCue clamps at the page end, so the page would open fully revealed.
+    const board = sharedBoard(SHARED.replace('enter: 2', 'enter: 3').replace('cues: [{ fragment: 3, at_progress: 0.4 }]', 'cues: [{ fragment: 4, at_progress: 0.4 }]'))
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: [2] })]]))
+    expect(audit.structural).toEqual([])
+    expect(audit.warnings.some(line => line.includes('"c"') && line.includes('opens fully revealed'))).toBe(true)
+  })
+
+  it('checks each shared page\'s own fragment count, not the sentence index', () => {
+    // All three sentences are on page 1 of the deck, so the bound to compare
+    // against is page 1's fragment count for every cue, not pages 1, 2 and 3.
+    const board = sharedBoard(SHARED)
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: [1] })]]))
+    expect(audit.warnings.filter(line => line.includes('fires fragment')).length).toBe(2)
+    expect(audit.warnings.every(line => !line.includes('page 2'))).toBe(true)
+  })
+})
+
 describe('deck contract (page mode)', () => {
   /** A manuscript using the default voice, i.e. page mode. */
   const pageBoard = (sentences: string) => parseStoryboard(`meta:
@@ -324,6 +644,22 @@ ${sentences}`)
     hasPage: true,
     hasReady: true,
     ...patch,
+  })
+
+  it('counts only real markup, so a script or a comment is not a page', () => {
+    // The shipped template talks about sections and fragments in its own script; a
+    // page check that reads that JavaScript as markup invented a page and made the
+    // page-count checks lie on the deck the plugin hands to projects (2026-11-25).
+    const html = [
+      '<section><div class="fragment">1</div><div class="fragment">2</div></section>',
+      '<script>',
+      '// One <section> per page; a beat looks like class="fragment".',
+      'const example = \'<section><i class="fragment">\'',
+      '</script>',
+      '<!-- <section>not a page either</section> -->',
+    ].join('\n')
+    expect(deckPageFragments(html)).toEqual([2])
+    expect(countDeckFragments(html)).toBe(2)
   })
 
   it('splits a deck into pages and counts the fragments inside each', () => {

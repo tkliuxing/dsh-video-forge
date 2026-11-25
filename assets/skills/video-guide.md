@@ -68,13 +68,13 @@
    | 音色 | `stella` / `tide` | 一堆 `*_bigtts` 音色 |
    | 调语速 | 不支持 | 整数语速 |
    | 词级时间戳 | **没有** | 有 |
-   | 画面驱动 | 一句一页 + 页内 `at_progress` 节拍 | 可按词（`at_word`）触发 fragment |
+   | 画面驱动 | 一句一页（稿件的 `page` 可让连续几句共页）+ 页内 `at_progress` 节拍 | 可按词（`at_word`）触发 fragment |
    | 合成方式 | 逐句请求 | 相邻句合并成一次请求 |
    | 停顿 | 保留语音自带的气口 | 按标点补齐、只补不裁 |
    | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 逐句合成时语气会漂 |
 
    默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**只有需要"讲到某个词、画面动一下"时才换 volcengine** —— 那是它唯一不可替代的能力。
-3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
+3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页（稿件的 `page` 可让连续几句共页）、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
 4. `video_teach_export`：写 SRT、`timeline.json`，把 deck 导出到 `deck/`，并按 `meta.cover` 那一页截 16:9 与 4:3 两张封面。
 
 **两条出片经验**（细节见 `video-teach-storyboard` / `video-teach-iterate`）：

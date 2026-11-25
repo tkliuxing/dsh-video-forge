@@ -76,6 +76,17 @@ export interface RecordDeckOptions {
    * than by a word.
    */
   page?: number | null
+  /**
+   * Page mode, shared pages: how many beats of that page are already lit when this
+   * sentence's capture starts (the manuscript's `enter`, resolved by
+   * `pageSlots` in src/teach/storyboard.ts).
+   *
+   * Each sentence is its own `page.goto`, so the deck comes up empty; without this
+   * the second sentence of a shared page would open with every beat dark and the
+   * first card would appear to flash on twice. It is applied inside the page-switch
+   * wait, i.e. before a single frame is captured, so t=0 already shows it.
+   */
+  enter?: number | null
   /** Cue mode: fragment advances on measured word moments. Empty in page mode. */
   cues: readonly CueAt[]
   /** The sentence audio's real duration: the segment is cut to this. */
@@ -178,6 +189,20 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
         }
         deck.teachPage(index)
       }, options.page)
+      // Shared page: replay the beats the previous sentence on this page left lit,
+      // before the transition wait and therefore before the capture starts. The
+      // order (page, then the beats, then the wait) is the contract: doing it after
+      // the wait would record the empty page first.
+      const enter = options.enter ?? 0
+      if (enter > 0) {
+        await page.evaluate(step => {
+          const deck = globalThis as DeckGlobals
+          if (typeof deck.teachCue !== 'function') {
+            throw new Error('deck is missing window.teachCue(index), which is how the recorder replays a page\'s already-lit beats (enter) before the capture starts')
+          }
+          deck.teachCue(step)
+        }, enter)
+      }
       await page.waitForTimeout(PAGE_TRANSITION_MS)
     }
 

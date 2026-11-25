@@ -25,7 +25,7 @@
  * worth knowing before paying for narration.
  */
 
-import { DEFAULT_VOICE_PROVIDER, type Storyboard, type Segment } from './storyboard.ts'
+import { DEFAULT_VOICE_PROVIDER, pageSlots, type Storyboard, type Segment } from './storyboard.ts'
 import { supportsWordTimings } from './voice.ts'
 
 /**
@@ -115,6 +115,78 @@ function timeline(board: Storyboard): { id: string, segment: Segment, chars: num
 }
 
 /**
+ * Findings about a segment that shares one deck page across several sentences
+ * (docs/TEACH-VIDEO.md §25, the contract in the `video-teach-storyboard` skill).
+ *
+ * Only page mode is driven by `page` / `enter`; the caller runs this in page mode
+ * alone. Every check here is "the picture would not move as written", which is why
+ * they are structural: each can be seen from the manuscript itself, before a single
+ * character is narrated. The one page rule that needs no neighbour — an `enter`
+ * with no `page` — is refused while parsing, where it has a line number.
+ */
+function pageFindings(segment: Segment): string[] {
+  const findings: string[] = []
+  const declared = segment.sentences.filter(sentence => sentence.page !== null).length
+  // Half a map is ambiguous unless every declaration is the one harmless kind: a
+  // sentence naming **its own** page so it can open pre-lit (`page: i` together with
+  // `enter`). That declaration changes no mapping, so it stands alone. Everything
+  // else — a page other than its own position, or a bare `page: i` that means
+  // nothing — is either sharing or a likely mistake, and sharing is undecidable
+  // while some sentences stay silent.
+  const harmlessOnly = segment.sentences.every((sentence, index) => sentence.page === null || (sentence.page === index && sentence.enter !== null))
+  if (declared > 0 && declared < segment.sentences.length && !harmlessOnly) {
+    findings.push(
+      `segment "${segment.id}" declares page on ${declared} of its ${segment.sentences.length} sentence(s), and at least one of those declarations either names a page other than the sentence's own position or comes without \`enter\`: which sentence shares a page with which`
+      + ' is only decidable when the whole segment says so, because a page\'s enter state is inherited from the sentence before it. Declare page on every sentence of the segment — the one exception is a sentence opening its own page pre-lit, `page: <its position>` with `enter`',
+    )
+  }
+  const slots = pageSlots(segment)
+  segment.sentences.forEach((sentence, index) => {
+    const slot = slots[index]!
+    const before = index === 0 ? null : slots[index - 1]!
+    const previous = index === 0 ? null : segment.sentences[index - 1]!.id
+    if (before !== null && previous !== null) {
+      if (slot.page < before.page) {
+        findings.push(`sentence "${sentence.id}" is on page ${slot.page + 1} of segment "${segment.id}", after "${previous}" on page ${before.page + 1}: sentences are recorded in order, so a page number that goes backwards makes the picture run backwards`)
+      }
+    }
+    const first = sentence.cues[0]
+    const carries = before !== null && before.page === slot.page
+    // What the sentence before this one left on its page. `enter` has to stay at or
+    // above this (or the picture rewinds) and below the sentence's first cue (or that
+    // cue lands on a beat that is already lit). A repair is only offered when it
+    // satisfies both: pointing an author at a fix the next check refuses is worse
+    // than saying nothing.
+    const previousLit = carries ? before.lit : 0
+    const rewinds = sentence.enter !== null && carries && sentence.enter < previousLit
+    const cueCollides = first !== undefined && slot.enter >= first.fragment
+    const who = previous ?? 'the sentence before it'
+    if (rewinds) {
+      const ceiling = first === undefined ? null : first.fragment - 1
+      const fits = ceiling !== null && ceiling >= previousLit
+      findings.push(`sentence "${sentence.id}" enters page ${slot.page + 1} with enter: ${sentence.enter}, but "${who}" left ${previousLit} beat${previousLit === 1 ? '' : 's'} of that page lit: the picture would go backwards at the sentence boundary. ${first === undefined
+        ? `Leave enter out so it carries ${previousLit} over, or write at least ${previousLit}`
+        : fits
+          ? `Leave enter out (it then carries ${previousLit} over) or write anything from ${previousLit} to ${ceiling}; it has to stay below the first cue, fragment ${first.fragment}`
+          : `Its first cue is fragment ${first.fragment}, which is not above ${previousLit} either, so no value of enter works: number the beats across the whole page (this cue must be at least ${previousLit + 1}) and leave enter out`}`)
+      return
+    }
+    if (!cueCollides) return
+    const lit = `${slot.enter} beat${slot.enter === 1 ? '' : 's'}`
+    if (sentence.enter === null) {
+      findings.push(`sentence "${sentence.id}" enters page ${slot.page + 1} with ${lit} of it already lit (what "${who}" left there) and its first cue is fragment ${first.fragment}, which is at or below that: the cue would not move the picture. Number the beats across the whole page, so the first cue is at least ${slot.enter + 1}`)
+      return
+    }
+    // `enter` was written; another value may be legal, so name the whole window.
+    findings.push(`sentence "${sentence.id}" enters page ${slot.page + 1} with enter: ${slot.enter} but its first cue is fragment ${first.fragment}: that beat is lit before the recording starts, so the cue changes nothing`
+      + (previousLit < first.fragment
+        ? `. Write enter in ${previousLit}..${first.fragment - 1} (at least what the sentence before it left lit, below the first cue), or number the cue above ${slot.enter}`
+        : `. The sentence before it left ${previousLit} beat${previousLit === 1 ? '' : 's'} lit, so no enter value lets this cue fire: number the beats across the whole page, so the first cue is at least ${slot.enter + 1}`))
+  })
+  return findings
+}
+
+/**
  * Check a manuscript against the rules.
  *
  * @param board - the parsed manuscript.
@@ -174,6 +246,42 @@ export function auditManuscript(board: Storyboard, options: AuditOptions = {}): 
     }
   }
 
+  // --- sharing one deck page across several sentences ----------------------
+  //
+  // `page` / `enter` are the page-mode half of the picture contract (§25): page
+  // mode is the only drive mode that switches pages per sentence, so in cue mode
+  // the two keys are silently inert. Saying so is cheaper than an author
+  // wondering why the manuscript's page numbers did nothing.
+  const sharesPages = board.segments.some(segment => segment.sentences.some(sentence => sentence.page !== null))
+  if (sharesPages && wordTimings) {
+    warnings.push(`the manuscript declares page/enter, but voice "${board.voice?.provider ?? DEFAULT_VOICE_PROVIDER}" reports word timings: the deck is driven by cues and never switches pages per sentence, so page and enter do nothing here. They only apply when the voice reports no word timings (the default DeepSeek route)`)
+  }
+  if (!wordTimings) {
+    for (const segment of board.segments) {
+      if (segment.engine !== 'slides') continue
+      structural.push(...pageFindings(segment))
+    }
+    // Shared pages move the one-picture-change rule: on its own page a sentence
+    // without beats still changes the picture (the page switch), but on a shared
+    // page it inherits the previous sentence's frame, so nothing moves for its
+    // whole length. This is the old silence defect wearing a new shape.
+    for (const segment of board.segments) {
+      if (segment.engine !== 'slides') continue
+      const slots = pageSlots(segment)
+      segment.sentences.forEach((sentence, index) => {
+        if (sentence.cues.length > 0) return
+        const slot = slots[index]!
+        const before = index === 0 ? null : slots[index - 1]!
+        if (before === null || before.page !== slot.page) return
+        // A written `enter` above what the previous sentence left lit is a hard cut
+        // at t=0, which is a picture change even without a cue.
+        if (slot.enter > before.lit) return
+        silent.push(sentence.id)
+        warnings.push(`sentence "${sentence.id}" shares page ${slot.page + 1} of segment "${segment.id}" with "${segment.sentences[index - 1]!.id}" and fires no beat: the picture does not change at all during this sentence. Give it a beat (they keep counting up across a shared page), or give it its own page`)
+      })
+    }
+  }
+
   // --- structural: a cue must name a fragment the deck actually has ---------
   //
   // Cue mode only. In page mode a fragment number is counted inside its own page
@@ -213,7 +321,11 @@ export function auditManuscript(board: Storyboard, options: AuditOptions = {}): 
   if (averageCueGapSeconds !== null && averageCueGapSeconds > MAX_AVERAGE_CUE_GAP_SECONDS) {
     warnings.push(`picture changes every ${averageCueGapSeconds.toFixed(1)} s on average (${totalCues} cue${totalCues === 1 ? '' : 's'} over ~${totalSeconds.toFixed(0)} s); the target is one every ${MAX_AVERAGE_CUE_GAP_SECONDS} s at most`)
   }
-  if (silent.length >= 2) {
+  // Cue mode only: there a silent sentence is the surprising case, so two in a row
+  // is worth its own line. In page mode the shared-page check above already names
+  // each such sentence individually, and repeating it as a pair would report one
+  // defect twice.
+  if (wordTimings && silent.length >= 2) {
     const consecutive = consecutiveIdPairs(rows.map(row => (silent.includes(row.id) ? row.id : null)))
     if (consecutive.length > 0) {
       warnings.push(`sentences ${consecutive.map(pair => `"${pair[0]}" then "${pair[1]}"`).join(', ')} change no picture one after another`)
@@ -244,31 +356,51 @@ function consecutiveIdPairs(ids: readonly (string | null)[]): [string, string][]
 /**
  * How many reveal.js fragments a deck declares.
  *
- * Counting `class="fragment"` in the HTML matches what the cue contract means
+ * Counting `class="fragment"` in the markup matches what the cue contract means
  * (src/teach/slides.ts drives `Reveal.nextFragment()`), and it is the number the
- * author has to stay under. A deck that builds fragments in JavaScript is not
- * counted, so an unreadable count is reported as `null` rather than as zero.
+ * author has to stay under. Only real markup counts: a script that builds
+ * fragments, or a comment that shows one as an example, is not a fragment on
+ * screen. A deck that builds its fragments in JavaScript is therefore not
+ * counted, and an unreadable count is reported as `null` rather than as zero.
  */
 export function countDeckFragments(html: string): number | null {
-  const matches = html.match(/class\s*=\s*["'][^"']*\bfragment\b[^"']*["']/g)
+  const matches = markupOnly(html).match(/class\s*=\s*["'][^"']*\bfragment\b[^"']*["']/g)
   return matches === null ? null : matches.length
+}
+
+/**
+ * What a deck says about itself, with the parts that are not markup removed.
+ *
+ * A deck is a document plus the JavaScript that drives it, and both talk about
+ * `<section>`. Comments and script/style bodies are not pages, so splitting on
+ * their text counts pages that do not exist: the shipped template's own script
+ * comment used to make a one-page deck count as two, which turned the page checks
+ * into a false "1 page(s) are never recorded" warning and a missed refusal for an
+ * out-of-range `page` (found 2026-11-25 by review).
+ */
+function markupOnly(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
 }
 
 /**
  * Fragments counted inside each top-level `<section>`, in page order.
  *
- * Page mode shows one page per sentence, and `teachCue(n)` counts fragments on
- * the *current* slide, so the number a beat may use is its own page's count, not
- * the deck's total. The split is on `<section …>` opening tags, which is exact
- * for the flat deck both templates produce; a deck that nests sections (a
- * vertical stack) is counted approximately, so the caller reports a mismatch as
- * a warning rather than refusing.
+ * Page mode starts the page a sentence names, and `teachCue(n)` counts fragments
+ * on the *current* slide, so the number a beat may use is its own page's count,
+ * not the deck's total. The split is on `<section …>` opening tags in the markup
+ * only (see `markupOnly`), which is exact for the flat deck both templates
+ * produce; a deck that nests sections (a vertical stack) is counted
+ * approximately, so the caller reports a mismatch as a warning rather than
+ * refusing.
  *
  * `null` means the deck has no `<section>` to split on at all (a deck built in
  * JavaScript), where guessing would be worse than staying quiet.
  */
 export function deckPageFragments(html: string): number[] | null {
-  const pieces = html.split(/<section\b[^>]*>/i)
+  const pieces = markupOnly(html).split(/<section\b[^>]*>/i)
   if (pieces.length < 2) return null
   return pieces.slice(1).map(piece => countDeckFragments(piece) ?? 0)
 }
@@ -318,22 +450,67 @@ export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInf
       structural.push(`${label} never sets window.teachReady, so the recorder waits 15 s for it and then fails; scaffold the deck from assets/teach/deck/index.html or add the line that sets it`)
     }
     const cues = segment.sentences.reduce((sum, sentence) => sum + sentence.cues.length, 0)
-    if (cues > 0 && !info.hasCue) {
-      structural.push(`${label} fires ${cues} cue${cues === 1 ? '' : 's'} but does not define window.teachCue(index), so no beat can land; take the template's teachCue or drop the cues`)
+    // Cue mode numbers beats across the whole deck, and the "a cue must not run past
+    // the deck" check needs that count. An unreadable count is said out loud rather
+    // than skipped: silence reads as "checked and fine" (the same rule as `enter`
+    // having no `page`).
+    if (!pageMode && cues > 0 && info.fragments === null) {
+      warnings.push(`${label} has ${cues} cue${cues === 1 ? '' : 's'}, but its fragment count could not be read (the deck builds them in JavaScript), so those numbers were not checked against the deck`)
+    }
+    // A shared page needs `teachCue` even without a single cue: the recorder
+    // replays `enter` through it before the capture starts. Discovering that at
+    // render time would be after the narration was paid for, so it is refused here.
+    const entersLit = pageMode && pageSlots(segment).some(slot => slot.enter > 0)
+    if ((cues > 0 || entersLit) && !info.hasCue) {
+      structural.push(cues > 0
+        ? `${label} fires ${cues} cue${cues === 1 ? '' : 's'} but does not define window.teachCue(index), so no beat can land; take the template's teachCue or drop the cues`
+        : `${label} opens a page with beats already lit (enter), and the recorder replays that state through window.teachCue(index), which this deck does not define; take the template's teachCue, or drop enter so the page opens unlit`)
     }
     if (pageMode && !info.hasPage) {
-      structural.push(`${label} does not define window.teachPage(n), which the page mode needs: voice "${provider}" reports no word timings, so the picture advances one page per sentence. Add the page-mode globals from assets/teach/deck/index.html (one <section> per sentence), or narrate with volcengine for cue-driven fragments`)
+      structural.push(`${label} does not define window.teachPage(n), which the page mode needs: voice "${provider}" reports no word timings, so the picture advances one page per sentence (or one page shared by several, when the manuscript says page). Add the page-mode globals from assets/teach/deck/index.html (one <section> per page), or narrate with volcengine for cue-driven fragments`)
+    }
+    if (pageMode && info.pageFragments === null && segment.sentences.some(sentence => sentence.page !== null)) {
+      // Unknown is not "fine": a deck the counter cannot split into pages (built in
+      // JavaScript, or with no `section` at all) leaves every declared page number
+      // unchecked, and that is worth one sentence rather than silence.
+      warnings.push(`${label} declares page numbers in the manuscript, but its pages could not be counted (the deck builds its sections in JavaScript, or has no <section> for the counter to split on), so those numbers were not checked against the deck`)
     }
     if (!pageMode || info.pageFragments === null) continue
 
+    // Which page each sentence actually lands on. A manuscript that never says
+    // `page` maps sentences to pages one to one, which is exactly what `pageSlots`
+    // returns for it, so both shapes go through the same checks (§25.6).
     const pages = info.pageFragments.length
-    if (pages < segment.sentences.length) {
-      const stranded = segment.sentences.slice(pages).map(sentence => `"${sentence.id}"`)
-      warnings.push(`${label} has ${pages} page${pages === 1 ? '' : 's'} but the segment has ${segment.sentences.length} sentence(s); page mode starts one page per sentence, so ${stranded.join(', ')} will hold the last page. Give each sentence its own <section>`)
+    const slots = pageSlots(segment)
+    // "Sharing" means a sentence sits on a page that is not its own position. Then the
+    // manuscript, not the sentence order, decides which page is recorded, and a page
+    // that does not exist is refused. A sentence naming its own page pre-lit changes no
+    // mapping, so it keeps the older behaviour below.
+    const sharing = segment.sentences.some((sentence, index) => sentence.page !== null && sentence.page !== index)
+    const used = slots.reduce((highest, slot) => Math.max(highest, slot.page + 1), 0)
+    // A shared page the deck does not have is a page that never shows: the manuscript
+    // is refused. Without `page` the mapping is sentence index to page index, which is
+    // the older behaviour and only a warning — the template's teachPage clamps, so the
+    // sentence holds the last page instead of failing.
+    const overrun = sharing ? slots.findIndex(slot => slot.page >= pages) : -1
+    if (overrun >= 0) {
+      structural.push(`${label} has ${pages} page${pages === 1 ? '' : 's'}, but the manuscript puts sentence "${segment.sentences[overrun]!.id}" on page ${slots[overrun]!.page + 1}. Page mode starts the page a sentence names, so that sentence would hold whatever page the recorder was left on`)
+    } else if (sharing && used < pages) {
+      warnings.push(`${label} has ${pages} page${pages === 1 ? '' : 's'} but the manuscript only uses ${used}: ${pages - used} page(s) are never recorded. Either drop them from the deck or give the sentences a page that reaches them`)
+    } else if (!sharing && pages < segment.sentences.length) {
+      const unreached = segment.sentences.slice(pages).map(sentence => `"${sentence.id}"`)
+      warnings.push(`${label} has ${pages} page${pages === 1 ? '' : 's'} but the segment has ${segment.sentences.length} sentence(s); page mode starts one page per sentence, so ${unreached.join(', ')} will hold the last page. Give each sentence its own <section>, or share a page by declaring page in the manuscript`)
     }
-    segment.sentences.forEach((sentence, page) => {
+    segment.sentences.forEach((sentence, index) => {
+      const page = slots[index]?.page ?? index
       const available = info.pageFragments?.[page]
       if (available === undefined) return
+      // `enter` is a claim about how much of that page is lit, so it is bounded by
+      // the page like a cue is. Handing the deck a number past its last fragment
+      // opens the page fully revealed, which is a state nobody asked for.
+      if (slots[index] !== undefined && slots[index]!.enter > available) {
+        warnings.push(`sentence "${sentence.id}" enters page ${page + 1} of ${info.path} with ${slots[index]!.enter} beat${slots[index]!.enter === 1 ? '' : 's'} already lit, but that page has ${available} fragment${available === 1 ? '' : 's'}: the deck clamps at the page end, so the page opens fully revealed`)
+      }
       for (const cue of sentence.cues) {
         if (cue.fragment > available) {
           // Per-page numbering is what the shipped template implements (and
