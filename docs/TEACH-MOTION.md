@@ -202,6 +202,12 @@ window.teachPageTransition = 500   // ms，切页过渡时长
 
 这条同时修掉一个现存的不一致：`transition: 'fade'` 在 reveal.css 里是**固定 0.5 s**（`.reveal.fade .slides section{transition:opacity .5s}`），`transitionSpeed: 'fast'` 对它无效，而等待只有 300 ms——开录时还有约 200 ms 的转场在跑。现在靠前面的截图自检（1080p 截图 + 数颜色）耗掉了额外时间才没暴露。
 
+**已落成（2026-11-25，§14）**，实现时定的三处口径：
+
+1. 录制器读的是**活页面上的值**（`teachReady` 之后 `page.evaluate`），不是从 HTML 里正则抓的——deck 可以在初始化时算出来。非数字、非有限、≤ 0 的声明一律按"没声明"处理，否则 `= '500'` 这种手误会让等待归零、把转场本身录进去。
+2. 校验器用的时钟**优先实测旁白**：`timings.json` 通过 `reconcileTimings` 就直接用它（`at_progress` 按实测时长换算、`at_word` 用词起点），否则退回"字数 ÷ 5"的估时，并在 message 里明说"这是估时"（未知不能用看起来合理的默认值冒充实测）。旁白对不上稿本时**完全不参考**它的时长。
+3. 模板两个全局都声明了：`teachPageTransition = 500`（它的 `fade` 就是 0.5 s）与 `teachTransition = 480`（`--teach-dur`）。用了 `count` / `draw`（900 ms）的页面应当把 `teachTransition` 写成 900，否则校验看到的是 480。
+
 ### 5.2 不加 `teachEnter`
 
 页入场动画看起来需要一个"开录后触发"的钩子，但 D3 的转场段已经覆盖了这个需求（转场落在上一段的尾部，见 6.2）。加第三个全局会让契约从三个变四个，而它解决的问题被 D3 吸收了。**这一版不加**；如果将来出现"每页都要独立入场动画且不接上一页"的需求，再单独提。
@@ -344,7 +350,7 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 1. **D0**：`fixtures/teach/motion/` 每页一个变体（`dim`、`fade-up`、`zoom-in`、`draw`、`count`、`bar`、`custom`），渲染后抽帧断言"每拍的帧间差异超过阈值"，且末帧是完整版面。——**已做（2026-11-25，§13）**：落成 `test/teach-motion.test.ts`，八页（七种变体 + 一个 `--teach-dur: 0ms` 负对照），断言"段内至少 5 帧画面在变"与"末帧 = 全部节拍点亮后的 deck 截图"。
 2. **D1**：同一 fixture 的 `data-teach-stage` 页，抽帧断言元素尺寸/颜色按 `data-step` 单调变化（与本次实测的判据一致）。——**已做（2026-11-25，§13）**：抽帧数三种形色的像素，首帧是 step-1 灰、末帧是 step-3 洋红；删掉 `teachCue` 里的同步后该断言即失败（实测）。
-3. **D2**：`video_teach_plan` 对"某拍之后剩 200 ms 而 `teachTransition` 是 480"给出 warning；不声明时不报。
+3. **D2**：`video_teach_plan` 对"某拍之后剩 200 ms 而 `teachTransition` 是 480"给出 warning；不声明时不报。——**已做（2026-11-25，§14）**：`test/teach-transition.test.ts` 三例覆盖估时/实测/不声明三种情形，另有录制器一例（见 §14.2）。
 4. **D3**：`fixtures/teach/transition/` 三句 slides，`meta.transition.durationMs: 400`。断言：① 段长 = `durationMs + exitMs`；② 第 2 段首帧与第 1 段末帧**像素相同**（证明接缝连续）；③ 成片时长 = `Σ(durationMs + exitMs)`；④ SRT 的第 2 句起点 = 第 1 句起点 + 第 1 句 `durationMs + exitMs`。
 5. **跨 engine**：`fixtures/teach/mixed/`（slides + manim）断言 slides 段的 `exitMs` 被降级为 0，且 plan 给了 warning。
 6. **并行**：用 `assets/teach/runs.py` 起一份两幕 fixture，断言幕内转场正确、幕首无 `exitMs`、逐幕验收的时长判据仍然成立。
@@ -353,7 +359,7 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 - **B10** → 第 3 章（D0）· **已落成**
 - **B11** → 第 4 章（D1）· **已落成**
-- **B12** → 第 5 章（D2）· 未做
+- **B12** → 第 5 章（D2）· **已落成**
 - **B13** → 第 6、7 章（D3）· 未做
 
 skill 的改动在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。D0/D1 的对应段落（`video-teach-slides` 的「动效：先定画面语言，再选类」）已随实现一起写进去；D2/D3 那两处（`video-teach-storyboard` 的 `transition` 字段、`video-teach-iterate` 的"改一段要连带重录谁的尾转场"）等代码落地再写。
@@ -415,3 +421,99 @@ D0（页内动效库）与 D1（页内手动 auto-animate）落成，**都不改
 - **`fade-in-then-out` 这类"一拍消失"的变体**现在能用，但消失之后的位置会留白，页内节拍仍按"一件事一到两次变化"规划。
 - **循环动画的帧数代价没处理**（§2）：装饰循环可用，别全片铺开。
 
+## 14. 实现记录：D2（2026-11-25）
+
+D2 是这一套里唯一动代码的一档，因为要改的两件事都不在 deck 里：**等多久才开始录**，以及**这一拍的时间够不够它的动效播完**。
+
+### 14.1 落了什么
+
+| 位置 | 内容 |
+|---|---|
+| `src/teach/slides.ts` | `DeckGlobals` 加两个可选全局（`teachPageTransition` / `teachTransition`，后者只给校验用）；页模式切页后先 `page.evaluate` 读活页面上的 `teachPageTransition`，再 `waitForTimeout(声明 ?? 300)`。`PAGE_TRANSITION_MS` 从"硬编码"降级为"默认值"，注释写明它只是默认。 |
+| `src/teach/rules.ts` | `DeckInfo.transitionMs`（deck 声明的 `teachTransition`，没有就 `null`）；新类型 `BeatSchedule`（一句的时长、每个 cue 落在多少毫秒、是否用的估时）；`auditDecks` 收第三个参数 `{ beats }`，新函数 `transitionFindings` 产出两种 warning（"下一拍会重叠" / "句尾会被切"）。 |
+| `src/teach/tools.ts` | `inspectDecks` 用 `declaredMs('teachTransition')` 读声明（`(?!=)` 挡住 `===` 这种守卫）；新函数 `beatScheduleOf` 把 `timings.json`（通过 `reconcileTimings` 的）或字数估时换成 `BeatSchedule`；**plan 里读旁白的位置提到审计之前**，因为校验要的是实测时长。 |
+| `assets/teach/deck/index.html` | 模板自己声明 `teachPageTransition = 500`（它的 `fade` 就是 0.5 s）与 `teachTransition = 480`（等于 `--teach-dur`），两行都写了为什么。 |
+| `assets/skills/video-teach-slides.md` | 「最小骨架」从"三个全局"改成"三个必需 + 两个可选"，新增一小节写清什么时候该声明、默认值是什么、`count`/`draw`（900 ms）该声明 900。 |
+| `test/teach-transition.test.ts` | 四例：plan 用它估时给 warning、用实测给 warning（且没有"估时"字样）、不声明时一句不说；录制器在有/无声明两种情形下首帧的差别。 |
+
+### 14.2 实测证据
+
+录制器那一半靠"可以量出来的差别"：测试用一个切页会亮红 700 ms 的 deck（700 ms 落在默认 300 与声明 1000 之间，两种情况不可能同时通过），数首帧里红色像素（320×180 = 57 600 像素）：
+
+| 情形 | 首帧红色像素 | 末帧红色像素 |
+|---|---|---|
+| 声明 `teachPageTransition = 1000` | **0** | 0 |
+| 不声明（默认 300 ms） | **57 584**（整屏都是转场） | 0 |
+
+**这个断言有牙**：把录制器改回硬编码 `PAGE_TRANSITION_MS`，声明那一例的首帧变成 57 584，测试失败（实测）。
+
+校验器那一半的三条路各跑一次（一句话、两个 cue）：
+
+| 情形 | 声明的 `teachTransition` | 结果 |
+|---|---|---|
+| 无旁白（按 32 字估 6.4 s），最后一拍落在 95% | 480 | warning，并写明"这是按 32 字估的时长" |
+| 有旁白 2600 ms（实测），两拍落在 780 / 1170 ms | 480 | warning：`fragment 1 at 780 ms and fragment 2 follows 390 ms later`，没有"估时"字样 |
+| 同上，但 deck 没声明 | 无 | 一句不说 |
+
+### 14.3 边界
+
+- **一个 deck 只能声明一个页内时长**。`count` / `draw` 是 900 ms，`--teach-dur` 是 480 ms，声明只能挑一个；skill 里写的是"用了 900 ms 的那两个类就声明 900"。
+- **不比较页切换时长是否合理**。声明 `teachPageTransition = 5000` 不会报警，只是每句多等 4.7 s；那是作者的明确选择，D3 的 `meta.transition.durationMs`（100–1200 的拒绝区间）管的是稿件侧。
+- **声明值要按自己用的那一档填**。reveal.css 给的时长是 `fast` 0.2 s / `default` 0.4 s / `slow` 1.2 s，`fade` 另算（固定 0.5 s）。样本片（`demo/contract`，用 zoom + slow）第一版声明 900，量出两页首帧与"稳态截图"差 2.2，改成 1300 后六句全部 ≤ 0.04；同一批帧里，切页后 300 ms 的画面与稳态差 8.7–9.0，也就是旧默认会录进去的那种帧。这条差别是量出来的，不是看出来的。
+- **仍然不加 `teachEnter`**（§5.2）。
+- **校验器不做"每拍各自时长"的推断**：它只拿 deck 声明的那一个数字比，剩下的靠 skill 的写法约束。
+
+## 15. 验收补强：拍子迟到与末帧校验（2026-11-25）
+
+### 15.1 触发它的那只片子
+
+`demo/contract` 的 v002 里，`s01-5` 的第二拍晚了 **1834 ms**：应在 3966 ms 落到「录制器不读它；读它的是 video_teach_plan」那一行，实际到 5800 ms 才落，而句子在 5920 ms 被切——480 ms 的淡入只录到前 **122 ms**。观感是"这一页没播完"，正是用户看到的那一处。
+
+查证过程与排除项：
+
+| 事实 | 证据 |
+|---|---|
+| 同一页**不是**每次都坏 | v001 该拍 +34 ms、v003 +44 ms；把 `recordDeckSegment` 直接跑三次，全部 +34…+44 ms |
+| 稿子与 deck 没问题 | cues 一直是 0.33 / 0.67；同一段代码、同一份 deck |
+| 不是系统时钟跳变 | `log show --predicate 'process == "timed"'` 在 17:40–17:52 只有时区计算，没有时间调整 |
+| 画面真的没动，不是"动了没录到" | 帧表显示 2447–5798 ms 一段 3351 ms 的连续静止，之后 125 ms 内 13 帧——转场是那时才开始的（帧的时间戳来自浏览器 `MonotonicTime`，捕获时刻不会骗人） |
+
+录制器的拍子闸门是 `waitForTimeout(该拍的时刻 − 已过时间)` 加一次 `page.evaluate`。这条链横跨两个进程（Playwright 驱动进程里的定时器、以及回到插件宿主进程的往返），任一环被挂住 1.8 s，拍子就迟到；而**页面此时是静止的**，所以任何"抽帧看有没有变化"的检查都不会报错。
+
+### 15.2 落了什么
+
+**一、把拍子记下来，并给它一次重录的机会**（`src/teach/slides.ts`、`src/teach/pipeline.ts`）
+
+- 拍子时钟从 `Date.now()` 换成 `performance.now()`：一句话的拍子间隔是 3–8 秒，只有单调时钟能保证这期间的差值不被系统时间调整影响。
+- 每拍记 `{ fragment, atMs, actualMs }`；`lateBeats()` 挑出晚于 120 ms（30 fps 的四帧）的拍。
+- `renderSegments` 遇到迟到**自动重录这一句一次**，`retried` 记下来；重录仍迟到才报，并在 message 里说清"是机器忙，不是稿子的问题，再录一次"。
+- `video_teach_render` 的结果新增 `motion_findings: string[]`，并把每条以 `warning:` 打给用户。
+
+**二、末帧校验：这一段是不是在动画中途被切了**（`src/teach/slides.ts` 的 `finishedLayout`、`src/teach/ffmpeg.ts` 的 `frameDelta`）
+
+录完一段后浏览器还开着，于是把 deck 驱动到这一句的最后一拍、等它声明过的 `teachTransition`（默认 700 ms，夹在 300–3000 之间）再加 200 ms，截一张图，与**段末那一帧**比一次：640×360 灰度、逐像素比对，报"变了多少像素"与"平均差多少"。
+
+阈值是量出来的，不是拍的：
+
+| 情形 | 差异像素占比（640×360 灰度，差 > 12 记一次） |
+|---|---|
+| 正常收尾：段末帧 vs 完成版面 | **0.000**（平均差 0.015） |
+| 少亮一拍（拍子迟到时录到的画面） | **1.1%** |
+| v002 那段被切的末帧 | **11.0%** |
+
+判定线 `SETTLE_CHANGED = 0.002`（0.2%）：比噪声高两个数量级，比最小的信号（少亮一拍）低五倍。真正用来判定的是"变了多少像素"，整帧平均差对"少一行字"太钝（1.1% 的变化只让平均差动 1.9），所以两个数都报、只拿占比判定。
+
+### 15.3 证据
+
+`test/teach-transition.test.ts` 新增四例：
+
+- **纯函数**：`lateBeats` 的边界（120 ms 以内不算，超过算）、`motionFindings` 的四种措辞（该重录 / 重录过仍然迟到 / 末帧被切 / 检查没跑起来），以及"没有拍子时不说"。
+- **强制迟到**：让 deck 自己的 `teachCue` 忙等 260 ms（唯一诚实的制造办法），`renderSegments` 录完发现迟到、自动重录一次、仍迟到，于是报出 `stayed late when recorded a second time`。实测这一段从录到报耗时 8.7 s（两次录制）。
+- **末帧校验**：同一页录两次，一次让 480 ms 的淡入只剩 200 ms 就切（`unfinished`，差异 > 0.002），一次给足三秒（`finished`，差异 < 0.002）。修这条测试时发现测试 deck 的 `.beat` 是暗色，30% 到 100% 的不透明度只差 6 个亮度级——**低对比度的动效本来就会漏过这个检查**，换成亮色后判定正确。这条限制写进了 §15.4。
+
+### 15.4 它查不到什么
+
+- **亮度差很小的动效**：暗色元素在暗背景上的渐变，差异落在阈值以下，会判成"完成"。要更严就得比结构而不比亮度（例如边缘图），成本高得多。
+- **装饰性循环动画**：末帧本来就不会等于截图，会报假警报。看到这条先确认那页有没有循环。
+- **Manim 段**：没有拍子也没有"完成版面"可比，两项检查都是 `skipped`/不存在；它的时长由场景自己的 `run_time` 决定。
+- **迟到之外的原因造成的"画面不动"**：比如转场在无头浏览器里停摆（2026-11-24 那次），末帧校验会把它当成"未完成"报出来，但根因不同，处置办法都是重录那一句。

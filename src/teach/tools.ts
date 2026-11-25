@@ -31,10 +31,11 @@ import { sessionContextOf } from '../session-context.ts'
 import { ConfigError, DEFAULT_VOICE_AUTH_REF, teachSettings } from '../settings.ts'
 import { workspaceFsOf } from '../workspace-fs.ts'
 import { countFrameColors } from './ffmpeg.ts'
-import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, judgeSamples, sampleTimes, type DeckInfo, type SuspectSegment } from './rules.ts'
+import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, estimateSentenceSeconds, judgeSamples, sampleTimes, type BeatSchedule, type DeckInfo, type SuspectSegment } from './rules.ts'
 import {
   DEFAULT_TEACH_PATHS,
   assembleVideo,
+  motionFindings,
   narrateSentences,
   planSegments,
   planStoryboard,
@@ -43,7 +44,7 @@ import {
   type TeachPaths,
 } from './pipeline.ts'
 import { assessDependencies, installHint, isMissing, type DependencyProbe } from './rules.ts'
-import { allSentences, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, pagesUsed, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
+import { allSentences, cueOffsetMs, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, pagesUsed, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
 import { mediaTools, probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
 import { coverOutputs, renderCover, COVER_SIZES } from './cover.ts'
 import { buildSrt } from './subtitles.ts'
@@ -283,10 +284,68 @@ async function inspectDecks(board: Storyboard, projectRoot: string): Promise<Map
       hasCue: /(?:window\.)?teachCue\s*=(?!=)/.test(html),
       hasPage: /(?:window\.)?teachPage\s*=(?!=)/.test(html),
       hasReady: /(?:window\.)?teachReady\s*=(?!=)/.test(html),
+      // D2 (docs/TEACH-MOTION.md §5): the durations a deck declares for itself.
+      transitionMs: declaredMs(html, 'teachTransition'),
     })
   }
   return decks
 }
+
+/**
+ * A duration a deck declares for itself, in ms, or null when it declares none.
+ *
+ * Parsed from the deck's own script rather than read from a setting, because it
+ * is a property of the visuals: only the deck knows which reveal transition it
+ * uses. The `(?!=)` keeps a guard (`teachTransition === 480`) from counting as a
+ * declaration, the same rule the three globals above use. The recorder reads the
+ * live value for the page switch; this copy exists so the plan can warn before
+ * anything is recorded or paid for.
+ */
+function declaredMs(html: string, name: string): number | null {
+  const match = new RegExp(`(?:window\\.)?${name}\\s*=(?!=)\\s*(\\d+(?:\\.\\d+)?)`).exec(html)
+  if (match === null) return null
+  const value = Number(match[1])
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+/**
+ * Where each sentence's beats land, for the deck transition check (rules.ts).
+ *
+ * Two sources, and the finding says which one it used: a sentence in a *clean*
+ * `timings.json` has a measured length and, with word timings, word moments; every
+ * other sentence falls back to the characters-over-rate estimate the rest of the
+ * audit already uses. A narration that failed `reconcileTimings` is not consulted
+ * at all — its durations belong to a text the manuscript no longer says.
+ */
+function beatScheduleOf(board: Storyboard, timings: Timings | null): Map<string, BeatSchedule> {
+  const timed = new Map((timings?.sentences ?? []).map(sentence => [sentence.id, sentence]))
+  const schedule = new Map<string, BeatSchedule>()
+  for (const { sentence } of allSentences(board)) {
+    if (sentence.cues.length === 0) continue
+    const entry = timed.get(sentence.id)
+    const durationMs = entry?.durationMs ?? Math.round(estimateSentenceSeconds(sentence.say.length) * 1000)
+    const cueMs = sentence.cues.map(cue => {
+      if (cue.atProgress !== null) return Math.round(cue.atProgress * durationMs)
+      if (entry === undefined) return null
+      try {
+        return cueOffsetMs(entry, cue)
+      } catch {
+        // A word the narration does not contain: `auditManuscript` already refuses
+        // that one where it has the line number, so this route stays silent.
+        return null
+      }
+    })
+    schedule.set(sentence.id, { durationMs, cueMs, estimated: entry === undefined })
+  }
+  return schedule
+}
+
+/**
+ * Which sentences each deck's globals and pages have to satisfy.
+ *
+ * @param board - the parsed manuscript.
+ * @param projectRoot - the directory its relative paths resolve against.
+ */
 
 /**
  * Sample every freshly rendered segment and report the ones that look static.
@@ -441,6 +500,26 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         )
       }
 
+      // The narration is read before the audit rather than after it: the
+      // transition check (docs/TEACH-MOTION.md §5) compares each beat's room
+      // against the deck's own transition duration, and only a measured length
+      // makes that comparison real. When there is no usable narration the plan
+      // falls back to the characters-over-rate estimate and says so in the finding.
+      let timings: Timings | null = null
+      let narration = 'none (no timings.json yet; run video_teach_narrate)'
+      try {
+        const read = await readTimings(workspace.paths)
+        const problems = reconcileTimings(board, read)
+        if (problems.length === 0) {
+          timings = read
+          narration = `current (${read.sentences.length} sentences, ${totalDurationMs(read)} ms of narration)`
+        } else {
+          narration = `stale: ${problems.join('; ')}`
+        }
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code !== 'ENOENT') narration = `unreadable: ${error instanceof Error ? error.message : String(error)}`
+      }
+
       // Content and timeline rules (src/teach/rules.ts). Structural findings stop
       // here, before a single character is paid for; the rest are warnings.
       // The deck is read once and judged twice: `auditManuscript` against the cue
@@ -450,21 +529,10 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       const decks = await inspectDecks(board, workspace.projectRoot)
       const fragmentCounts = new Map([...decks].flatMap(([id, info]) => (info.fragments === null ? [] : [[id, info.fragments] as const])))
       const audit = auditManuscript(board, { deckFragments: fragmentCounts })
-      const deckAudit = auditDecks(board, decks)
+      const deckAudit = auditDecks(board, decks, { beats: beatScheduleOf(board, timings) })
       const structural = [...audit.structural, ...deckAudit.structural]
       if (structural.length > 0) {
         throw new ConfigError(`${workspace.storyboardPath}: ${structural.join('; ')}. Fix the cues or the deck; nothing was narrated or rendered.`)
-      }
-
-      let narration = 'none (no timings.json yet; run video_teach_narrate)'
-      try {
-        const timings = await readTimings(workspace.paths)
-        const problems = reconcileTimings(board, timings)
-        narration = problems.length === 0
-          ? `current (${timings.sentences.length} sentences, ${totalDurationMs(timings)} ms of narration)`
-          : `stale: ${problems.join('; ')}`
-      } catch (error: unknown) {
-        if ((error as { code?: string }).code !== 'ENOENT') narration = `unreadable: ${error instanceof Error ? error.message : String(error)}`
       }
 
       // Dependencies, sorted by what they are for (src/teach/rules.ts). A missing
@@ -645,6 +713,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           rendered: { type: 'array', required: true, items: { type: 'string' } },
           reused: { type: 'array', required: true, items: { type: 'string' } },
           ignored_cues: { type: 'array', required: true, items: { type: 'string' }, description: 'sentences whose cues could not fire; empty in both modes, because page mode honours at_progress beats' },
+          motion_findings: { type: 'array', required: true, items: { type: 'string' }, description: 'beats that landed too late and segments whose motion is cut at the ending; empty when every beat finished in time' },
           output: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           task_id: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           duration_ms: { type: 'number', required: true },
@@ -786,6 +855,11 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       }
 
       const subtitles = output === null ? 'nothing burned: no picture was assembled' : burnState
+      // The beats were recorded, not just requested: a late one and a cut motion
+      // are both invisible in the picture until someone watches it, so they are
+      // part of the result (docs/TEACH-MOTION.md §15).
+      const motion = motionFindings(rendered)
+      const retried = rendered.filter(segment => segment.retried).map(segment => segment.id)
       const lines = [
         pageMode
           ? `picture: page mode with beats — voice "${timings.voice.provider}" reports no word timings, so each sentence starts on the page the manuscript gives it (its own, unless page shares it) and its beats fire on at_progress against the measured sentence length (not word-aligned)`
@@ -795,6 +869,8 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         suspects.length === 0
           ? 'self-check: every rendered segment drew something across its samples'
           : `self-check: ${suspects.length} segment(s) look static — ${suspects.map(suspect => `"${suspect.id}" (${suspect.reason}: ${suspect.detail})`).join('; ')}`,
+        retried.length === 0 ? '' : `${retried.join(', ')}: recorded a second time after a late beat`,
+        ...motion.map(finding => `warning: ${finding}`),
         output === null
           ? `assembly skipped (assemble: false)${plan.pending.length === 0 ? '' : `; ${plan.pending.length} sentence(s) still have no picture: ${plan.pending.join(', ')} — render them, then assemble`}`
           : `video: ${output} (${durationMs} ms, task ${taskId ?? 'unrecorded'})`,
@@ -805,6 +881,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         rendered: plan.fresh,
         reused: plan.reused,
         ignored_cues: ignoredCues,
+        motion_findings: motion,
         output,
         task_id: taskId,
         duration_ms: durationMs,

@@ -1,0 +1,49 @@
+# B12 的样本：录制契约（docs/TEACH-MOTION.md §5）拍成了一支片子。
+#
+# 这支 deck 故意切得慢（reveal 的 zoom + slow，约 0.8 s），并且自己声明
+# `window.teachPageTransition = 900`。所以它既是演示，也是一次真实使用：
+# 没有 B12 之前，录制器只等 300 ms，每句的开头都会带着一段没播完的页转场。
+#
+# 节拍按每页变化次数铺开（一页 n 个 fragment → n+1 次变化，换页算第一次）：
+# 第 1 页 3 个 fragment → 0.25 / 0.50 / 0.75；其余页 2 个 → 1/3、2/3。
+meta:
+  title: 录制契约
+  cover: cover/index.html
+  voice:
+    speaker: stella
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 每一句都是重新加载，所以第一帧从哪一帧开始，是可以选的。
+        cues:
+          - { fragment: 1, at_progress: 0.25 }
+          - { fragment: 2, at_progress: 0.5 }
+          - { fragment: 3, at_progress: 0.75 }
+      - id: s01-2
+        say: reveal 的 fade 在样式表里写死半秒，而录制器过去只等三百毫秒。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-3
+        say: 于是每一句的开头，其实都还带着一小段页转场没播完。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-4
+        say: 现在由幻灯片自己声明切页要多久，录制器照着等，第一帧就是稳态。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-5
+        say: 页内一拍也有自己的时长，这个数只有幻灯片知道，录制器不需要读。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }
+      - id: s01-6
+        say: 余量不够的时候，计划工具会说清是撞上下一拍，还是会切掉句尾。
+        cues:
+          - { fragment: 1, at_progress: 0.33 }
+          - { fragment: 2, at_progress: 0.67 }

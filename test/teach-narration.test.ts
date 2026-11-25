@@ -247,7 +247,7 @@ describe('planning the picture from what is on disk', () => {
     await writeFile(existing, 'picture', 'utf8')
 
     // assemble: false, only "b" rendered: a is reused, nothing is missing.
-    const narrowed = await planSegments(project, timings('a', 'b'), [{ id: 'b', path: join(root, 'b.mp4'), durationMs: 1000, frames: 3 }], { requireAll: false })
+    const narrowed = await planSegments(project, timings('a', 'b'), [{ id: 'b', path: join(root, 'b.mp4'), durationMs: 1000, frames: 3, beats: [], settle: null, retried: false }], { requireAll: false })
     expect(narrowed.reused).toEqual(['a'])
     expect(narrowed.fresh).toEqual(['b'])
     expect(narrowed.pending).toEqual([])

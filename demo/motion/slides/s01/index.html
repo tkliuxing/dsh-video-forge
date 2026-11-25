@@ -64,9 +64,9 @@
 
   /*
    * `draw`: an SVG path draws itself once when the beat lands. `--teach-len`
-   * must be at least the path's own length; a shorter value leaves the tail
-   * permanently hidden, a longer one only shifts nothing. `custom` keeps the
-   * path visible (undrawn) from t=0.
+   * must be at least the path's own length: a shorter value leaves the tail
+   * permanently hidden, a longer one is harmless. `custom` keeps the path
+   * visible (undrawn) from t=0.
    */
   .reveal .slides .draw :is(path, line, polyline, polygon, circle, ellipse) {
     stroke-dasharray: var(--teach-len, 1400);
@@ -294,7 +294,8 @@
 // The contract the recorder drives (src/teach/slides.ts): `teachCue(n)` shows cue
 // step n, `teachPage(n)` shows page n (page mode), `teachReady` says the deck has
 // finished laying out. A deck can be any reveal.js document as long as it defines
-// these three.
+// these three. Two more globals are optional and say how long the motion takes —
+// see below.
 //
 // reveal.js 6 exports a singleton: `Reveal`'s UMD build has no usable
 // constructor, and `new Reveal(config)` leaves the singleton uninitialised, so
@@ -304,6 +305,20 @@ Reveal.initialize({
   keyboard: false, overview: false, touch: false, embedded: true,
   transition: 'fade', transitionSpeed: 'fast', fragments: true,
 }).then(() => { window.teachReady = true })
+
+// How long a page switch takes, in ms (D2, docs/TEACH-MOTION.md §5). The recorder
+// waits this long after `teachPage` before it starts capturing, so declaring it
+// means t=0 of every sentence is the settled page. reveal's `fade` is a fixed
+// 0.5 s in reveal.css — `transitionSpeed` does not shorten it — so the recorder's
+// 300 ms default would catch the transition still running. A deck with a faster
+// or slower page transition declares its own number; omitting it keeps 300 ms.
+window.teachPageTransition = 500
+
+// How long one in-page beat takes, in ms: the `--teach-dur` below. The recorder
+// never reads this — it fires the beat and the CSS plays — but `video_teach_plan`
+// does, and warns when a beat has less room before the next beat or the cut than
+// its own motion needs. A page using `count` or `draw` (900 ms) should declare 900.
+window.teachTransition = 480
 
 /**
  * Show every fragment up to `index` on the current slide. Reveal exposes

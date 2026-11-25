@@ -32,7 +32,7 @@ reveal.js 版的实现（`Reveal` 没有"跳到第 n 个 fragment"的 API，循�
 ```js
 Reveal.initialize({ embedded: true, transition: 'fade', controls: false, progress: false })
   .then(() => { window.teachReady = true })
-window.teachPage = function teachPage(n) { Reveal.slide(n, 0, 0) }
+window.teachPage = function teachPage(n) { Reveal.slide(n, 0, -1) }   // -1 = 切页时一个拍都不亮
 window.teachCue = function teachCue(n) {
   // 数当前页：页内编号从 1 起，且不越过本页最后一个 fragment
   const available = Reveal.getCurrentSlide().querySelectorAll('.fragment').length
@@ -42,6 +42,19 @@ window.teachCue = function teachCue(n) {
 ```
 
 包里带了一份现成的 reveal.js（6.0.2，MIT）与模板：`video_teach_export` 会把 deck 连同 `reveal.js` / `reveal.css` / `theme.css` 一起抄进 `deck/`，直接双击就能演示。
+
+### 动效时长也可以声明：`teachPageTransition` 与 `teachTransition`
+
+三个全局是必需项；再有两个**可选**的，各写一个毫秒数。它们说的是"我的动画有多长"，只有 deck 知道：
+
+```js
+window.teachPageTransition = 500   // 切页动画播完要多久
+window.teachTransition = 480       // 页内一拍动画播完要多久
+```
+
+- **`teachPageTransition`**：录制器在 `teachPage(n)` 之后等这么久才开始录。不写就是默认的 300 ms。**用 reveal 的 `fade` 就要写 500** —— reveal.css 里它是固定的 0.5 s，`transitionSpeed` 改不了它，按 300 ms 等会从转场中间开录（观众看不出错，只看到每句开头有一帧在动）。其它转场听 `transitionSpeed`：`fast` 0.2 s、`default` 0.4 s、**`slow` 1.2 s**，所以要声明的是那一档的数（用 `slow` 写了 900 就不够，这一点是照着实测发现的：样本片按 900 声明时，两页首帧与稳态差 2.2，改成 1300 后六句全部 ≤ 0.04）。写长了只是每句多等一会儿，不多录、不错位，因为 t=0 取的是等待之后的第一帧。
+- **`teachTransition`**：录制器**不读**它（录屏只负责按拍触发，动画由 CSS 自己播），`video_teach_plan` 读——某拍之后到下一拍（或到句末）的余量比它短时给一条 warning，说清是"会和下一拍重叠"还是"句尾会被切"。不写就不校验。模板的值是 `--teach-dur` 的 480 ms；页里用了 `count` 或 `draw`（这两个是 900 ms）就把这行写成 900。
+- 缺这两个全局，契约仍然成立，行为与没有它们时完全一样。
 
 ## 排版约定
 
@@ -182,6 +195,7 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 - 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
 - 动效类来自模板（`dim` / `draw` / `count` / `bar`）或 reveal 内置变体，节奏靠 `--teach-dur` 覆盖；deck 里**没有** `.reveal .fragment { transition: … }` 这样的整体覆盖。
 - `data-teach-stage` 的容器自己不是 fragment，但同一页要有足够多的 fragment 给它数拍（2 拍 → 3 种形状）；`data-step` 初值写成 `"1"`。
+- 声明了 `teachPageTransition`（用 reveal 的 `fade` 就是 500）与 `teachTransition`（等于这页实际最长的那段动效）；`video_teach_plan` 只会因为后者报警。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
 
 ## 让每句话都改变画面

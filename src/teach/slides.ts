@@ -17,16 +17,23 @@
  * why an idle slide still produces 30 fps of picture.
  *
  * The deck contract is three globals — `window.teachCue(index)`,
- * `window.teachPage(index)` and `window.teachReady`. Keeping it that small is
+ * `window.teachPage(index)` and `window.teachReady` — plus two optional ones that
+ * say how long the deck's own motion takes (`teachPageTransition`,
+ * `teachTransition`; docs/TEACH-MOTION.md §5). Keeping it that small is
  * deliberate: a deck can be plain reveal.js with a few lines of glue, and this
  * module never needs to know how the deck is built.
+ *
+ * What was recorded is measured, not assumed: every beat's real moment and the
+ * segment's last frame against the finished page. Both failures they catch — a
+ * beat that landed late, an animation cut at the ending — are invisible in a
+ * still frame and were shipped once (§15).
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { chromium, type Browser, type CDPSession } from 'playwright-core'
-import { countFrameColors, encodeFrames, probe, type MediaProbe, type MediaTools } from './ffmpeg.ts'
+import { chromium, type Browser, type CDPSession, type Page } from 'playwright-core'
+import { countFrameColors, encodeFrames, frameDelta, probe, type MediaProbe, type MediaTools } from './ffmpeg.ts'
 
 /**
  * The globals a deck must expose.
@@ -46,6 +53,23 @@ export interface DeckGlobals {
   teachReady?: boolean
   teachCue?: (index: number) => void
   teachPage?: (index: number) => void
+  /**
+   * How long this deck's own page switch takes, in ms (docs/TEACH-MOTION.md §5).
+   *
+   * Optional, and the only global here the recorder reads as data: only the deck
+   * knows which reveal transition it uses, and `transition: 'fade'` is a fixed
+   * 0.5 s in reveal.css whatever `transitionSpeed` says. Waiting less than that
+   * starts the capture mid-transition. Omitting it keeps {@link PAGE_TRANSITION_MS}.
+   */
+  teachPageTransition?: number
+  /**
+   * How long one in-page beat's transition takes, in ms.
+   *
+   * The recorder never needs it — a beat is fired at its offset and the CSS plays
+   * itself — but saying it out loud is what lets `video_teach_plan` warn when a
+   * beat has less room than its own motion (src/teach/rules.ts).
+   */
+  teachTransition?: number
 }
 
 /** One reveal.js fragment advance, at a moment measured from the sentence's start. */
@@ -57,12 +81,15 @@ export interface CueAt {
 }
 
 /**
- * How long to let a page switch finish before the capture starts, in ms.
+ * How long to let a page switch finish before the capture starts, in ms, when the
+ * deck declares no `window.teachPageTransition`.
  *
- * The templates animate a page change (`transitionSpeed: 'fast'`, about 200 ms),
- * so starting the screencast immediately would record the tail of that
- * transition. t=0 of the segment is the first frame *after* this wait, so the
- * value costs nothing in timing.
+ * The scaffolded template animates a page change (`transitionSpeed: 'fast'`,
+ * about 200 ms), so starting the screencast immediately would record the tail of
+ * that transition. t=0 of the segment is the first frame *after* this wait, so
+ * the value costs nothing in timing. It is only a default: a deck that knows its
+ * own transition (reveal's `fade` is a fixed 0.5 s) declares the real number
+ * (docs/TEACH-MOTION.md §5).
  */
 const PAGE_TRANSITION_MS = 300
 
@@ -103,6 +130,28 @@ export interface RecordDeckOptions {
   signal?: AbortSignal
 }
 
+/** One beat as it was asked for and as it happened, in ms from the segment's first frame. */
+export interface BeatTiming {
+  /** The cue step the manuscript asked for. */
+  fragment: number
+  /** When the cue was due: `at_progress` or `at_word` resolved against the audio. */
+  atMs: number
+  /** When the deck was actually told to step. */
+  actualMs: number
+}
+
+/**
+ * Whether the last captured frame is the deck driven to the end of the sentence.
+ *
+ * `unfinished` is the failure a still frame cannot show: a beat that fired too
+ * late, or a motion longer than the room left after it, leaves the segment cut
+ * through the middle of an animation. `skipped` carries its own reason, because
+ * "not checked" and "checked and fine" must never look the same.
+ */
+export type SettleCheck =
+  | { status: 'finished' | 'unfinished', changed: number, mean: number, finalFragment: number }
+  | { status: 'skipped', reason: string }
+
 export interface RecordedSegment {
   /** The encoded, silent, constant-frame-rate mp4. */
   path: string
@@ -110,6 +159,33 @@ export interface RecordedSegment {
   frames: number
   /** What the encoder says the segment is, measured after the fact. */
   media: MediaProbe
+  /** Every beat of this sentence, intended and actual (empty when it fires none). */
+  beats: readonly BeatTiming[]
+  /** Whether the segment ends on the finished layout. */
+  settle: SettleCheck
+}
+
+/**
+ * A beat this many ms behind its cue is reported late.
+ *
+ * Four output frames at 30 fps. Below that the beat is simply a frame or two off,
+ * which nobody can see; at a second and a half (the 2026-11-25 incident that
+ * added this check) the animation is cut through the middle.
+ */
+export const LATE_BEAT_MS = 120
+
+/** Share of pixels that may differ between the last frame and the finished page. */
+export const SETTLE_CHANGED = 0.002
+
+/** How long to give the in-page motion before screenshotting the finished page: min, max, default, slack. */
+const SETTLE_MIN_MS = 300
+const SETTLE_MAX_MS = 3000
+const SETTLE_DEFAULT_MS = 700
+const SETTLE_SLACK_MS = 200
+
+/** The beats of one capture that landed too late to finish, in manuscript order. */
+export function lateBeats(beats: readonly BeatTiming[], toleranceMs = LATE_BEAT_MS): BeatTiming[] {
+  return beats.filter(beat => beat.actualMs - beat.atMs > toleranceMs)
 }
 
 /** A capture that could not be produced. */
@@ -203,7 +279,7 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
           deck.teachCue(step)
         }, enter)
       }
-      await page.waitForTimeout(PAGE_TRANSITION_MS)
+      await page.waitForTimeout(await pageTransitionMs(page))
     }
 
     const cdp: CDPSession = await context.newCDPSession(page)
@@ -232,31 +308,55 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
     // The cue clock starts at the first painted frame, so t=0 of the segment is
     // the deck's state at the moment the sentence starts — the page switch in page
     // mode has already happened by here.
+    //
+    // `performance.now()`, not `Date.now()`: the interval between here and the last
+    // beat is three to eight seconds of wall clock, and one of the two can be
+    // stepped by the system time daemon while the other cannot. A backwards step
+    // used to stretch the wait and record the last beat after the cut.
     const t0 = await waitForFirstFrame(() => frames.length > 0, options.signal)
     // Beats run on the sentence's own clock in both modes: in page mode they are
     // `at_progress` cues (resolved to milliseconds against the measured length),
     // in cue mode `at_word` ones. `teachCue(n)` counts fragments inside the current
     // page, so a page-mode manuscript numbers its beats per page.
+    //
+    // Each beat's real moment is kept. The wait is a timer in this process plus a
+    // round trip to the browser, so it can fire late for reasons the recorder
+    // cannot control (a stalled event loop, a busy compositor); nothing else in
+    // the pipeline would notice, and the film would ship with an animation cut
+    // through the middle (docs/TEACH-MOTION.md §15).
+    const beats: BeatTiming[] = []
     for (const cue of options.cues) {
-      const wait = cue.atMs - (Date.now() - t0)
+      const wait = cue.atMs - (performance.now() - t0)
       if (wait > 0) await page.waitForTimeout(wait)
       await page.evaluate(index => {
         const deck = globalThis as DeckGlobals
         if (typeof deck.teachCue !== 'function') throw new Error('deck is missing window.teachCue(index)')
         deck.teachCue(index)
       }, cue.fragment)
+      beats.push({ fragment: cue.fragment, atMs: cue.atMs, actualMs: Math.round(performance.now() - t0) })
     }
     // Hold to the audio's full length; the encoder cuts the tail anyway, but a
     // capture shorter than the audio would leave the last frame frozen mid-cut.
-    const holdMs = options.durationMs - (Date.now() - t0)
+    const holdMs = options.durationMs - (performance.now() - t0)
     if (holdMs > 0) await page.waitForTimeout(holdMs)
 
     await cdp.send('Page.stopScreencast')
-    await page.close()
-    await context.close()
-
     if (frames.length === 0) throw new DeckRecordError('the screencast produced no frames at all')
     await settleFiles(frames.map(frame => frame.file))
+
+    // Is the last frame the finished layout? The page is still open, so driving it
+    // to the state the last beat asked for and screenshotting is free of a second
+    // browser launch (docs/TEACH-MOTION.md §15). Skipped when the sentence fires no
+    // beat: there is no motion to finish.
+    const settle = options.cues.length === 0
+      ? { status: 'skipped' as const, reason: 'this sentence fires no beat, so there is no motion to finish' }
+      : await finishedLayout(page, options, frames[frames.length - 1]!.file, tools).catch((error: unknown) => ({
+        status: 'skipped' as const,
+        reason: `the finished-layout check could not run (${error instanceof Error ? error.message : String(error)})`,
+      }))
+
+    await page.close()
+    await context.close()
 
     const listPath = join(options.workDir, 'frames.txt')
     const list = frames
@@ -274,7 +374,7 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
       tools,
       options.signal,
     )
-    return { path, frames: frames.length, media: await probe(path, tools, options.signal) }
+    return { path, frames: frames.length, media: await probe(path, tools, options.signal), beats, settle }
   } catch (error: unknown) {
     if (error instanceof DeckRecordError) throw error
     throw new DeckRecordError(`could not record the deck (${error instanceof Error ? error.message : String(error)})`, { cause: error })
@@ -283,15 +383,76 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
   }
 }
 
+/**
+ * Drive the deck to the state the last beat asked for and compare it with the
+ * frame the segment was cut on.
+ *
+ * The room a beat has is knowable in advance (the plan checks it when the deck
+ * declares `teachTransition`); whether the beat *actually* landed in time is only
+ * knowable after the capture, and it is the difference between "the last item
+ * faded in" and "we recorded a quarter of the fade and cut". Thresholds are
+ * measured (docs/TEACH-MOTION.md §15): a segment whose motion finished differs
+ * from the finished page on 0.0% of pixels at 640×360, one whose last beat was
+ * still fading differs on 1.1%, and the 2026-11-25 late take differed on 11%.
+ */
+async function finishedLayout(
+  page: Page,
+  options: RecordDeckOptions,
+  lastFrame: string,
+  tools: MediaTools,
+): Promise<SettleCheck> {
+  const finalFragment = options.cues[options.cues.length - 1]!.fragment
+  const declared = await page.evaluate(() => {
+    const value = (globalThis as DeckGlobals).teachTransition
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+  })
+  const wait = Math.min(SETTLE_MAX_MS, Math.max(SETTLE_MIN_MS, declared ?? SETTLE_DEFAULT_MS)) + SETTLE_SLACK_MS
+  await page.evaluate(step => {
+    const deck = globalThis as DeckGlobals
+    if (typeof deck.teachCue !== 'function') throw new Error('deck is missing window.teachCue(index)')
+    deck.teachCue(step)
+  }, finalFragment)
+  await page.waitForTimeout(wait)
+  const shot = join(options.workDir, 'settled.png')
+  await page.screenshot({ path: shot })
+  const delta = await frameDelta(lastFrame, shot, {}, tools, options.signal)
+  return {
+    status: delta.changed <= SETTLE_CHANGED ? 'finished' : 'unfinished',
+    changed: delta.changed,
+    mean: delta.mean,
+    finalFragment,
+  }
+}
+
+/**
+ * How long this deck's page switch takes, in ms: what the deck declares, or the
+ * default when it declares nothing usable.
+ *
+ * Read from the live page rather than parsed out of the HTML, because a deck may
+ * compute the value while it initialises, and this is the same object the
+ * recorder drives. A non-numeric or non-positive declaration is ignored rather
+ * than trusted: a `teachPageTransition = '500'` typo must not swallow the wait
+ * and record the transition itself (docs/TEACH-MOTION.md §5).
+ */
+async function pageTransitionMs(page: Page): Promise<number> {
+  const declared = await page.evaluate(() => {
+    const value = (globalThis as DeckGlobals).teachPageTransition
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+  })
+  return declared ?? PAGE_TRANSITION_MS
+}
+
 /** Wait until `ready()` holds, polling briefly; the capture cannot start without a first frame. */
 async function waitForFirstFrame(ready: () => boolean, signal?: AbortSignal): Promise<number> {
-  const startedAt = Date.now()
+  // `performance.now()`: this value is the zero of the segment's cue clock, so it
+  // has to be on the monotonic clock `recordDeckSegment` measures beats with.
+  const startedAt = performance.now()
   while (!ready()) {
     if (signal?.aborted === true) throw new DeckRecordError('recording was cancelled')
-    if (Date.now() - startedAt > 10_000) throw new DeckRecordError('the deck painted no frame within 10 s')
+    if (performance.now() - startedAt > 10_000) throw new DeckRecordError('the deck painted no frame within 10 s')
     await new Promise(resolve => setTimeout(resolve, 10))
   }
-  return Date.now()
+  return performance.now()
 }
 
 /** Wait until every frame file has been written; the event handler writes them asynchronously. */

@@ -413,10 +413,38 @@ export interface DeckInfo {
   fragments: number | null
   /** Fragments per top-level `<section>`, or null when the deck could not be split into pages. */
   pageFragments: number[] | null
+  /**
+   * `window.teachTransition` as the deck declares it, in ms, or null when it says
+   * nothing. Only the plan uses it (D2, docs/TEACH-MOTION.md §5): the recorder
+   * fires a beat and lets the CSS play, so it never needs the number.
+   */
+  transitionMs: number | null
   /** Whether the deck defines the recorder's three globals. */
   hasCue: boolean
   hasPage: boolean
   hasReady: boolean
+}
+
+/**
+ * Where one sentence's beats land on its own clock.
+ *
+ * The transition check needs "how much room does this beat have before the next
+ * beat, or before the cut", which is a question about milliseconds — and only the
+ * plan's caller can answer it, because the answer depends on whether a narration
+ * exists yet (docs/TEACH-MOTION.md §5).
+ */
+export interface BeatSchedule {
+  /** The sentence's length: the denominator its cues were resolved against. */
+  durationMs: number
+  /** Each cue's moment in ms, in manuscript order; null when this route cannot say. */
+  cueMs: readonly (number | null)[]
+  /** True when {@link durationMs} is the characters-over-rate estimate, not a measured narration length. */
+  estimated: boolean
+}
+
+export interface DeckAuditOptions {
+  /** Where each sentence's beats land. Missing sentences are simply not checked. */
+  beats?: ReadonlyMap<string, BeatSchedule>
 }
 
 /** A deck finding, in the same two buckets `auditManuscript` uses. */
@@ -435,7 +463,7 @@ export interface DeckAudit {
  * segment has sentences showed the last page for every sentence past the end.
  * Both are visible from the HTML alone, so the plan can say them for free.
  */
-export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInfo>): DeckAudit {
+export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInfo>, options: DeckAuditOptions = {}): DeckAudit {
   const structural: string[] = []
   const warnings: string[] = []
   const provider = board.voice?.provider ?? DEFAULT_VOICE_PROVIDER
@@ -524,7 +552,59 @@ export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInf
     })
   }
 
+  warnings.push(...transitionFindings(board, decks, options))
   return { structural, warnings }
+}
+
+/**
+ * Beats whose own motion cannot finish before the next beat or the cut (D2,
+ * docs/TEACH-MOTION.md §5).
+ *
+ * A deck may declare `window.teachTransition`, and only it knows: the number is a
+ * property of the visuals, not of the manuscript. Nothing is checked when it stays
+ * silent, which is why this cannot refuse — a deck without a declaration records
+ * exactly as it did before this rule existed.
+ *
+ * Why it is a warning rather than a refusal: overlapping beats are a legitimate
+ * look (the next item starts moving while the previous one settles). What is not
+ * legitimate is a motion still running at the cut, so the message names which of
+ * the two situations this is and what to change.
+ *
+ * The clock is the measured narration when there is one and the characters-over-
+ * rate estimate otherwise — and when it is the estimate, the finding says so,
+ * because a warning built on a guess must not read like a measurement.
+ */
+function transitionFindings(board: Storyboard, decks: ReadonlyMap<string, DeckInfo>, options: DeckAuditOptions): string[] {
+  const findings: string[] = []
+  for (const segment of board.segments) {
+    if (segment.engine !== 'slides') continue
+    const info = decks.get(segment.id)
+    const transition = info?.transitionMs ?? null
+    if (info === undefined || transition === null) continue
+    for (const sentence of segment.sentences) {
+      const schedule = options.beats?.get(sentence.id)
+      if (schedule === undefined || sentence.cues.length === 0) continue
+      sentence.cues.forEach((cue, index) => {
+        const at = schedule.cueMs[index] ?? null
+        if (at === null) return
+        // The next beat, not the next *known* beat: a null in between means this
+        // route cannot place it, and guessing would make the finding unverifiable.
+        const following = schedule.cueMs.slice(index + 1)
+        const offset = following.findIndex(value => value !== null)
+        const next = offset === -1 ? null : following[offset]!
+        const room = (next ?? schedule.durationMs) - at
+        if (room >= transition) return
+        const nextCue = offset === -1 ? null : sentence.cues[index + 1 + offset]
+        const clock = schedule.estimated
+          ? ` (that length is the estimate from its ${sentence.say.length} characters; video_teach_narrate gives the measured clock)`
+          : ''
+        findings.push(next === null
+          ? `sentence "${sentence.id}" fires fragment ${cue.fragment} at ${at} ms and the sentence ends ${room} ms later, but ${info.path} declares a ${transition} ms transition (window.teachTransition): its motion will still be running when the segment is cut. Fire the last beat earlier, or declare a shorter transition${clock}`
+          : `sentence "${sentence.id}" fires fragment ${cue.fragment} at ${at} ms and fragment ${nextCue?.fragment ?? '?'} follows ${room} ms later, but ${info.path} declares a ${transition} ms transition (window.teachTransition): the motion will still be running when the next beat starts. Space the beats further apart, or declare a shorter transition — overlapping is sometimes deliberate, so this is a warning${clock}`)
+      })
+    }
+  }
+  return findings
 }
 
 export interface FrameSample {

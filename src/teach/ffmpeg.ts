@@ -393,6 +393,57 @@ function runCaptureBuffer(command: string, args: readonly string[], signal?: Abo
   })
 }
 
+/** How different two pictures are, on a common grid. */
+export interface FrameDelta {
+  /** Share of pixels (0–1) whose brightness differs by more than the level asked for. */
+  changed: number
+  /** Mean absolute brightness difference over every pixel, 0–255. */
+  mean: number
+}
+
+/** The grid two frames are compared on: small enough to decode fast, big enough to see a row of text. */
+const DELTA_WIDTH = 640
+const DELTA_HEIGHT = 360
+
+/**
+ * Compare two stills: the share of pixels that differ, and by how much on average.
+ *
+ * This is how the recorder asks "is the segment's last frame the finished layout"
+ * (docs/TEACH-MOTION.md §15). Measured on 640×360 grayscale: a frame whose motion
+ * finished differs from the finished page on 0.0% of pixels, one still fading
+ * differs on 1.1%, and the late take that prompted the check differed on 11%.
+ *
+ * A frame of text is mostly flat colour, so a whole-frame mean is blind to one
+ * missing row; the changed-pixel share is what distinguishes them, which is why
+ * both are reported and only the share is judged.
+ */
+export async function frameDelta(
+  a: string,
+  b: string,
+  options: { width?: number, height?: number, level?: number } = {},
+  tools: MediaTools = {},
+  signal?: AbortSignal,
+): Promise<FrameDelta> {
+  const width = options.width ?? DELTA_WIDTH
+  const height = options.height ?? DELTA_HEIGHT
+  const level = options.level ?? 12
+  const command = tools.ffmpegPath ?? 'ffmpeg'
+  const decode = async (input: string): Promise<Buffer> => {
+    const raw = await runCaptureBuffer(command, ['-v', 'error', '-i', input, '-vf', `scale=${width}:${height}`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], signal)
+    if (raw.byteLength < width * height) throw new MediaError(`${command} produced ${raw.byteLength} bytes for a ${width}x${height} frame of ${input}`, { command })
+    return raw.subarray(0, width * height)
+  }
+  const [left, right] = await Promise.all([decode(a), decode(b)])
+  let changed = 0
+  let total = 0
+  for (let at = 0; at < left.length; at += 1) {
+    const difference = Math.abs(left[at]! - right[at]!)
+    total += difference
+    if (difference > level) changed += 1
+  }
+  return { changed: changed / left.length, mean: total / left.length }
+}
+
 export interface AudioCutOptions {
   input: string
   output: string

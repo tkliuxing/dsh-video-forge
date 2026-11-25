@@ -25,7 +25,7 @@ import type { ManimTools } from './manim.ts'
 import { CHARS_PER_SECOND } from './rules.ts'
 import { DEFAULT_SUBTITLE_STYLE, forceStyle, type SubtitleStyle } from './subtitles.ts'
 import { DEFAULT_VOICE as DEFAULT_VOICE_PRIVATE } from './storyboard.ts'
-import { recordDeckSegment, type CueAt } from './slides.ts'
+import { lateBeats, recordDeckSegment, type BeatTiming, type CueAt, type SettleCheck } from './slides.ts'
 import {
   allSentences,
   cueOffsetMs,
@@ -446,6 +446,18 @@ export interface RenderedSegment {
   durationMs: number
   /** Frames the browser capture produced; a slide with one frame is a slide that never moved. */
   frames: number | null
+  /** When each beat was asked for and when it happened (slides only; empty otherwise). */
+  beats: readonly BeatTiming[]
+  /** Whether the segment ends on the finished layout (slides only; null for Manim). */
+  settle: SettleCheck | null
+  /**
+   * True when a late beat was caught and the sentence was recorded again.
+   *
+   * A beat that lands 1.8 s late is not a manuscript mistake — it is the host
+   * hesitating — so the retry runs the same request a second time rather than
+   * asking the author to notice (docs/TEACH-MOTION.md §15).
+   */
+  retried: boolean
 }
 
 /**
@@ -495,7 +507,9 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
         tools: options.tools ?? {},
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       })
-      rendered.push({ id: sentence.id, path: result.path, durationMs: timed.durationMs, frames: null })
+      // Manim has no beats to be late or a deck state to compare: its scene is a
+      // single timeline, and running short of it is the scene's own `run_time`.
+      rendered.push({ id: sentence.id, path: result.path, durationMs: timed.durationMs, frames: null, beats: [], settle: null, retried: false })
       options.onSegment?.(sentence.id, result.path)
       continue
     }
@@ -509,7 +523,7 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
     const mode = deckDriveMode(options.timings)
     const slot = mode === 'page' ? pageSlotOf(segment, sentence.id) : null
     if (mode === 'page' && slot === null) throw new Error(`sentence "${sentence.id}" is not in segment "${segment.id}"`)
-    const recorded = await recordDeckSegment({
+    const request = {
       deckPath: join(options.paths.root, segment.deck),
       ...(slot === null ? {} : { page: slot.page, enter: slot.enter }),
       // In page mode the cues are `at_progress` cues resolved against the
@@ -522,11 +536,57 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
       workDir,
       ...(options.chromiumPath === undefined ? {} : { chromiumPath: options.chromiumPath }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-    }, options.tools ?? {})
-    rendered.push({ id: sentence.id, path: recorded.path, durationMs: timed.durationMs, frames: recorded.frames })
+    } as const
+    let recorded = await recordDeckSegment(request, options.tools ?? {})
+    // One retry, not a loop: the late beat was a hiccup in this machine, not a
+    // property of the manuscript, and a second hiccup is worth reporting rather
+    // than hiding behind a third attempt.
+    const retried = lateBeats(recorded.beats).length > 0
+    if (retried) recorded = await recordDeckSegment(request, options.tools ?? {})
+    rendered.push({
+      id: sentence.id,
+      path: recorded.path,
+      durationMs: timed.durationMs,
+      frames: recorded.frames,
+      beats: recorded.beats,
+      settle: recorded.settle,
+      retried,
+    })
     options.onSegment?.(sentence.id, recorded.path)
   }
   return rendered
+}
+
+/**
+ * What a render has to report about the beats it just recorded.
+ *
+ * Two failures, both invisible in a still frame and both fatal to the picture
+ * (docs/TEACH-MOTION.md §15): a beat that landed after it was due, and a segment
+ * that ends before its last motion does. The first is the machine hesitating, so
+ * `renderSegments` already tried again; the second is the manuscript asking for
+ * more time than it left, which the plan warns about when the deck declares
+ * `teachTransition` and which no retry can fix.
+ *
+ * A check that could not run is reported too: "not checked" and "checked and
+ * fine" must not look the same.
+ */
+export function motionFindings(rendered: readonly RenderedSegment[]): string[] {
+  const findings: string[] = []
+  for (const segment of rendered) {
+    const late = lateBeats(segment.beats)
+    if (late.length > 0) {
+      const behind = late.map(beat => `beat ${beat.fragment} landed ${beat.actualMs - beat.atMs} ms after it was due`).join('; ')
+      findings.push(segment.retried
+        ? `sentence "${segment.id}": ${behind}, and it stayed late when recorded a second time — the machine was busy, not the manuscript. Record that sentence once more: video_teach_render sentences: ["${segment.id}"]`
+        : `sentence "${segment.id}": ${behind} — the motion after it is cut. Record that sentence again: video_teach_render sentences: ["${segment.id}"]`)
+    }
+    if (segment.settle?.status === 'unfinished') {
+      findings.push(`sentence "${segment.id}": its last frame is not the finished layout (${(segment.settle.changed * 100).toFixed(1)}% of its pixels differ from the deck driven to beat ${segment.settle.finalFragment}), so the segment is cut through an animation. Move that beat earlier, or declare a shorter teachTransition`)
+    } else if (segment.settle?.status === 'skipped' && segment.beats.length > 0) {
+      findings.push(`sentence "${segment.id}": the finished-layout check did not run (${segment.settle.reason})`)
+    }
+  }
+  return findings
 }
 
 /** One segment as the assembler needs it: which sentence it belongs to, and where the file is. */
