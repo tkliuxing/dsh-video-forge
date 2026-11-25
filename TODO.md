@@ -97,29 +97,29 @@
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §9（证据区与字号判据）· §8（角标由状态生成）· §14 第 1 条（字号下限已定）
 - 实现记录：待
 
-### [ ] B7 `materials` 布局、`catalog.yaml` 与保留名
+### [x] B7 `materials` 布局、`catalog.yaml` 与保留名
 
 - **做什么**：按设计文档 §3 铺目录（角色沿用 `materials/<名字>/`）、写 `materials/catalog.yaml`（§7.2 字段：`kind` / `origin` / `used_by` / `license` / `source` / `prompt` / `model` / `sha256`）、定下保留名清单（`shots` / `images` / `icons` / `frames` / `style` / `catalog.yaml` 不许当角色名）。把 `script/facts.md` §E 的图片表与 `materials/README.md` 的散约定迁进 catalog。
 - **为什么**：抽卡侧只有 `characters.<名字>.refs` 一条硬约定，首尾帧、风格板、立绘规格、来源都没有位置和去处（§1.2 的缺口表）；而 `materials` 下一层目录名被角色名占用，不先定保留名，`images/` 哪天会被登记成角色。
 - **成本/前提**：半天，纯项目侧，不动插件。现有 `facts.md` 3 行与 `materials/README.md` 一段要迁移。
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §3（布局与保留名）· §4（生产侧）· §7.1（两本台账）· §7.2（字段）
-- 实现记录：待
+- 实现记录：2026-11-25 · `materials/README.md` 重写（布局、往上两层的路径算式、内联/外链判据、保留名、catalog 字段、许可规矩）；新增 `materials/catalog.yaml` 登记 3 张 Hypatia 图（含此前无主、没在任何表里的 `hypatia-mitchell-1885-head.jpg`）；`script/facts.md` §E 改为指向 catalog，只留两条硬结论；建 `icons/` `frames/` `style/` 三个目录 · 未提交
 
-### [ ] B8 deck 静态资源与六条校验
+### [x] B8 deck 静态资源与六条校验
 
-- **做什么**：图标从 `icons/*.svg` 由构建脚本读入并内联成 `<svg>`；位图走 `../../materials/images/…`；写 `script/check-materials.mjs` 跑设计文档 §10 的六条：引用完整、路径形状、图标必须内联、台账双向一致、来源可复现、截图状态自洽。
+- **做什么**：图标从 `icons/*.svg` 由构建脚本读入并内联成 `<svg>`；位图走 `../../materials/images/…`；写 `script/check-materials.py` 跑设计文档 §10 的六条：引用完整、路径形状、图标必须内联、台账双向一致、来源可复现、截图状态自洽。
 - **为什么**：deck 现在是 `file://` 直接加载图片，插件不读也不查（`missingAssets` 只 stat deck/scene/cover 本身），改个文件名录制就静默出空白。而 a02-1 已经引了外部位图，`materials/README.md` 却还写着「deck 不引外部图片」，两边相反。
-- **成本/前提**：一天，零付费。脚本落点已定：项目侧 `script/check-materials.mjs`（§14 第 2 条），随项目走版本管理，初始化时由 skill 拷一份。
+- **成本/前提**：一天，零付费。脚本落点已定：项目侧 `script/check-materials.py`（§14 第 2 条；python 是因为要读 YAML）。**不随插件分发**：规则写在 `video-project` skill 第 4 步，实现归项目的 agent（§11）。
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §5（内联/外链判据）· §10（六条校验）· §13 验收 5–6
-- 实现记录：待
+- 实现记录：2026-11-25 · `slides/build.py` 的 `render_art` 补 `image`（外链）/ `icon`（内联：去 XML 声明与 DOCTYPE、加 class、缺文件报错）两个分支——`image` 之前根本没有分支，靠 a02 的冻结层掩盖着，一解冻图就没了；重跑构建 196 页与改动前逐字节一致 · `script/check-materials.py` 实现六条 + 保留名：真实项目通过，13 条负例全命中（路径形状 ×3 / 外部 URL / SVG 用 `<img>` / generated 缺 prompt / authored 缺 license / derived 来源不存在 / 孤儿文件 / 保留名冲突 / 字号 9.3<24 / must_show 缺 text / 沉默缺失）· 文件名由 `.mjs` 定为 `.py`（要读两份 YAML）· 2026-11-25 决定：校验器不随插件分发，新项目由项目的 agent 按 `video-project` skill 里的六条自己实现；已把六条写进 skill · 独立审查后修掉 5 条阻断（README 旧命令、`origin` 缺 authored、`derived` 的 source 形状、B8 残留"拷一份"、B9 立绘规格未落地）与 11 条应当修 · 未提交
 
-### [ ] B9 抽卡素材规格与初始化模板
+### [x] B9 抽卡素材规格与初始化模板
 
-- **做什么**：立绘规格写死（位图不支持 SVG、长边 ≥ 1024、背景干净、多视角 `front`/`side`/`back`、单角色单目录、一次 ≤ 9 张）；首尾帧放 `frames/<shot>/{first,last}.png`、风格板放 `style/`；**允许从成片派生并长期复用**（`origin: derived` + `source: renders/<shot>/vNNN`）；在 `video-project` 与 `video-teach-slides` 的初始化步骤里生成 `materials/README.md`（布局表 + 路径算式 + 引用判据）与 `catalog.yaml` 模板，并改掉 README 里「教学路线不需要素材文件、deck 不引外部图片」那句。
+- **做什么**：立绘规格写死（位图不支持 SVG、长边 ≥ 1024、背景干净、多视角 `front`/`side`/`back`、单角色单目录、一次 ≤ 9 张）；首尾帧放 `frames/<shot>/{first,last}.png`、风格板放 `style/`；**允许从成片派生并长期复用**（`origin: derived` + `source: renders/<shot>/vNNN.mp4`）；在 `video-project` 与 `video-teach-slides` 的初始化步骤里生成 `materials/README.md`（布局表 + 路径算式 + 引用判据）与 `catalog.yaml` 模板，并改掉 README 里「教学路线不需要素材文件、deck 不引外部图片」那句。
 - **为什么**：首帧/尾帧与非角色参考图没有位置约定，模型每次临时传路径，下次就找不到同一张；立绘既可能是抽卡产物又被当输入，不记 `prompt`/`model` 就不可复现（§1.2）。初始化必须留下这份 README，否则规范只存在于 skill 里，用户打开项目看不到。
 - **成本/前提**：半天，改两份 skill 正文；插件只写 `renders/` 与 `.dsh-video/`，不碰 `materials/`，所以模板靠模型建。
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §6（抽卡素材）· §11（初始化模板）· §14 第 3 条（已定：允许从成片派生）
-- 实现记录：待
+- 实现记录：2026-11-25 · `video-project` 建项目改 4 步（`catalog.yaml` 与 `materials/README.md` 模板、保留名清单）；`video-teach-slides` 新增「静态资源：图标内联、位图外链」；立绘规格（位图、长边 ≥ 1024、`front`/`side`/`back`、≤ 9 张）与教学项目「没有 materials 就先按建项目第 2 步建」两条也写进了 skill；`src/skills.ts` 两份 routing description 带上素材 · 独立审查发现这两条原本没落地，已补 · `pnpm check` 705 passed / 7 skipped · 未提交
 
 ---
 

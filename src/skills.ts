@@ -36,7 +36,7 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-project',
     description:
-      'dsh-video-forge 插件的工作区布局和 video-project.yaml 清单：成片落在哪、清单怎么写怎么读、目录映射、版本编号。在创建或解释视频项目结构、或清单含义存疑时使用。',
+      'dsh-video-forge 插件的工作区布局和 video-project.yaml 清单：成片落在哪、素材放哪（catalog.yaml、保留名、立绘与首尾帧）、清单怎么写怎么读、目录映射、版本编号。在创建或解释视频项目结构、或清单含义存疑时使用。',
     file: 'video-project.md',
     userInvocable: true,
   },
@@ -71,7 +71,7 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-slides',
     description:
-      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 时使用。',
+      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、静态资源（图标内联、位图外链、只有「往上两层」一种路径）、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 时使用。',
     file: 'video-teach-slides.md',
     userInvocable: false,
   },

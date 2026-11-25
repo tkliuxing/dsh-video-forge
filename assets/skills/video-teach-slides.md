@@ -58,6 +58,21 @@ window.teachCue = function teachCue(n) {
 - 每句结尾的版面必须是**完整构图**，不要留半截动画或空位；最后一屏要能独立看 1 秒以上。
 - 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`，不会重录别的句子（补过页尾停留的项目要全量重录，见 `video-teach-iterate`）。
 
+## 静态资源：图标内联、位图外链
+
+deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮、要不要用 CSS 改色**：
+
+| 内容 | 源文件放哪 | deck 里怎么写 |
+|---|---|---|
+| 图标、装饰矢量 | `materials/icons/<名字>.svg` | 构建时读文件、内联成 `<svg>` |
+| 照片、插画、位图 | `materials/images/…` | `<img src="../../materials/images/…">` |
+
+- 图标写成 `<img src="…svg">` 是错的：`<img class="fragment">` 虽然会被计数、也能整块点亮，但改不了色、没法只点亮图里的一部分（`<g class="fragment">`）。要这些能力就内联，源文件留在 `materials/icons/` 里以便替换与登记。
+- 位图不要内联成 base64：deck 会涨到几十 MB，录屏与导出都受拖累。
+- 路径只有一种形状：**往上两层再加 `materials/`**（deck 在 `slides/<幕>/index.html`，往上是项目根）。绝对路径、`~`、`http(s)`、`../../../` 都算错。原因不只是 deck 用 `file://` 加载：并行派发时 `materials/` 会被拷进 `runs/<幕>/`，只有这个形状在主项目与 run 副本里都解析得对。
+- 引用前确认文件存在，然后跑项目自己的校验器（建项目时写的 `script/check-materials.py`，`python3` 跑）：引用缺失、路径形状不对、图标用 `<img>`、台账缺行，它一次报出来。
+- 项目还没有 `materials/` 时，先按 `video-project` 的建项目第 2 步建（布局、`catalog.yaml`、`README.md`）。教学项目的 deck 走同一套目录，不另起一份。
+
 ## 检查清单
 
 - `teachReady` 确实被置为 true（放在 `initialize()` 的 `then` 里，不要放在 `DOMContentLoaded`）。

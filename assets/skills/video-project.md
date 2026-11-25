@@ -9,7 +9,7 @@
   video-project.yaml          # 清单：默认参数、风格、角色、目录映射
   script/                     # 你的剧本（可选，结构自定）
   storyboard/shots.yaml       # 分镜表（参考文本——见 video-storyboard 技能）
-  materials/                  # 角色 / 场景参考图、音频
+  materials/                  # 素材：角色立绘 / 首尾帧 / 风格板 / 位图 / 图标 / 截图（布局见建项目第 2 步）
   renders/<镜头>/v001.mp4     # 生成成片，每个镜头一个文件夹，版本递增
   renders/<镜头>/v001.json    # 每条视频旁的说明（prompt、模型、参数、用量）
   .dsh-video/                 # 插件自己的缓存——别动它
@@ -44,7 +44,7 @@ paths:                    # 把布局映射到你自己的目录（都是工作�
 
 规则：
 - **优先级**：`video_generate` 的显式参数 > 对话栏的「视频模型」chip（会话级选择）> 清单 `defaults` > 插件设置的默认供应商/模型。所以本会话若在 chip 里选过模型，清单的 `defaults.provider`/`model` 不生效；工具结果会写明哪个值来自 chip。
-- `paths` 的值必须是工作区相对路径；绝对路径、`~`、`..` 都会被拒绝。
+- `paths` 的值必须是工作区相对路径；绝对路径、`~`、`..` 都会被拒绝。注意 `paths.materials` 目前只是一句声明：`characters` 的 `refs` 是按工作区根解析的，改这个键不会搬家。
 - 不认识的**顶层**键会被忽略（给未来版本留余地）；`defaults`、`paths`、某个角色**里面**的不认识键会被拒绝——当拼写错误处理（`render:` 写成了 `renders:`）。
 - 解析不了的清单在提交前就被拒绝（不会花钱）。
 - `style` 和 `characters` 由工具加进 prompt，不是你加：把用户自己的 prompt 和清单风格分开。
@@ -54,8 +54,23 @@ paths:                    # 把布局映射到你自己的目录（都是工作�
 没有 init 命令。用你常规的 `write` 工具来搭：
 
 1. 写 `video-project.yaml`。
-2. 建 `materials/`，放参考图。
+2. 建 `materials/`，按用途放素材：角色立绘进 `materials/<角色名>/`（目录名就是清单里的角色名），首帧尾帧进 `materials/frames/<镜头>/`，风格板进 `materials/style/`，其余位图进 `materials/images/`。同时写两份文件：
+   - `materials/catalog.yaml`：每个素材一行，记 `file`（相对 `materials/`）、`kind`、`origin`（`generated` / `supplied` / `derived` / `authored`）、`used_by`、`license`、`source`；agent 生成的还必须记 `prompt` 与 `model`，否则这张图不可复现；手写的 SVG 图标记 `authored`，不要求提示词。
+   - 立绘规格：位图（SVG 不被接受），长边 ≥ 1024（经验值），背景干净（透明或纯色），多视角固定命名 `front` / `side` / `back`；一次请求的参考图合并去重后最多 9 张，别在角色目录里堆草稿。
+   - `materials/README.md`：布局表、引用路径的算式（deck 引素材写成 `../../materials/…`，只有这一种形状）、内联与位图的判据，以及"新建素材先在这里和 catalog 各加一行"。
 3. 可选写 `storyboard/shots.yaml`。
+4. 写项目内的校验器 `script/check-materials.py`（`python3` 跑，要 PyYAML；先 `python3 -c 'import yaml'` 确认这个解释器带着它）。**插件不随包发这个脚本**，规则就是下面这几条，实现归项目：
+   - deck 里每个 `<img src>` 指向的文件存在；
+   - 引用路径只有 `../../materials/<目录>/<文件>` 一种形状；绝对路径、`~`、`http(s)`、`../../../` 都算错；
+   - `<img src="…svg">` 直接算错——图标必须内联，否则改不了色、也不能只点亮其中一部分；
+   - 磁盘上 `materials/` 里每个文件在 `catalog.yaml` 有一行（截图除外，它走 `materials/shots/shots.yaml`），反之每一行指向真实文件（孤儿与幽灵条目都报）；
+   - `generated` 必须有 `prompt` 与 `model`，`supplied` 必须有 `license` 与 `source`，`authored` 要有 `license`，`derived` 的来源文件必须存在（`renders/<shot>/vNNN.mp4`）；
+   - `materials/shots/shots.yaml` 存在时，截图的状态、入片字号（`evidence` ≥ 24 px、`structure` ≥ 10 px）与断言一起校验；
+   - 角色目录名撞保留名要报。
+
+角色目录名不能是 `images`、`icons`、`frames`、`style`、`shots`、`catalog.yaml`、`README.md`。这些是保留名：角色目录与它们共用 `materials` 下一层，混用会让 `characters` 的 `refs` 把整个目录扫进参考图。
+
+插件只写 `renders/` 和 `.dsh-video/`，从不构建或改写 `materials/`，所以这两份文件要你自己建、自己维护。
 
 视频第一次落进一个还没有清单的工作区时，插件也会自动写一份带注释的 `video-project.yaml` 和一个内容为 `*` 的 `renders/.gitignore`（让成片默认不进 git）。想把成片提交（比如用 Git LFS）就删掉那个 `.gitignore`。如果用户已经建过这两个文件，插件不动它们。
 
