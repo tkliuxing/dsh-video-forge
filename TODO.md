@@ -63,13 +63,13 @@
 
 ---
 
-### [ ] B3 多幕并行派发的规程写进 skill
+### [x] B3 多幕并行派发的规程写进 skill
 
 - **做什么**：把 `docs/TEACH-PARALLEL-ACTS.md` 的规程落成两份 skill 的正文：`video-teach-storyboard` 写「稿本按幕切分」的契约（`runs/<act>/storyboard.yaml` 只含本幕句子、每次调用都要带 `storyboard=`），`video-teach-iterate` 写「逐幕返工与合并」的纪律（先逐幕验收再合并、不许删 `.dsh-video`、不许用主项目 audio 覆盖 run 目录）。
 - **为什么**：规程现在是文档，只有读过它的人才会照做。写进 skill 才会在派发的那一刻被模型看到。这是记忆里 `rule-corrections-land-in-skills` 的同一件事：只写文档，下一次会在相邻问题上再返工一遍。
 - **成本/前提**：免费，改 `assets/skills/` 两份正文 + `src/skills.ts` 的 routing description；`test/guide-consistency.test.ts` 会扫正文里的工具名。
 - **出处**：[`docs/TEACH-PARALLEL-ACTS.md`](docs/TEACH-PARALLEL-ACTS.md) §5（提示词最小集合）· §6（回收与合并）· §8（禁止事项）
-- 实现记录：待
+- 实现记录：2026-11-24 · `video-teach-storyboard` 新增「多幕并行：把稿本拆成一幕一份」（契约、为什么隔离、派发前四件事、三件不委托）；`video-teach-iterate` 新增「逐幕返工与合并」（逐幕验收四项、回收用脚本、合并三步、三条硬约束）与两条常见坑（拿文案当音频证据、反向覆盖 audio）；`src/skills.ts` 两份 routing description 都带上「多幕并行」· `pnpm test` 697 passed / 7 skipped，`pnpm run build` 通过（未提交）
 
 ---
 
