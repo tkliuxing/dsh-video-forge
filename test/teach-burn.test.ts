@@ -28,14 +28,18 @@ import { DEFAULT_PRICE_TABLE } from '../src/prices.ts'
 import type { VideoForgeRuntime } from '../src/runtime.ts'
 import { hostWorkspaceFs } from '../src/workspace-fs.ts'
 import { probeFilter } from '../src/teach/ffmpeg.ts'
-import { isMissing } from '../src/teach/rules.ts'
 import { registerTeachTools } from '../src/teach/tools.ts'
 
 /** The ffmpeg the pipeline would use here, and whether it can burn subtitles. */
 const BIN = (process.env.TEACH_FFMPEG_BIN ?? '').trim()
 const MEDIA = BIN === '' ? {} : { ffmpegPath: join(BIN, 'ffmpeg'), ffprobePath: join(BIN, 'ffprobe') }
 const SUBTITLES = await probeFilter(MEDIA, 'subtitles')
-const CAN_BURN = !isMissing(SUBTITLES)
+// `probeFilter` answers three things: `present (…)`, `missing (…)`, and `unknown (…)`
+// when ffmpeg could not even start. Only the affirmative answer is a machine this
+// test can run on: a clean CI runner ships no ffmpeg at all, and reading `unknown`
+// as "not missing, so probably fine" turns the intended skip into a red gate
+// (2026-11-25, the 0.3.0 tag's first run: `spawn ffmpeg ENOENT`).
+const CAN_BURN = SUBTITLES.startsWith('present')
 
 /** Run the test's own ffmpeg, collecting stdout when asked for it. */
 function ffmpegText(args: readonly string[], capture: boolean): Promise<Buffer> {
