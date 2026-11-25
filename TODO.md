@@ -122,6 +122,38 @@
 - **出处**：[`docs/TEACH-MATERIALS.md`](docs/TEACH-MATERIALS.md) §6（抽卡素材）· §11（初始化模板）· §14 第 3 条（已定：允许从成片派生）
 - 实现记录：2026-11-25 · `video-project` 建项目改 4 步（`catalog.yaml` 与 `materials/README.md` 模板、保留名清单）；`video-teach-slides` 新增「静态资源：图标内联、位图外链」；立绘规格（位图、长边 ≥ 1024、`front`/`side`/`back`、≤ 9 张）与教学项目「没有 materials 就先按建项目第 2 步建」两条也写进了 skill；`src/skills.ts` 两份 routing description 带上素材 · 独立审查发现这两条原本没落地，已补 · `pnpm check` 705 passed / 7 skipped · 未提交
 
+### [ ] B10 D0：页内动效库（模板 CSS + skill 食谱）
+
+- **做什么**：模板 `assets/teach/deck/index.html` 里加 `--teach-dur: 480ms` 与 `.reveal .slides .fragment { transition-duration: var(--teach-dur) }`（只改时长，**不覆盖 `transition`**，否则杀掉 reveal 内置变体的 transform）；补四个类：`dim`（压暗 `.42` → 点亮，整页构图句首完整）、`draw`（SVG `stroke-dashoffset` 一次性 keyframes）、`count`（数字滚动）、`bar`（条形生长）；`video-teach-slides` 加「动效食谱」（内容类型 → 用哪个类）与禁用清单（无限循环的信息型动画、整体覆盖 `.fragment` 的 `transition`）。
+- **为什么**：实测一段 9.23 s 的句子只产生 23 帧，其中 20 帧集中在两次约 170 ms 的淡入里，其余 8 秒画面一个像素都不变——这是"呆板"的物理来源。管线本身能拍到 60 fps 的位移/缩放/绘制，瓶颈是默认只给了 opacity。另一条：某个 fixture deck 自写 `.reveal .fragment{transition:opacity 180ms}`，与 reveal 自己的规则同特异性且后加载，把 `fade-up`/`grow` 的 transform 全部变成瞬间跳变，作者无从得知。
+- **成本/前提**：模板 CSS 一段 + skill 一节，不改代码。`480 ms` 的依据是实测 400 ms 拍 32 帧、200 ms 只拍 16 帧；不能用 demo 的 `cubic-bezier(0.77,0,0.175,1)`（实测前 77% 时间几乎不动）。
+- **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §1.1（实测帧数，行 26）· §1.3（覆盖 `transition` 的坑，行 46）· §3（D0 全文，行 84）· §3.2 类清单（行 98）· §3.3 缓动（行 120）
+- 实现记录：待
+
+### [ ] B11 D1：页内手动 auto-animate（`data-teach-stage`）
+
+- **做什么**：模板 CSS 给 `r-stack` + `.mover` 的写法示例；模板的 `teachCue` 末尾加一段可选同步——把 `[data-teach-stage]` 容器的 `data-step` 跟随当前拍数，deck 只写 CSS 不写 JS。同时给「依次聚焦」写法：`custom` 元素用 `current-fragment` 改颜色/位移/字重。
+- **为什么**：reveal 的 Auto-Animate 是跨页补间，在我们的录制架构里被吃掉（换页发生在开录之前）。但 `.reveal .fragment:not(.custom)` 这条规则给了出口——`class="fragment custom"` 不被隐藏，reveal 只负责数它和推进它，样式全交给作者。实测：尺寸、颜色、圆角的变化被平滑补间并完整录取，观感与原生 Auto-Animate 同源。
+- **成本/前提**：模板 CSS + `teachCue` 一段 + skill 一节；不改代码。边界要写清：`data-teach-stage` 只在当前页生效，跨页是 B13 的职责；共享页下编号跨句递增，作者要么按整页编号写 CSS，要么用 `enter`。
+- **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §4（D1 全文，行 128）· §4.1 `.fragment.custom` 支点（行 130）· §4.2 连续变形（行 144）· §4.3 依次聚焦（行 171）
+- 实现记录：待
+
+### [ ] B12 D2：录制契约（`teachTransition` / `teachPageTransition`）
+
+- **做什么**：`src/teach/slides.ts` 读两个可选全局——`window.teachPageTransition`（切页过渡时长，替代硬编码的 `PAGE_TRANSITION_MS = 300`）与 `window.teachTransition`（页内单步过渡时长，仅用于校验）；`src/teach/rules.ts` 加一条 warning：某拍之后剩余时间 < `teachTransition` 时提示会与下一拍重叠。
+- **为什么**：`transition: 'fade'` 在 reveal.css 里是固定 0.5 s，`transitionSpeed: 'fast'` 对它无效，而等待只有 300 ms——开录时还有约 200 ms 的转场在跑。现在靠前面的截图自检（1080p 截图 + 数颜色）耗掉额外时间才没暴露。同时校验器完全不知道"这一拍之后够不够播完"，只能在成片里看出来。
+- **成本/前提**：`slides.ts` 两处取默认值；`rules.ts` 一条 warning。不声明就跳过校验，默认路径不变。**不加 `teachEnter`**：页入场动画被 B13 的尾转场吸收，加第三个全局会把契约从三个变四个。
+- **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §5（D2 全文，行 188）· §5.1 两个全局（行 190）· §5.2 为什么不加 `teachEnter`（行 203）· §1.2 成因一（`PAGE_TRANSITION_MS`，行 40）
+- 实现记录：待
+
+### [ ] B13 D3：跨句转场（含音频对轨与并行衔接）
+
+- **做什么**：① 段结构改成 `[正文 durationMs][转场 exitMs]`，`recordDeckSegment` 加 `exit: { page, enter, ms }` 分支（录完正文后 `teachPage(N+1)` + `teachCue(enterNext)` 再录 `exitMs`）；② `pipeline.ts` 用 `pageSlots` 全量算出下一段的 `{page, enter}` 传进去；③ 音频在每段后补 `exitMs` 静音（落在 `cutAudioSegment` 的 `apad` 或 assemble 时，**不能两处都补**）；④ `timings.json` 每条加 `exitMs`（缺省 0），`assembleVideo` / `buildSrt` / `assemble-act.py` 全部按 `durationMs + exitMs` 累加；⑤ `rules.ts` 八条校验（时长范围、纯 cue 模式拒绝、跨 engine 降级、`exitMs` 超句长、拍后余量、`enter=0` 全暗、整体覆盖 `transition`、`dim` 与 `fade` 混用）。
+- **为什么**：这是唯一能把 reveal 的页转场与 **Auto-Animate** 录进成片的办法——补间发生在同一段录制内（同一文档先 `teachPage(N)` 再 `teachPage(N+1)`），不需要改"一句一录"的地基。转场放**前一段的尾部**而不是后一段的开头：放开头会让句首画面还在转场，违反"句首完整构图"；放尾部则在"最后一屏停留"之后，两不冲突。
+- **成本/前提**：四周改动（`slides.ts` / `pipeline.ts` / `ffmpeg.ts` / `rules.ts`）+ 项目侧 `assemble-act.py` 跟改。**最大风险是一本账**：转场让段变长，任何一处按"只有 `durationMs`"算都会让并行验收的"成片时长 = timings 合计（容差一帧）"失败。跨 engine 边界一律降级为硬切（Manim 场景在另一个进程、另一份文件，拿不到"下一页初态"）。幕与幕之间不做转场。
+- **出处**：[`docs/TEACH-MOTION.md`](docs/TEACH-MOTION.md) §6（D3 全文，行 207）· §6.1 归属（行 211）· §6.2 录制流程（行 226）· §6.3 音频（行 242）· §6.4 对轨（行 248）· §6.5 多幕并行（行 262）· §6.7 跨 engine（行 285）· §7 八条校验（行 303）
+- 实现记录：待
+
 ---
 
 ## C. 待办：明确要做，只差动手

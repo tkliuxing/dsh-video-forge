@@ -1,0 +1,366 @@
+# 幻灯段动效与跨句转场（2026-11-25 方案）
+
+本文回答一件事：**reveal.js 幻灯段怎么从"只会淡入"变成"有动效、有转场"，同时不破坏音频对轨、逐句重录与多幕并行。**
+
+只管方案与判据，实现记录留到代码落地后回填。页内节拍的算法在 `docs/TEACH-VIDEO.md`「页内节拍：按变化次数算」与「一页承载多句：`page` / `enter`」两节；并行派发的目录契约在 [`TEACH-PARALLEL-ACTS.md`](TEACH-PARALLEL-ACTS.md)；deck 静态资源与素材落点在 [`TEACH-MATERIALS.md`](TEACH-MATERIALS.md)。
+
+## 0. 主旨
+
+**动效不是装饰，是"这句话讲到哪、画面动到哪"的可见证据。** 现在的幻灯段只有一种画面语言——元素淡入，然后就完全静止。实测一段 9.23 秒的句子只产生 23 个画面帧，其中 20 帧集中在两次 180 ms 的淡入里，其余 8 秒画面**一个像素都不变**。这就是"呆板"的物理来源。
+
+四条决定，按代价从低到高排（D0 → D3）：
+
+| 档 | 内容 | 改动面 |
+|---|---|---|
+| **D0** | 页内动效库：更多切换类型、正确时长、压暗点亮 | 模板 CSS + skill |
+| **D1** | 页内手动 auto-animate：同一元素连续变形 | 模板 CSS + deck 内几行 JS |
+| **D2** | 录制契约：deck 声明过渡时长，录制器与校验器读它 | `slides.ts` + `rules.ts` |
+| **D3** | 跨句转场：把 reveal 的页转场与 Auto-Animate 录进成片 | `slides.ts` + `pipeline.ts` + `ffmpeg.ts` + 稿件 |
+
+**不改变的三件事**：音频仍是时钟；一句仍是一个录制单元、重录只花一句；成片仍回 `renders/<shot>/`。D3 会动到这三件的**账本**（段长、时间轴、字幕），所以单独用第 6 节展开。
+
+## 1. 基线：实测的四件事
+
+全部在隔离实例里实测（仓库外，独立的 `DSH_HOME` 与端口），不是推断。
+
+### 1.1 录制管线能拍到什么
+
+录制用 CDP 的 `Page.startScreencast`，**页面重绘才发帧**，静止时不发。`ffmpeg.encodeFrames` 再把不规则到达的帧按时间戳铺成 30 fps 的 CFR 段。
+
+| 场景 | 3 秒内的帧数 | 说明 |
+|---|---|---|
+| 页面完全静止 | **1 帧** | 这就是"整句画面不动"的物理形态 |
+| 200 ms 的 CSS transition | 约 16 帧 | 采样稳定在 **60 fps**（每帧 16–17 ms） |
+| 400 ms 的 CSS transition | 约 32 帧 | 时长直接决定可拍的中间帧数 |
+| 700 ms 的 SVG 路径绘制（一次性 keyframes） | 约 60 帧 | 帧文件大小单调增长，绘制过程连续 |
+| 永久循环动画（旋转 + 悬浮，transform） | **279 帧（93 fps）** | 7.8 MB；静态页同样 3 秒只有 27 KB |
+
+**结论：管线不是瓶颈。** 位移（`translateY`）、缩放（`scale`）、颜色、圆角、SVG 描边全部被完整采样。呆板的原因是动效类型，不是录制能力。
+
+### 1.2 三个成因
+
+1. **跨页过渡在架构里被吃掉。** `slides.ts:184-207` 先 `teachPage(n)`、再等 `PAGE_TRANSITION_MS = 300`（`slides.ts:67`）、然后才开录；`concatSegments`（`ffmpeg.ts:191-195`）用 concat demuxer + `-c copy`。两处叠加的结果是**成片里页与页之间永远是硬切**，deck 写什么 `transition` 都没用。
+2. **默认 fragment 只有 opacity。** reveal.css 里 `.reveal .fragment:not(.custom){opacity:0;visibility:hidden}`，模板与 skill 都只提"`fragment`"三个字，模型第一次写的 deck 必然是纯淡入。
+3. **时长偏短。** `.fragment{transition:all .2s}`，200 ms 在 30 fps 输出里只有 6 帧左右，观感是"闪一下"而不是"动"。
+
+### 1.3 一个已经踩过的坑（会杀掉内置变体）
+
+某个 fixture deck 自己写了：
+
+```css
+.reveal .fragment { opacity: 0; transition: opacity 180ms ease; }
+```
+
+这条与 reveal 的 `.reveal .fragment{transition:all .2s}` **特异性相同、后加载**，于是胜出。`transition` 只作用于 `opacity`，**`fade-up` 的 transform、`grow` 的 scale 全部变成瞬间跳变**——作者即使知道有变体也用不出来。这条要写进 skill 的禁用清单。
+
+### 1.4 官方 demo 的"炫"在哪
+
+逐段看过 [revealjs.com/demo](https://revealjs.com/demo/) 的源码，它的运动类效果**全部是跨页**：
+
+- **Auto-Animate**：相邻 `<section data-auto-animate>` + `data-id` 匹配，元素跨页连续补间（默认 `duration: 1` 秒、`easing: ease`、`unmatched: true`）；
+- **Transition Styles / Background Transitions**：页间转场；
+- 静态部分（主题、列表、表格、代码）比我们还朴素。
+
+所以"像 demo 那样连续"绕不开跨页，这就是 D3 必须做的原因。同时 demo 也暴露了三个可直接拿的零件：`r-stack` / `r-hstack` / `r-vstack`（纯 CSS 布局）、`r-fit-text`、`data-background-gradient`。**包里没带任何插件**（`assets/teach/deck/` 只有 reveal.js / reveal.css / theme.css），所以 markdown、代码高亮、notes、zoom、search 都不可用，这一版不补。
+
+## 2. 三种动画，三套判据
+
+这是全套方案的地基。写 deck 的人和校验器都要按这张表判断。
+
+| 类型 | 触发者 | 与播放时钟的关系 | 例子 | 允许 |
+|---|---|---|---|---|
+| **状态驱动** | `teachCue` 改 class | 起点由 cue 决定，终点由 CSS 时长决定 | 显隐、位移、缩放、颜色、路径绘制、数字滚动 | ✅ 主推 |
+| **纯装饰循环** | 页面加载 | 完全无关 | 旋转、悬浮、光晕、渐变流动 | ✅ 但要接受帧数代价 |
+| **混合** | 循环 + cue 叠加 | 循环部分无关，叠加部分有关 | "波形一直在动，说到某处变红" | ✅ 必须两层写 |
+
+三条硬规则：
+
+1. **状态驱动的动画时长必须固定**，写在 deck 里能被读到（D2 的 `teachTransition`）。
+2. **循环动画只用 `transform` / `opacity`**（走合成器）。用 `width` / `top` / `left` 触发 layout，帧率与帧大小都更差。
+3. **禁止无限循环的"信息型"动画**：循环的相位从 `page.goto` 开始计，到开录之间隔着截图自检等不确定耗时，所以"转到 45° 时正好说到某个词"做不到。纯装饰不受影响。
+
+**循环动画的代价**（实测，写在这里因为它是判据的一部分）：只要有重绘就是 93 fps，与动画快慢无关——一个 20 秒周期的缓慢旋转和 1 秒一圈帧数完全一样。一段 6 秒的句子从约 25 帧涨到约 560 帧。本方案**不为此做优化**（用户 2026-11-25 明确"中间文件会很大先不考虑"），但 skill 里要提示"装饰循环别全片铺开"。
+
+## 3. D0：页内动效库
+
+### 3.1 不覆盖，只补时长
+
+模板与 skill 的第一条规则：**不要写 `.reveal .fragment { transition: ... }`**。要改时长就只改 `transition-duration`：
+
+```css
+.reveal .slides .fragment { transition-duration: var(--teach-dur, 480ms); }
+```
+
+`transition-duration` 不覆盖 `transition-property`，所以 reveal 内置变体的 `transform` 仍然生效。模板里给 `--teach-dur: 480ms`，作者可按页覆盖。
+
+**480 ms 的依据**：实测 400 ms 拍 32 帧、200 ms 拍 16 帧；480 ms 落在"足够顺滑、又不越过常见的一拍间隔"的区间。少于 300 ms 观感仍是"闪"。
+
+### 3.2 可用的类清单
+
+reveal 内置、直接可用（不需要写 CSS，但**必须不被 §3.1 的坑杀掉**）：
+
+| 类别 | 类名 | 用途 |
+|---|---|---|
+| 出现型 | `fade`（默认）、`fade-up/down/left/right`、`zoom-in`、`fade-in-then-out` | 逐条出现；位移与缩放比纯 opacity 有明显"动"感 |
+| 强调型 | `grow`、`shrink`、`strike`、`highlight-blue/red/green`、`semi-fade-out` | **默认可见**，点亮时改变样式 |
+
+**强调型不能当"逐条出现"用**：`.reveal .fragment.grow{opacity:1;visibility:inherit}` 意味着它从一开始就在版面上。用在"逐条出现"的列表上，会让所有条目一开始全都在。这是最容易做错的一处。
+
+模板额外提供四个（需要 `index.html` 里写 CSS）：
+
+| 类 | 机制 | 用途 |
+|---|---|---|
+| `dim` | `opacity: .42 → 1`（**压暗→点亮**，不是从无到有） | 整页构图在句首就完整，节拍只做强调。另一个教学片项目已验证过这个模式 |
+| `draw` | SVG `stroke-dashoffset` 一次性 keyframes | 曲线、路径、流程线逐笔画出 |
+| `count` | `counter` + `steps()` 或 JS 递增 | 数字从 0 滚到目标值 |
+| `bar` | `scaleX`/`height` transition | 条形图生长 |
+
+`dim` 与默认 `fade` 是两种不同的画面语言，按内容选：要"整页完整、逐步强调"用 `dim`；要"一条一条蹦出来"用 `fade-up`。
+
+### 3.3 缓动
+
+`ease-out` 或 `cubic-bezier(.2,.7,.3,1)`。**不要用 demo 的 `cubic-bezier(0.77,0,0.175,1)`**：实测它前 77% 的时间几乎不动（600 ms 的变形，前 460 ms 只走了 5 px，最后 140 ms 走完 165 px），单元素变形会看起来"卡住然后突然变"。它是为多元素 auto-animate 的蓄力感设计的。
+
+### 3.4 skill 的对应改动
+
+`video-teach-slides` 加一节"动效食谱"（内容类型 → 用哪个类），并把"自定义 CSS 动画不可预测"的禁令**收窄**成第 2 节的三种类型判据。原文那条把状态驱动的 transition 也一起禁了，而它恰恰是唯一确定的类型。
+
+## 4. D1：页内手动 auto-animate
+
+### 4.1 支点：`.fragment.custom`
+
+reveal.css 里有一条之前没用上的规则：
+
+```css
+.reveal .fragment:not(.custom) { opacity: 0; visibility: hidden }
+```
+
+**`class="fragment custom"` 不会被 reveal 隐藏**。reveal 只负责数它、推进它（加 `.visible` / `.current-fragment`），样式完全交给作者。于是：
+
+> 任何 CSS 动效都能挂在 `fragment` 上，同时仍被 `countDeckFragments` 数到、被 `teachCue` 驱动。
+
+这是 D1 的技术支点，也是"页内做出 auto-animate 观感"的唯一零成本路径。
+
+### 4.2 同一元素连续变形
+
+demo 的 Auto-Animate 是"三页里同一组元素连续变形"。页内复刻靠一个容器 + `data-step`：
+
+```html
+<div class="stage r-stack" data-teach-stage data-step="1">
+  <div class="mover"></div>
+</div>
+```
+```css
+.mover { width:90px; height:90px; background:#6b7280; border-radius:8px;
+         transition: all 600ms cubic-bezier(.2,.7,.3,1); }
+[data-step="2"] .mover { width:260px; height:140px; background:#22d3ee; border-radius:12px; }
+[data-step="3"] .mover { width:300px; height:300px; background:#e879f9; border-radius:50%; }
+```
+
+模板的 `teachCue` 增加一段**可选**的同步：
+
+```js
+// 标了 data-teach-stage 的容器跟着 cue 走；deck 只写 CSS，不写 JS
+for (const el of document.querySelectorAll('[data-teach-stage]')) {
+  el.dataset.step = String(Math.max(1, target))
+}
+```
+
+实测：尺寸、颜色、圆角全部被平滑补间并完整录取，与 reveal 原生 Auto-Animate 在页内的观感同源。
+
+### 4.3 依次聚焦
+
+`current-fragment` 由 reveal 自动维护，`custom` 元素可以直接用它做"当前项高亮、其余压暗"：
+
+```css
+.beat { color: #9ca3af; transition: color 400ms ease, transform 400ms ease; }
+.beat.current-fragment { color: #ffd479; transform: translateX(16px); }
+```
+
+这比 `highlight-*` 更可控（可以同时改颜色、位移、字重、描边）。
+
+### 4.4 边界
+
+- `data-teach-stage` 只在**当前页**生效，跨页不接续（跨页是 D3 的职责）。
+- 一个容器只能有一个 `data-step`，多个独立变形要拆成多个容器。
+- 共享页（`page` / `enter`）下 `teachCue` 的编号跨句递增，`data-step` 会跟着从 1 数到 6；作者要么按整页编号写 CSS，要么用 `enter` 保证进页状态正确。
+
+## 5. D2：录制契约
+
+### 5.1 两个可选全局
+
+```js
+window.teachTransition     = 480   // ms，页内单步过渡时长
+window.teachPageTransition = 500   // ms，切页过渡时长
+```
+
+- **录制器**：页切换后等 `teachPageTransition ?? 300`，替代硬编码的 300。
+- **校验器**：`video_teach_plan` 对每个 cue 算 `剩余 = 下一个 cue（或句末）− 本 cue`，若 `< teachTransition` 给 **warning**（"这一拍只剩 340 ms，过渡 480 ms 会与下一拍重叠"）。重叠不一定是坏事（连续感常来自重叠），所以是 warning 不是拒绝。
+- **不声明就不校验**，默认路径仍然可用。
+
+这条同时修掉一个现存的不一致：`transition: 'fade'` 在 reveal.css 里是**固定 0.5 s**（`.reveal.fade .slides section{transition:opacity .5s}`），`transitionSpeed: 'fast'` 对它无效，而等待只有 300 ms——开录时还有约 200 ms 的转场在跑。现在靠前面的截图自检（1080p 截图 + 数颜色）耗掉了额外时间才没暴露。
+
+### 5.2 不加 `teachEnter`
+
+页入场动画看起来需要一个"开录后触发"的钩子，但 D3 的转场段已经覆盖了这个需求（转场落在上一段的尾部，见 6.2）。加第三个全局会让契约从三个变四个，而它解决的问题被 D3 吸收了。**这一版不加**；如果将来出现"每页都要独立入场动画且不接上一页"的需求，再单独提。
+
+## 6. D3：跨句转场
+
+这一节是全部衔接的所在，按"归属 → 录制 → 音频 → 对轨 → 并行 → 降级 → 重录"排。
+
+### 6.1 归属：转场属于**前一段的尾部**
+
+两个候选，选后者：
+
+| | 前缀式（属于后一段的入口） | **后缀式（属于前一段的出口）** |
+|---|---|---|
+| 段结构 | `[转场 T][正文]` | `[正文][转场 T]` |
+| 句首画面 | 还在转场，**违反"句首完整构图"** | 已是本页稳态 ✓ |
+| 与"最后一屏停留" | 无冲突 | 转场在停留之后，停留仍完整 ✓ |
+| 需要知道谁的状态 | 上一段的末态 | 下一段的初态（`pageSlots` 全量可算） ✓ |
+
+**决定：段 N = `[正文 durationMs][转场 exitMs]`**，转场把画面从"第 N 页末态"补间到"第 N+1 页初态"。
+
+这个选择顺带解决了 Auto-Animate：补间发生在同一段录制里（同一文档内先 `teachPage(N)` 再 `teachPage(N+1)`），所以 **Auto-Animate 被完整录进去**，不再需要改"一句一录"的架构。
+
+### 6.2 录制流程
+
+`recordDeckSegment` 增加 `exit: { page, enter, ms }`：
+
+1. `goto` + 等 `teachReady`；
+2. 截图自检（纯色拒绝）；
+3. `teachPage(N)` + `teachCue(enter)`；
+4. 等 `teachPageTransition`；
+5. `startScreencast`，`t0`；
+6. 按 cues 推进到 `t0 + durationMs`；
+7. **若 `exit` 存在**：`teachPage(N+1)` + `teachCue(enterNext)`，再录 `exitMs`；
+8. `stopScreencast`；
+9. `encodeFrames` 的 `durationMs` = `durationMs + exitMs`。
+
+第 7 步的 `teachCue(enterNext)` 必须与段 N+1 开头的状态完全一致，否则接缝会跳。两处都走 `pageSlots` 的同一份结果，所以天然一致。
+
+### 6.3 音频
+
+段 N 的音频 = `[句 N 音频][exitMs 静音]`。实现落在 `cutAudioSegment`（`ffmpeg.ts:413-429` 已经在用 `apad` 补标点停顿）或 assemble 时对每段 `apad=pad_dur`，二选一，**不能两处都补**。
+
+`exitMs` 不进 `audio/<id>.wav`：那个文件是 TTS 产物、是重录单元，补静音只会让"重录一句"变成"重录一句加改音频"。
+
+### 6.4 对轨：`timings.json` 加 `exitMs`
+
+这是 D3 最容易出错的地方。并行的逐幕验收判据是"成片时长 = 该幕 timings 合计（容差一帧）"。转场让段变长，**任何一处账本没同步，验收就会挂**。
+
+统一账本：
+
+```
+段 N 长 = durationMs + exitMs
+成片长 = Σ(durationMs + exitMs)
+SRT: start(N+1) = start(N) + durationMs(N) + exitMs(N)
+```
+
+`timings.json` 的每条记录加 `exitMs`（缺省 0），`assembleVideo`、`buildSrt`、`assemble-act.py` 全部按这一个字段累加。**不允许任何一处按"只有 durationMs"算。**
+
+### 6.5 多幕并行
+
+- 每幕独立 `projectRoot`（`runs/<act>/`），`pageSlots` 在幕内算。**幕内转场自动正确。**
+- **幕的第一段没有 `exitMs`**：上一段在另一个项目里，拿不到末态。幕与幕的接缝仍按 `TEACH-PARALLEL-ACTS.md` §7 的做法（抽帧 + 转写）验收，**这一版不做幕间转场**。
+- **转场参数归主线定**：`exitMs` 与转场类型都属于"观感一致性"（并行规程 §9.2 的视觉参数），写进 deck 与稿件，子任务只准用、不准调。
+- `assemble: false`（只渲一句看看）时转场照录，因为它已经编在段里；不额外判断。
+
+### 6.6 转场"长什么样"由 deck 决定
+
+**稿件只声明"要不要 + 多久"，类型由 deck 决定**：
+
+```yaml
+meta:
+  transition: { mode: deck, durationMs: 400 }   # mode: deck | none
+sentences:
+  - id: s01-3
+    transition: none                             # 这一句回硬切（可选覆盖）
+```
+
+理由：类型（fade / slide / zoom / Auto-Animate）是视觉语言，属于 deck，与"压暗强度、字号、布局"同类，必须只有一个出处（并行规程 §9.2）。稿件管时长，deck 管形态。
+
+deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Animate 的默认 `duration: 1` 秒比 400 ms 长，要么把 `exitMs` 提到 600–800 ms，要么在 deck 里 `Reveal.configure({ autoAnimateDuration: 0.4 })`。
+
+### 6.7 跨 engine 降级
+
+转场只在**相邻两段都是 slides** 时生效：
+
+| 边界 | 做法 |
+|---|---|
+| slides → slides | deck 内转场（含 Auto-Animate） |
+| slides → manim / manim → slides | 该段 `exitMs = 0`，保持硬切（Manim 场景在另一个进程、另一份文件里，拿不到"下一页初态"） |
+| 段落 | 第 1 段无转场；最后一段无转场 |
+
+不搞"淡出到黑"的伪转场：黑场在两段之间出现，观感比硬切更差，而且需要额外的黑帧段。
+
+### 6.8 重录
+
+`sentences: ['s01-3']` 重录第 3 段（含它尾部的转场）。需要第 4 段的 `{ page, enter }`——从 `pageSlots` 全量算得出，不依赖第 4 段实际录了什么。
+
+**但改第 4 段的版面不会自动重录第 3 段的转场**：转场终点用的是第 4 段的初态，如果第 4 段的 deck 改了，第 3 段的尾部转场会停在旧版面。`video_teach_render` 的返回要把"哪些段的转场依赖了改动过的页"报出来，让作者知道要重录谁。**这一版先只报、不自动重录**（自动重录会让"只花一句的钱"变成两段）。
+
+## 7. 校验：plan 阶段能判的
+
+全部在花钱前，落在 `src/teach/rules.ts`。
+
+| # | 检查 | 类型 |
+|---|---|---|
+| 1 | `transition.durationMs` 在 100–1200，`mode` 只允许 `deck` / `none` | 拒绝 |
+| 2 | `meta.transition` 开了但 deck 没有 `teachPage`（纯 cue 模式） | 拒绝：纯 cue 模式全片一页，没有"下一页"可转 |
+| 3 | `exitMs > 0` 且下一段不是 slides | warning 并自动降级为 0 |
+| 4 | `exitMs` 超过下一句的时长（转场比整句还长） | warning |
+| 5 | 某拍之后剩余时间 < `teachTransition` | warning（D2） |
+| 6 | `exitMs` 与 `enter` 冲突：下一段 `enter = 0` 时转场终点是全暗页 | warning |
+| 7 | deck 里出现 `.reveal .fragment { transition: ... }` 这类整体覆盖 | warning（D0 的坑） |
+| 8 | 一段里同时出现 `dim` 与默认 `fade` | warning（两种画面语言混用会显乱） |
+
+## 8. 否决过的方案
+
+1. **拼接期 `xfade`**（`ffmpeg -filter_complex` 交叉淡化）。本机 ffmpeg 9.1 带 `xfade`，但它只能做 ffmpeg 的转场，**拍不到 reveal 的转场与 Auto-Animate**；还要放弃 `-c copy`、每段缩短 T 再补偿，音频对轨更绕。留给"不想改录制、只要一个淡化"的将来选项。
+2. **前缀式转场**（转场放在后一段的开头）。见 6.1，违反"句首完整构图"。
+3. **恢复跨句同文档以复活 Auto-Animate**。需要"一个 deck 从第 1 句连续录到第 40 句"，与"一句一录、重录只花一句"正面冲突，且一句坏掉要整段重来。被后缀式转场替代。
+4. **让转场吃掉"页尾停留"**。停留的目的是"最后一屏能独立看 1 秒以上"，转场吃掉它就把目的抵消了。
+5. **加 `teachEnter` 全局**。见 5.2，被 D3 吸收。
+6. **靠帧率/降采样优化循环动画的文件体积**。用户明确这一轮不考虑；且丢帧会丢中间状态，30 fps 输出重采样后几乎无损，但实现复杂度不值得现在付。
+
+## 9. 代价
+
+| 项 | 成本 |
+|---|---|
+| D0 | 模板 CSS 一段 + skill 一节；不改代码 |
+| D1 | 模板 `teachCue` 一段 + skill 一节；不改代码 |
+| D2 | `slides.ts` 读两个全局；`rules.ts` 一条 warning |
+| D3 | `slides.ts` 加 `exit` 分支；`pipeline.ts` 传参；`ffmpeg.ts` 补静音；`timings.json` 加字段；`buildSrt` 改累加；`rules.ts` 八条；`assemble-act.py`（项目侧）跟改 |
+
+**风险**：
+- D3 让段长与时间轴账本多一个字段，任何一处漏改都会让并行验收的"时长 = timings 合计"失败。这是最大的一处。
+- 转场让"重录一句"的边界从"一句"扩到"一句 + 它的尾转场"，作者要理解。
+- Auto-Animate 的补间若长于 `exitMs`，会被截断（观感是"滑到一半就切了"），所以 6.6 要求两者对齐。
+
+## 10. 验收（全部离线，落代码后执行）
+
+1. **D0**：`fixtures/teach/motion/` 每页一个变体（`dim`、`fade-up`、`zoom-in`、`draw`、`count`、`bar`、`custom`），渲染后抽帧断言"每拍的帧间差异超过阈值"，且末帧是完整版面。
+2. **D1**：同一 fixture 的 `data-teach-stage` 页，抽帧断言元素尺寸/颜色按 `data-step` 单调变化（与本次实测的判据一致）。
+3. **D2**：`video_teach_plan` 对"某拍之后剩 200 ms 而 `teachTransition` 是 480"给出 warning；不声明时不报。
+4. **D3**：`fixtures/teach/transition/` 三句 slides，`meta.transition.durationMs: 400`。断言：① 段长 = `durationMs + exitMs`；② 第 2 段首帧与第 1 段末帧**像素相同**（证明接缝连续）；③ 成片时长 = `Σ(durationMs + exitMs)`；④ SRT 的第 2 句起点 = 第 1 句起点 + 第 1 句 `durationMs + exitMs`。
+5. **跨 engine**：`fixtures/teach/mixed/`（slides + manim）断言 slides 段的 `exitMs` 被降级为 0，且 plan 给了 warning。
+6. **并行**：用 `assets/teach/runs.py` 起一份两幕 fixture，断言幕内转场正确、幕首无 `exitMs`、逐幕验收的时长判据仍然成立。
+
+## 11. 与 TODO 的对应
+
+- **B10** → 第 3 章（D0）
+- **B11** → 第 4 章（D1）
+- **B12** → 第 5 章（D2）
+- **B13** → 第 6、7 章（D3）
+
+skill 的改动（`video-teach-slides` 的动效食谱、`video-teach-storyboard` 的 `transition` 字段、`video-teach-iterate` 的"改一段要连带重录谁的尾转场"）在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。
+
+## 12. 划界：不做什么
+
+- 不做幕间转场（`TEACH-PARALLEL-ACTS.md` §7 的接缝验收不变）。
+- 不做"淡出到黑"的伪转场。
+- 不补 reveal 的五个插件（markdown / highlight / notes / zoom / search）。
+- 不为循环动画做帧数与体积优化。
+- 不把 `exitMs` 写进 `audio/<id>.wav`。
+- 不改"音频是时钟"与"一句一录"这两条地基。
