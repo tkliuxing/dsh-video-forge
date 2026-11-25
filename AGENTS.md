@@ -25,6 +25,7 @@
 3. **修正要落回 skill。** 一轮纠偏才定下来的口径，写进 `assets/skills/*.md` 与 `src/skills.ts`；只修当前产物，下一次会在相邻问题上再返工一遍。
 4. **不擅自 commit / push / tag / 发版。** 按当次指令办，只 add 相关文件，不动 tag 与 version。发版只打 tag，流程见 `docs/RELEASING.md`。
 5. **离线测试不联网、不花钱。** 真实供应商与真实 TTS 的测试有独立入口和开关，见 `README.md` 的 Development 一节与 `vitest*.config.ts`。
+6. **需要外部程序的测试只认正向证据。** 能力探测回答 `present (…)` / `missing (…)` / `unknown (…)`，只有 `present` 才跑用例；`unknown` 不是「大概率没事」。CI 只在 `pnpm check` 之外不装任何东西（干净 runner 上没有 ffmpeg、没有 Chromium），把 `unknown` 当通过会让本地的绿变成 CI 的红。
 
 ## 分层契约
 
