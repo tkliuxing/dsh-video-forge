@@ -2,7 +2,7 @@
 
 本文回答一件事：**reveal.js 幻灯段怎么从"只会淡入"变成"有动效、有转场"，同时不破坏音频对轨、逐句重录与多幕并行。**
 
-只管方案与判据，实现记录留到代码落地后回填。页内节拍的算法在 `docs/TEACH-VIDEO.md`「页内节拍：按变化次数算」与「一页承载多句：`page` / `enter`」两节；并行派发的目录契约在 [`TEACH-PARALLEL-ACTS.md`](TEACH-PARALLEL-ACTS.md)；deck 静态资源与素材落点在 [`TEACH-MATERIALS.md`](TEACH-MATERIALS.md)。
+只管方案与判据，实现记录在 §13（D0/D1）、§14（D2）与 §16（D3）。页内节拍的算法在 `docs/TEACH-VIDEO.md`「页内节拍：按变化次数算」与「一页承载多句：`page` / `enter`」两节；并行派发的目录契约在 [`TEACH-PARALLEL-ACTS.md`](TEACH-PARALLEL-ACTS.md)；deck 静态资源与素材落点在 [`TEACH-MATERIALS.md`](TEACH-MATERIALS.md)。
 
 ## 0. 主旨
 
@@ -267,6 +267,21 @@ SRT: start(N+1) = start(N) + durationMs(N) + exitMs(N)
 
 `timings.json` 的每条记录加 `exitMs`（缺省 0），`assembleVideo`、`buildSrt`、`assemble-act.py` 全部按这一个字段累加。**不允许任何一处按"只有 durationMs"算。**
 
+**谁写、谁读**（2026-11-26 落代码时定，见 §16）：计算只有一个函数
+（`exitSlots(board, mode)`，`src/teach/storyboard.ts`，纯函数、不读盘），写有两处 ——
+`narrate` 播种（它拿得到稿本与模式，全新项目第一次 narrate 后 timings 就自解释，
+重录一句也不会把别人的数清零），`render` 定稿（只有它知道这一段实际录了多长；
+它按实际值回写，因为段落可以是从磁盘复用的）。其余全部只读只加。
+
+转场让段变长，所以"账本对不上"必须能被发现，而不是等成片出来才对不上。两道闸：
+
+1. **复用段先量一次**（`planSegments`）：磁盘上那段实测时长与该句的 `durationMs + exitMs`
+   差超过一帧，就报"这一段是在稿本改之前录的"，并给出要重录哪一句。一句一次 `ffprobe`，
+   几十句一秒。
+2. **拼完再量一次**（`assembleVideo` → `video_teach_render` 的 `seam_findings`）：成片实测时长
+   与 `Σ(durationMs + exitMs)` 差超过 150 ms（几帧的余量留给 CFR 取整与 AAC 帧）就点名，
+   并说明"某一段与它自己的 durationMs + exitMs 不符"。
+
 ### 6.5 多幕并行
 
 - 每幕独立 `projectRoot`（`runs/<act>/`），`pageSlots` 在幕内算。**幕内转场自动正确。**
@@ -296,9 +311,10 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 | 边界 | 做法 |
 |---|---|
-| slides → slides | deck 内转场（含 Auto-Animate） |
+| slides → slides，**下一页 ≠ 本页** | deck 内转场（含 Auto-Animate） |
+| slides → slides，**两句共享同一页** | `exitMs = 0`（`dropped: same-page`）。没有"下一页"可翻，硬录一个转场只会让下一句的 `enter` 状态提前闪进画面，比硬切更难看 |
 | slides → manim / manim → slides | 该段 `exitMs = 0`，保持硬切（Manim 场景在另一个进程、另一份文件里，拿不到"下一页初态"） |
-| 段落 | 第 1 段无转场；最后一段无转场 |
+| 段落 | 第 1 段无转场；最后一段无转场。段落边界（另一个 deck、另一份文档）一律硬切，计划里会说一句 |
 
 不搞"淡出到黑"的伪转场：黑场在两段之间出现，观感比硬切更差，而且需要额外的黑帧段。
 
@@ -312,16 +328,26 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 
 全部在花钱前，落在 `src/teach/rules.ts`。
 
-| # | 检查 | 类型 |
-|---|---|---|
-| 1 | `transition.durationMs` 在 100–1200，`mode` 只允许 `deck` / `none` | 拒绝 |
-| 2 | `meta.transition` 开了但 deck 没有 `teachPage`（纯 cue 模式） | 拒绝：纯 cue 模式全片一页，没有"下一页"可转 |
-| 3 | `exitMs > 0` 且下一段不是 slides | warning 并自动降级为 0 |
-| 4 | `exitMs` 超过下一句的时长（转场比整句还长） | warning |
-| 5 | 某拍之后剩余时间 < `teachTransition` | warning（D2） |
-| 6 | `exitMs` 与 `enter` 冲突：下一段 `enter = 0` 时转场终点是全暗页 | warning |
-| 7 | deck 里出现 `.reveal .fragment { transition: ... }` 这类整体覆盖 | warning（D0 的坑） |
-| 8 | 一段里同时出现 `dim` 与默认 `fade` | warning（两种画面语言混用会显乱） |
+| # | 检查 | 类型 | 落在哪 |
+|---|---|---|---|
+| 1 | `transition.durationMs` 在 100–1200，`mode` 只允许 `deck` / `none` | 拒绝 | 解析期（带行号） |
+| 2 | `meta.transition` 开了但走的是纯 cue 模式（provider 有词时间戳） | 拒绝：cue 模式的页由节拍推出，转场要落到的初态在稿件里不唯一 | `auditManuscript` |
+| 3 | 声明了转场、这一处却降级成 0（共享同页 / 段末 / manim 段 / 逐句 `transition: none`） | warning（逐句 `none` 是作者自己的选择，不报） | `auditDecks` |
+| 4 | `exitMs` 超过下一句的时长（转场比整句还长） | warning | `auditDecks` |
+| 5 | 某拍之后剩余时间 < `teachTransition` | warning（D2） | `auditDecks` |
+| 6 | `exitMs` 与 `enter` 冲突：转场终点是全暗页 | **约定，不由代码强制** | —— |
+| 7 | deck 里出现 `.reveal .fragment { transition: … }` 这类整体覆盖 | warning（D0 的坑） | `auditDecks` |
+| 8 | 一段里同时出现 `dim` 与默认 `fade` | warning（D0 的坑） | `auditDecks` |
+| 9 | `exitMs` 短于 deck 声明的 `teachPageTransition` | warning：转场会被截断（§9 的风险，落代码时补的一条） | `auditDecks` |
+
+第 6 条是**约定，代码不判**：从 HTML 看不出"整页内容是否都在 fragment 里"（正常页总有常驻标题），
+按字面实现会在每个接缝上误报。口径写进 `video-teach-slides` 与 `video-teach-storyboard`：转场落到的那一页，
+`enter` 状态就该已经看得见东西（标题、坐标轴这类常驻元素放在 fragment 外面），否则接缝淡出的是一张空页。
+
+第 7、8 条的判据是**保守**的，落代码时按三件事收窄：只认裸选择器（`.reveal … .fragment { … }`，
+`.fragment.dim` 这类变体不算）、只看 `<style>` 里的正文（注释先剔掉 —— 模板自己的注释就在引用那条坏规则的写法）、
+`transition-duration` 不算 `transition`。三条都补了负例测试，否则模板盘一上来就自己告警。
+
 
 ## 8. 否决过的方案
 
@@ -351,18 +377,18 @@ deck 侧用 `data-transition="zoom"` 或 `data-auto-animate` 表达。Auto-Anima
 1. **D0**：`fixtures/teach/motion/` 每页一个变体（`dim`、`fade-up`、`zoom-in`、`draw`、`count`、`bar`、`custom`），渲染后抽帧断言"每拍的帧间差异超过阈值"，且末帧是完整版面。——**已做（2026-11-25，§13）**：落成 `test/teach-motion.test.ts`，八页（七种变体 + 一个 `--teach-dur: 0ms` 负对照），断言"段内至少 5 帧画面在变"与"末帧 = 全部节拍点亮后的 deck 截图"。
 2. **D1**：同一 fixture 的 `data-teach-stage` 页，抽帧断言元素尺寸/颜色按 `data-step` 单调变化（与本次实测的判据一致）。——**已做（2026-11-25，§13）**：抽帧数三种形色的像素，首帧是 step-1 灰、末帧是 step-3 洋红；删掉 `teachCue` 里的同步后该断言即失败（实测）。
 3. **D2**：`video_teach_plan` 对"某拍之后剩 200 ms 而 `teachTransition` 是 480"给出 warning；不声明时不报。——**已做（2026-11-25，§14）**：`test/teach-transition.test.ts` 三例覆盖估时/实测/不声明三种情形，另有录制器一例（见 §14.2）。
-4. **D3**：`fixtures/teach/transition/` 三句 slides，`meta.transition.durationMs: 400`。断言：① 段长 = `durationMs + exitMs`；② 第 2 段首帧与第 1 段末帧**像素相同**（证明接缝连续）；③ 成片时长 = `Σ(durationMs + exitMs)`；④ SRT 的第 2 句起点 = 第 1 句起点 + 第 1 句 `durationMs + exitMs`。
-5. **跨 engine**：`fixtures/teach/mixed/`（slides + manim）断言 slides 段的 `exitMs` 被降级为 0，且 plan 给了 warning。
-6. **并行**：用 `assets/teach/runs.py` 起一份两幕 fixture，断言幕内转场正确、幕首无 `exitMs`、逐幕验收的时长判据仍然成立。
+4. **D3**：`fixtures/teach/transition/` 三句 slides，`meta.transition.durationMs: 420`。断言：① 段长 = `durationMs + exitMs`；② 第 2 段首帧与第 1 段末帧**像素相同**（证明接缝连续）；③ 成片时长 = `Σ(durationMs + exitMs)`；④ SRT 的第 2 句起点 = 第 1 句起点 + 第 1 句 `durationMs + exitMs`。——**已做（2026-11-26，§16）**：`test/teach-exit.test.ts`，四条全断，另加"这一段自己的尾部真的动过"（否则②在没转场的 deck 上也成立）与"复用段比账本短 → 报 stale"。
+5. **跨 engine**：`fixtures/teach/mixed/`（slides + manim）断言 slides 段的 `exitMs` 被降级为 0，且 plan 给了 warning。——**改了做法（2026-11-26）**：engine 是段的属性，跨 engine 只可能发生在段边界上，而段边界一律硬切（另一个 deck、另一份文档）。所以没有单独的 mixed fixture，改为在 `test/teach-exit.test.ts` 里断 `exitSlots`：manim 段 `dropped: manim`、段末 `dropped: segment-end`，以及 `seamFindings` 对"段末硬切"给一条 warning。
+6. **并行**：用 `assets/teach/runs.py` 起一份两幕 fixture，断言幕内转场正确、幕首无 `exitMs`、逐幕验收的时长判据仍然成立。——**部分做了（2026-11-26）**：`runs.py collect` 的段长校验改成"画面段按 `durationMs + exitMs`、音频只按 `durationMs`"，两幕 fixture 的端到端验收未跑（要两幕真实渲染，成本比这一版要验证的东西高）；判据本身在同一份 timings 上被 `test/teach-exit.test.ts` 的成片时长断言覆盖。
 
 ## 11. 与 TODO 的对应
 
 - **B10** → 第 3 章（D0）· **已落成**
 - **B11** → 第 4 章（D1）· **已落成**
 - **B12** → 第 5 章（D2）· **已落成**
-- **B13** → 第 6、7 章（D3）· 未做
+- **B13** → 第 6、7 章（D3）· **已落成（2026-11-26，实现记录见 §16）**
 
-skill 的改动在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。D0/D1 的对应段落（`video-teach-slides` 的「动效：先定画面语言，再选类」）已随实现一起写进去；D2/D3 那两处（`video-teach-storyboard` 的 `transition` 字段、`video-teach-iterate` 的"改一段要连带重录谁的尾转场"）等代码落地再写。
+skill 的改动在代码落地、验收通过后同步——**未被验证的功能不写进 skill**。D0/D1 的对应段落（`video-teach-slides` 的「动效：先定画面语言，再选类」）已随实现一起写进去；D2 的两个全局与 D3 的 `transition` 字段、"改一句要连带重录谁的尾转场"都已随 §16 的实现写进 skill。
 
 ## 12. 划界：不做什么
 
@@ -517,3 +543,56 @@ D2 是这一套里唯一动代码的一档，因为要改的两件事都不在 d
 - **装饰性循环动画**：末帧本来就不会等于截图，会报假警报。看到这条先确认那页有没有循环。
 - **Manim 段**：没有拍子也没有"完成版面"可比，两项检查都是 `skipped`/不存在；它的时长由场景自己的 `run_time` 决定。
 - **迟到之外的原因造成的"画面不动"**：比如转场在无头浏览器里停摆（2026-11-24 那次），末帧校验会把它当成"未完成"报出来，但根因不同，处置办法都是重录那一句。
+
+## 16. 实现记录：D3（2026-11-26）
+
+### 16.1 落了什么
+
+| 位置 | 落了什么 |
+|---|---|
+| `src/teach/storyboard.ts` | `meta.transition`（`mode: deck \| none`、`durationMs` 100–1200，解析期拒绝越界与"`mode: none` 还写时长"）、逐句 `transition: none`、`TransitionSpec`；`exitSlots(board, mode)`（唯一的转场计算：同段、同 engine、下一页 ≠ 本页才给，其余返回 `dropped` 原因）；`TimedSentence.exitMs`（缺省 0）；`timelineDurationMs()` 与含尾转场的 `sentenceStartMs()` |
+| `src/teach/slides.ts` | `RecordDeckOptions.exit = { page, enter, ms }`：正文录到 `durationMs` 收尾，记下**正文末帧**，`teachPage(next)` + `teachCue(enterNext)`，再录 `exitMs`；`encodeFrames` 的 `-t` 与帧表尾帧时长改成 `durationMs + exitMs`；`RecordedSegment.exitMs`。**不等 `teachPageTransition`**：那 500 ms 就是要录的东西。完成版面校验改成"重新载入 deck + 同一组 `teachPage`/`teachCue` 再比正文末帧"（理由见 16.3） |
+| `src/teach/pipeline.ts` | `renderSegments` 用 `pageSlots` 全量算 slot、用 `exitSlots` 传 `exit`，录完回写 `timings.json` 的 `exitMs`（`writeExitLedger`，与 narrate 同样的 staging + rename）；`narrate` 播种 `exitMs`（重录一句不清零）；`SegmentRef.exitMs`；`planSegments` 复用段先 `probe` 与 `durationMs + exitMs` 比，差过一帧就报 stale；`assembleVideo` 用 `concatAudio` 的新 `padsMs` 补静音，返回 `expectedMs`；`RenderedSegment.exitMs/exitTarget` |
+| `src/teach/ffmpeg.ts` | `concatAudio(inputs, output, tools, signal, padsMs)`：全零走原来的 concat demuxer 快路径，有补静音时走 `apad=pad_dur` + `concat` 滤镜（24 kHz 单声道 PCM）。静音**只在这一处补**，`audio/<id>` 不加 |
+| `src/teach/subtitles.ts` | `buildSrt` 的 `offset += durationMs + exitMs` |
+| `src/teach/rules.ts` | §7 的九条：解析期第 1 条；`auditManuscript` 第 2 条；`seamFindings`（第 3、4、9 条 + 段末硬切 + 共享同页）；`overridesFragmentTransition` / `fragmentVariants`（第 7、8 条，保守判据）；`DeckInfo.pageTransitionMs` |
+| `src/teach/tools.ts` | `inspectDecks` 读 `teachPageTransition` 与两条 D0 判据；`beatScheduleOf` 覆盖**每一句**（第 4 条要问"下一句多长"）；plan 多一行 `transitions:`；render 的 `durationById`/兜底时长/版本 sidecar/`seam_findings`（stale、成片时长不符、"你重录的这一页是前一句的转场终点"） |
+| `assets/teach/runs.py` | `collect` 的段长校验：画面段按 `durationMs + exitMs`，音频仍按 `durationMs` |
+| `fixtures/teach/transition/` | 三句三页，`meta.transition.durationMs: 420`，deck 的页切换是 320 ms 的交叉淡入（`teachPageTransition = 320`） |
+| `demo/transition/` | 六句六页的样片工程：四处尾转场（第 4 处是跨页 Auto-Animate），第 5 句写 `transition: none` 作为硬切对照；封面 16:9 与 4:3 |
+
+### 16.2 实测证据
+
+- `test/teach-exit.test.ts`（16 例）：解析期四条拒绝；`exitSlots` 五种降级；九条校验的正反例（含模板"注释里引用坏规则"的负例）；SRT 起点 = `durationMs + exitMs`；老 timings 无 `exitMs` 读成硬切。
+- 真录（ffmpeg + Chromium，`describe.skipIf` 门控）：六件事一起断——① 录到的 `exitMs` 是 `[420, 420, 0]`；② `timings.json` 被回写成同样的值（播种值是 0，证明回写生效）；③ 每段实测长 ≈ `durationMs + exitMs`（一帧内）；④ **接缝连续**：第 2 段首帧与第 1 段末帧像素差 < 1%；⑤ **尾部真的动过**：第 1 段正文末帧 vs 尾帧差 > 3%（否则④在一个从不翻页的 deck 上也成立）；⑥ 成片时长 ≈ `Σ(durationMs + exitMs)`（60 ms 内）且 SRT 起点对得上。
+- 另有一例把账本改小后复用旧段，断言 `plan.stale` 点名那一句并给出重录命令。
+- `pnpm check`：见 16.4 的收尾一行。
+- 样片：`renders/transition/v001.mp4`（38.2 s）。逐缝量过（1440p 帧 → 640×360 灰度，阈值 12）：
+
+  | 接缝 | 上一段末帧 vs 下一段首帧 | 结论 |
+  |---|---|---|
+  | s01-1 → s01-2 | **0.0%** | 转场接上了 |
+  | s01-2 → s01-3 | **0.0%** | 同上 |
+  | s01-3 → s01-4 | 0.05% | 同上 |
+  | s01-4 → s01-5（Auto-Animate） | 0.19% | 跨页形变接上了 |
+  | s01-5 → s01-6（`transition: none`） | **19.1%** | 故意的硬切，与前面四处对比明显 |
+
+  逐帧看过 26.00 / 26.30 / 26.45 s 三帧：形变从蓝色小方块连续补间到黄色大圆角块，中间没有断帧，没有黑场。
+
+### 16.3 实现时改掉的口径
+
+1. **`exitMs` 谁写**：§6.4 只说"加这个字段"。落成后是**算一处、写两处、只读只加**：`narrate` 播种、`render` 定稿（只有它知道实际录了多长），其余全读。不采纳"纯推导不落盘"——仓库外的 `runs.py` 与项目侧 `assemble-act.py` 读不到内存里的推导值。
+2. **账本对不上要能被发现**：§6.4 只要求"每处都按这个字段加"。加了两道闸：复用段逐段 `probe`（差过一帧就报 stale），成片拼完再量一次（差过 150 ms 就点名）。
+3. **`dropped` 要能被说清**：§7 第 3 条只写"下一段不是 slides 时降级"。实际降级有五种（共享同页、段末、manim 段、纯 cue 模式、逐句 `none`），逐句 `none` 是作者自己的选择、不报，其余都报。
+4. **第 6 条（转场终点是全暗页）不落代码**：从 HTML 看不出"整页内容是否都在 fragment 里"，字面实现会在每个接缝上误报。降级成约定，写进 skill。
+5. **完成版面校验必须重新载入 deck**：一开始是"把活页面 `teachPage` 回本句那一页再截图"，结果每个带尾转场的段都报 3–5%（阈值 0.2%）。原因不是转场没录上，是 **reveal 只在 slide 索引真的变化时才重新排版**：一次会话里第一次 `Reveal.slide(n)` 若 n 就是当前页则不重排，页面比"切换过之后"的位置高约 15 px（1080p）。所以改成"重新载入 + 同一组 `teachPage`/`teachCue`"，复现的是这一段 t=0 的那套几何。这个 15 px 是模板 + reveal 的既有行为，与 D3 无关，但只有在段内翻页之后才看得出来。
+6. **第 7 条要剔掉注释与变体**：模板自己的 CSS 注释里就引用了 `` `.reveal .fragment` … `transition: all .2s` `` 作为反面教材，初版把这些字当成了真规则，模板盘一上来就告警。判据收紧成"只看 `<style>` 正文、只认裸选择器、`transition-duration` 不算"。
+
+### 16.4 它换不来什么
+
+- **幕间不转场**：每个 `runs/<act>/` 是独立项目，上一段的末态在另一个目录里。要幕间转场就得把两幕合进一个 deck。
+- **段间（同项目不同 deck）也不转场**：另一个文档没有"当前这一页的下一页初态"。
+- **共享同页的两句之间没有转场**：没有页码可翻；录一个只会让下一句的 `enter` 状态提前闪进画面。
+- **纯 cue 模式（volcengine）没有转场**：页面由节拍推出来（`exitSlots` 说得出原因、说不出落点），计划里直接拒绝开 `meta.transition`。
+- **转场期间没有旁白**：`exitMs` 是纯画面、纯静音。想让转场压着最后一句话的尾音，需要另一套"转场与前一句音频重叠"的账本，这一版不做。
+- **重录一句不会连带重录别人的尾转场**：只报（`seam_findings`），不自动重录 —— 自动重录会把"只花一句的钱"变成两段。

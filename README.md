@@ -172,6 +172,17 @@ beat on a given word.
 | slide-style explanation where points appear one at a time | complex scene blocking and lighting changes |
 | a re-recordable script where changing one line re-renders one line | anything that has to look photographed |
 
+Sentences join with a hard cut by default. A manuscript that declares `meta.transition`
+(`mode: deck` plus a duration of 100–1200 ms) records the deck's own page switch — including
+reveal's Auto-Animate morphs across pages — at the **end of the earlier sentence**, so the first
+frame of every sentence is still the complete picture and the closing hold is still whole. The
+manuscript owns the duration, the deck owns the shape. Only two adjacent sentences inside one deck,
+on two different pages, get one: a shared page, a segment boundary, an act boundary and cue mode
+(`volcengine`) are all hard cuts. No narration plays during a transition, so a segment is
+`duration + transition` long, and the film length, the SRT offsets and the per-act check all use that
+one account. Changing a page's layout means re-recording the sentence before it, and the render
+result says so.
+
 The bundled deck template carries an in-page motion library: brighten-what-is-said
 (`dim`), stroke-draw (`draw`), rolling numbers (`count`) and growing bars (`bar`),
 on top of reveal's own fade-up and zoom-in; one element can also morph through
