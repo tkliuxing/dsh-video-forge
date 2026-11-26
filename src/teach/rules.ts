@@ -25,7 +25,7 @@
  * worth knowing before paying for narration.
  */
 
-import { DEFAULT_VOICE_PROVIDER, pageSlots, type Storyboard, type Segment } from './storyboard.ts'
+import { DEFAULT_VOICE_PROVIDER, exitSlots, pageSlots, type ExitSlot, type Storyboard, type Segment } from './storyboard.ts'
 import { supportsWordTimings } from './voice.ts'
 
 /**
@@ -216,6 +216,21 @@ export function auditManuscript(board: Storyboard, options: AuditOptions = {}): 
     }
   }
 
+  // --- a declared tail transition needs a page to turn to -------------------
+  // A transition is recorded by switching the deck's page inside the earlier
+  // sentence's segment, so it lands on the state the *next* sentence opens in. In
+  // cue mode that state is derived from the deck's own fragment counts at record
+  // time, not from the manuscript, so `exitSlots` cannot name a target and the
+  // manuscript would get hard cuts with no word about it (docs/TEACH-MOTION.md §7
+  // rule 2). Kept a refusal rather than a warning for that reason.
+  if (board.transition !== null && board.transition.mode === 'deck' && wordTimings && board.segments.some(segment => segment.engine === 'slides')) {
+    structural.push(
+      `meta.transition is set, but the voice "${board.voice?.provider ?? DEFAULT_VOICE_PROVIDER}" reports word timings, so the slides run in cue mode. `
+      + 'A cue-mode sentence\'s page is worked out from its own beats and the deck\'s fragment counts when it is recorded, so the state a tail transition would have to land on is not knowable from the manuscript. '
+      + 'Either set meta.transition.mode: none, or narrate with a provider that reports no word timings (page mode, the DeepSeek route)',
+    )
+  }
+
   // --- per-sentence: every sentence changes one picture ---------------------
   for (const row of rows) {
     if (wordTimings && row.segment.engine === 'slides' && row.cues === 0) {
@@ -254,7 +269,7 @@ export function auditManuscript(board: Storyboard, options: AuditOptions = {}): 
   // wondering why the manuscript's page numbers did nothing.
   const sharesPages = board.segments.some(segment => segment.sentences.some(sentence => sentence.page !== null))
   if (sharesPages && wordTimings) {
-    warnings.push(`the manuscript declares page/enter, but voice "${board.voice?.provider ?? DEFAULT_VOICE_PROVIDER}" reports word timings: the deck is driven by cues and never switches pages per sentence, so page and enter do nothing here. They only apply when the voice reports no word timings (the default DeepSeek route)`)
+    warnings.push(`the manuscript declares page/enter, but voice "${board.voice?.provider ?? DEFAULT_VOICE_PROVIDER}" reports word timings: the deck is driven by cues, and the page a sentence starts on is worked out from its own beats, so page and enter do nothing here. They only apply when the voice reports no word timings (the default DeepSeek route)`)
   }
   if (!wordTimings) {
     for (const segment of board.segments) {
@@ -405,6 +420,89 @@ export function deckPageFragments(html: string): number[] | null {
   return pieces.slice(1).map(piece => countDeckFragments(piece) ?? 0)
 }
 
+/**
+ * Whether the deck nests `<section>` inside `<section>` (a vertical stack).
+ *
+ * Both counters work one level deep — the plan splits the markup on `<section>` tags,
+ * the recorder queries `.slides > section` — so a stack makes them disagree: the plan
+ * sees every nested page, the recorder sees the top-level ones. Telling the author is
+ * the only honest option short of implementing stacks, which nothing here needs yet.
+ */
+export function nestedSections(html: string): boolean {
+  return /<section\b[^>]*>(?:(?!<\/section\b)[\s\S])*?<section\b/i.test(markupOnly(html))
+}
+
+/**
+ * The two visual languages counted per page (top-level `<section>`), in page order.
+ *
+ * `fragmentVariants` counts the deck, which is the wrong unit for this judgement:
+ * two languages inside one page read as two films spliced together, while two pages
+ * that each pick one language are a normal deck (a variant library is exactly that).
+ * `null` when the deck has no `<section>` to split on, and the caller falls back to
+ * the whole-deck count.
+ */
+export function pageVariants(html: string): { dim: number, plain: number }[] | null {
+  const pieces = markupOnly(html).split(/<section\b[^>]*>/i)
+  if (pieces.length < 2) return null
+  return pieces.slice(1).map(piece => fragmentVariants(piece))
+}
+
+/**
+ * Whether a deck swallows reveal's fragment transition (docs/TEACH-MOTION.md §3.1).
+ *
+ * `.reveal .fragment { transition: opacity 180ms }` has the same specificity as
+ * reveal.css's own rule and loads later, so it wins and `fade-up`'s translation and
+ * `grow`'s scale become instant jumps — with no error anywhere. The check reads the
+ * `<style>` bodies, which is where such a rule can live; a deck that injects one
+ * from JavaScript is not seen, and that limit is in the skill.
+ */
+export function overridesFragmentTransition(html: string): boolean {
+  // Comments first: the shipped template's own CSS comment quotes
+  // `` `.reveal .fragment` … `transition: all .2s` `` while explaining why not to
+  // write that rule, and reading it as one is the same mistake `markupOnly` exists
+  // to prevent for page markers (`countDeckFragments`).
+  const styles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map(match => (match[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, ''))
+    .join('\n')
+  // Rule by rule, because the offending selector is a *bare* `.fragment`: a rule
+  // that names a variant (`.fragment.dim`, `.fragment.fade-up`, the template's own
+  // dimmed language) is the author choosing a property for that variant and is
+  // fine. `transition-duration` is not `transition` — the shipped template sets the
+  // duration through `--teach-dur`, which is the recommended way (D0, §3.1).
+  for (const match of styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = (match[1] ?? '').split(',')
+    const body = match[2] ?? ''
+    if (!/(^|;)\s*transition\s*:/.test(body)) continue
+    const bare = selectors.some(selector => {
+      const text = selector.trim()
+      return /\.reveal\b/.test(text) && /\.fragment$/.test(text)
+    })
+    if (bare) return true
+  }
+  return false
+}
+
+/**
+ * How a deck's fragment elements are styled, counted from the markup.
+ *
+ * The two languages that must not share a segment: `dim` (the whole page is shown
+ * and the beat brightens it) and reveal's default fade (the beat appears from
+ * nothing). One segment mixing them reads as two different films spliced together,
+ * which is a warning and not a refusal — the author may mean it
+ * (docs/TEACH-MOTION.md §7 rule 8).
+ */
+export function fragmentVariants(html: string): { dim: number, plain: number, custom: number } {
+  const counts = { dim: 0, plain: 0, custom: 0 }
+  for (const match of markupOnly(html).matchAll(/class\s*=\s*["']([^"']*)["']/g)) {
+    const classes = (match[1] ?? '').split(/\s+/).filter(name => name !== '')
+    if (!classes.includes('fragment')) continue
+    if (classes.includes('dim')) counts.dim += 1
+    else if (classes.includes('custom')) counts.custom += 1
+    else counts.plain += 1
+  }
+  return counts
+}
+
 /** What a slides deck provides, as far as the manuscript is allowed to rely on it. */
 export interface DeckInfo {
   /** The path the manuscript named, for messages. */
@@ -419,6 +517,31 @@ export interface DeckInfo {
    * fires a beat and lets the CSS play, so it never needs the number.
    */
   transitionMs: number | null
+  /**
+   * `window.teachPageTransition` as the deck declares it, in ms, or null when it
+   * says nothing. A tail transition shorter than this records the switch only part
+   * way, which looks like "it slid halfway and cut" (docs/TEACH-MOTION.md §9).
+   */
+  pageTransitionMs: number | null
+  /**
+   * Whether the deck's own CSS overrides reveal's fragment transition wholesale
+   * (`.reveal .fragment { transition: … }`). That rule has the same specificity as
+   * reveal.css and loads later, so it wins and every variant's motion collapses
+   * into a jump with no error at all (docs/TEACH-MOTION.md §3.1).
+   */
+  overridesFragmentTransition: boolean
+  /** Fragment elements by visual language: dimmed-until-spoken, plain reveal fade, `custom`. */
+  fragmentVariants: { dim: number, plain: number, custom: number }
+  /** The same counts per page (top-level `<section>`), or null when the deck has none. */
+  pageVariants: { dim: number, plain: number }[] | null
+  /**
+   * Whether the deck nests `<section>` inside `<section>` (a vertical stack).
+   *
+   * Both the plan's page counter and the recorder's count one level only, so a stack
+   * is counted approximately: the plan sees every nested page, the recorder sees the
+   * top-level ones. Said out loud because a cue-mode page drive needs them to agree.
+   */
+  nestedSections: boolean
   /** Whether the deck defines the recorder's three globals. */
   hasCue: boolean
   hasPage: boolean
@@ -497,6 +620,42 @@ export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInf
     if (pageMode && !info.hasPage) {
       structural.push(`${label} does not define window.teachPage(n), which the page mode needs: voice "${provider}" reports no word timings, so the picture advances one page per sentence (or one page shared by several, when the manuscript says page). Add the page-mode globals from assets/teach/deck/index.html (one <section> per page), or narrate with volcengine for cue-driven fragments`)
     }
+    // The two D0 pitfalls, visible from the deck's own HTML. They belong here and
+    // not with the seam findings: a deck without `meta.transition` has no seam, but
+    // it still loses every variant's motion to a wholesale override (D0) and still
+    // reads as two films when it mixes the two visual languages (rule 8).
+    if (info.overridesFragmentTransition) {
+      warnings.push(`${info.path} overrides reveal's fragment transition inside its own <style> (a rule like .reveal .fragment { transition: … }). It has the same specificity as reveal.css and loads later, so it wins: every variant's motion collapses into a jump and nothing reports it. Remove the rule and set --teach-dur on the section instead`)
+    }
+    const perPage = info.pageVariants ?? [{ dim: info.fragmentVariants.dim, plain: info.fragmentVariants.plain }]
+    const mixed = perPage.flatMap((variants, page) => (variants.dim > 0 && variants.plain > 0 ? [page + 1] : []))
+    if (mixed.length > 0) {
+      const pages = mixed.map(page => `page ${page}`).join(', ')
+      warnings.push(`${label} mixes dimmed and plain reveal-fade fragments on ${pages}: dimmed elements are already on screen and plain ones appear from nothing, so on one page it reads as two films. Pick one language for that page`)
+    }
+    if (info.nestedSections) {
+      warnings.push(`${label} nests <section> inside <section> (a vertical stack). Page numbers are counted one level deep by both the plan and the recorder, so a stack is counted approximately; a cue-mode page drive and a declared \`page\` are both worth checking by hand on this deck`)
+    }
+    // Cue mode numbers beats across the whole deck, so a deck with several pages
+    // needs the recorder to turn them; without `teachPage` that only fails once the
+    // narration has been paid for (src/teach/slides.ts).
+    if (!pageMode && info.pageFragments !== null && info.pageFragments.length > 1 && !info.hasPage) {
+      structural.push(`${label} has ${info.pageFragments.length} pages, which cue mode drives from the beats themselves, but it does not define window.teachPage(n): the recorder turns the page at a cue that lands on the next one. Take the template's teachPage and teachCue, or keep this deck to a single <section>`)
+    }
+    // A page with no fragment can never be reached by a cue-mode number: the counter
+    // walks pages that have one. Left unsaid, that page silently never appears.
+    if (!pageMode && info.pageFragments !== null && cues > 0) {
+      const empty = info.pageFragments.flatMap((count, page) => (count === 0 ? [page + 1] : []))
+      if (empty.length > 0) {
+        warnings.push(`${label} has ${empty.length} page${empty.length === 1 ? '' : 's'} with no fragment (${empty.map(page => `page ${page}`).join(', ')}): cue-mode beats are numbered by walking pages that carry one, so those pages are never recorded. Give them a fragment, or drop them from the deck`)
+      }
+    }
+    // Cue mode needs the per-page counts at record time to turn pages. When the deck
+    // builds its pages in JavaScript the plan cannot see them, and the recorder may
+    // find more pages than this check could judge.
+    if (!pageMode && info.pageFragments === null && cues > 0) {
+      warnings.push(`${label} mixes cue-mode beats with a deck whose pages could not be counted (it builds its <section>s in JavaScript, or has none): whether those beats need window.teachPage(n) was not checked here, and if the deck turns out to have several pages at record time it will be refused then`)
+    }
     if (pageMode && info.pageFragments === null && segment.sentences.some(sentence => sentence.page !== null)) {
       // Unknown is not "fine": a deck the counter cannot split into pages (built in
       // JavaScript, or with no `section` at all) leaves every declared page number
@@ -553,6 +712,7 @@ export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInf
   }
 
   warnings.push(...transitionFindings(board, decks, options))
+  warnings.push(...seamFindings(board, decks, exitSlots(board, pageMode ? 'page' : 'cue'), options))
   return { structural, warnings }
 }
 
@@ -604,6 +764,61 @@ function transitionFindings(board: Storyboard, decks: ReadonlyMap<string, DeckIn
       })
     }
   }
+  return findings
+}
+
+/**
+ * What the plan can say about the seams (docs/TEACH-MOTION.md §6, §7).
+ *
+ * Every finding here is about a seam the author *did* ask to soften and did not
+ * get, or a duration that cannot finish inside the room it was given. The
+ * "everything is a hard cut" case is silent, because that is what a manuscript
+ * without `meta.transition` asks for.
+ */
+function seamFindings(
+  board: Storyboard,
+  decks: ReadonlyMap<string, DeckInfo>,
+  exits: ReadonlyMap<string, ExitSlot>,
+  options: DeckAuditOptions,
+): string[] {
+  const findings: string[] = []
+  const spec = board.transition
+  if (spec === null || spec.mode !== 'deck') return findings
+  const segments = board.segments
+  segments.forEach((segment, segmentIndex) => {
+    const info = decks.get(segment.id)
+    const label = info === undefined ? `segment "${segment.id}"` : `segment "${segment.id}" (${info.path})`
+    if (segment.engine !== 'slides') {
+      findings.push(`${label} is engine manim, so meta.transition (${spec.durationMs} ms) does not apply to it: a Python scene has its own timeline and no page state to turn from. Its seams stay hard cuts`)
+      return
+    }
+    // Rule 9, not in the D3 table but the risk §9 names: a tail transition shorter
+    // than the deck's own page switch records the switch only part way, which reads
+    // as "it slid halfway and cut".
+    const declared = info?.pageTransitionMs ?? null
+    if (declared !== null && spec.durationMs < declared) {
+      findings.push(`meta.transition.durationMs is ${spec.durationMs}, but ${info!.path} declares window.teachPageTransition = ${declared}: the page switch will be recorded only ${spec.durationMs} ms in, so the seam cuts mid-transition. Raise it to at least ${declared}, or lower the deck's own transition`)
+    }
+    segment.sentences.forEach((sentence, index) => {
+      const exit = exits.get(sentence.id)
+      if (exit === undefined) return
+      const next = segment.sentences[index + 1]
+      if (exit.dropped === 'same-page' && next !== undefined) {
+        findings.push(`sentence "${sentence.id}" ends on the same page as "${next.id}" (both page ${pageSlots(segment)[index]!.page + 1}), so the seam stays a hard cut: there is no page to turn. That is right if the two sentences are meant to share the page — otherwise give "${next.id}" its own page`)
+        return
+      }
+      if (exit.exitMs === 0 || exit.target === null) return
+      const schedule = options.beats?.get(next?.id ?? '')
+      if (next !== undefined && schedule !== undefined && exit.exitMs > schedule.durationMs) {
+        const clock = schedule.estimated ? ' (that length is the estimate from its characters)' : ''
+        findings.push(`sentence "${sentence.id}" carries a ${exit.exitMs} ms tail transition, but the sentence after it ("${next.id}") is only ${schedule.durationMs} ms long${clock}: the transition is longer than the line it leads into, so it reads as a pause rather than a move`)
+      }
+    })
+    const last = segment.sentences[segment.sentences.length - 1]
+    if (segmentIndex < segments.length - 1 && last !== undefined && exits.get(last.id)?.dropped === 'segment-end') {
+      findings.push(`${label} ends with a hard cut after "${last.id}": a tail transition cannot reach the next segment's picture, which is another document. Record the act as one deck if that seam should turn (docs/TEACH-PARALLEL-ACTS.md §7 keeps the seam acceptance)`);
+    }
+  })
   return findings
 }
 

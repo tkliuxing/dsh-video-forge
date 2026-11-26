@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>transition example</title>
+<!--
+  A deck whose *page switch* is the animation (docs/TEACH-MOTION.md §6).
+
+  When a manuscript declares `meta.transition`, the recorder finishes a sentence's
+  body, calls `teachPage(next)`, and keeps recording for the declared length. So the
+  thing that has to be worth watching is the page change itself: three pages
+  cross-fade with a small sideways slide, 320 ms, and that is what the tail
+  transition records.
+
+  The contract, in the order the recorder calls it:
+
+  1. `teachPage(n)` — show page n. Idempotent, and it is called again *at the end of
+     the previous sentence* to record the seam, so it must work on a live page.
+  2. `teachCue(k)` — show beats up to k. Called with the next sentence's `enter`
+     immediately after the page switch, so the incoming page is already in the state
+     the next sentence will record as its first frame.
+  3. `teachPageTransition` — this deck's own switch length in ms. The recorder reads
+     it to wait out the switch before a capture starts; a tail transition is
+     recorded through it instead of waiting (which is the whole point).
+
+  There is deliberately no `.reveal .fragment { transition: ... }` override: it would
+  flatten every variant's motion and nothing would report it (§3.1).
+-->
+<style>
+  :root { --teach-dur: 320ms; }
+  html, body { height: 100%; margin: 0; background: #0b1020; color: #e8ecf4; font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
+  .page {
+    position: absolute; inset: 0; box-sizing: border-box; padding: 96px 120px;
+    display: flex; flex-direction: column; justify-content: center; gap: 24px;
+    /* The page switch: opacity plus a small slide, so a tail transition records a
+       move rather than a flash. */
+    transition: opacity var(--teach-dur) ease, transform var(--teach-dur) ease;
+    transform: translateX(28px); opacity: 0;
+  }
+  .page.on { transform: none; opacity: 1; }
+  .page h1 { margin: 0; font-size: 76px; letter-spacing: 2px; }
+  .page p { margin: 0; font-size: 38px; line-height: 1.5; color: #aab4c8; }
+  .card {
+    margin-top: 16px; padding: 22px 28px; border-radius: 16px; font-size: 34px;
+    background: #182238; color: #cfd8ea;
+    transition: background var(--teach-dur) ease, color var(--teach-dur) ease;
+  }
+  .card.on { background: #7aa2f7; color: #0b1020; }
+  .p1 { background: #101828; }
+  .p2 { background: #0f1c1a; }
+  .p3 { background: #1a1226; }
+</style>
+</head>
+<body>
+<main id="deck">
+  <section class="page p1" data-page="0">
+    <h1>问题</h1>
+    <p>一句一录，画面在句与句之间断成两截。</p>
+    <div class="card fragment" data-beat="1">硬切</div>
+  </section>
+  <section class="page p2" data-page="1">
+    <h1>做法</h1>
+    <p>转场录在前一句的尾部，而不是后一句的开头。</p>
+    <div class="card fragment" data-beat="1">补间</div>
+  </section>
+  <section class="page p3" data-page="2">
+    <h1>代价</h1>
+    <p>每一句都长了一点，时间轴要按同一个账本算。</p>
+    <div class="card fragment" data-beat="1">一本账</div>
+  </section>
+</main>
+<script>
+const pages = [...document.querySelectorAll('[data-page]')]
+let current = 0
+
+window.teachPageTransition = 320
+
+window.teachCue = function teachCue(step) {
+  for (const card of pages[current].querySelectorAll('[data-beat]')) {
+    card.classList.toggle('on', Number(card.dataset.beat) <= Number(step))
+  }
+}
+
+window.teachPage = function teachPage(index) {
+  current = Math.max(0, Math.min(pages.length - 1, Number(index) || 0))
+  pages.forEach((page, at) => page.classList.toggle('on', at === current))
+}
+
+window.teachPage(0)
+window.teachReady = true
+</script>
+</body>
+</html>

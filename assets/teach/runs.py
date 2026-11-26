@@ -323,16 +323,25 @@ def cmd_collect(args: argparse.Namespace) -> int:
         if picture.exists():
             planned.append((picture, project / WORK_DIR / sid / SEGMENTS_SUBDIR))
 
+        # The picture segment also carries the sentence's tail transition
+        # (docs/TEACH-MOTION.md §6.4): a segment recorded with a 400 ms seam is 400 ms
+        # longer than the audio that runs under it. The audio itself never carries it.
+        exit_ms = sentence.get('exitMs') or 0
+        if not isinstance(exit_ms, (int, float)) or exit_ms < 0:
+            die(f'{sid}：timings 里的 exitMs 不是合法的毫秒数（{exit_ms!r}）')
+
         if isinstance(duration_ms, (int, float)) and audio.exists() and picture.exists():
             audio_seconds = probe_duration(audio)
             picture_seconds = probe_duration(picture)
-            expected = float(duration_ms) / 1000
-            for label, measured in (('音频', audio_seconds), ('画面段', picture_seconds)):
+            audio_expected = float(duration_ms) / 1000
+            picture_expected = float(duration_ms + exit_ms) / 1000
+            for label, measured, expected in (('音频', audio_seconds, audio_expected), ('画面段', picture_seconds, picture_expected)):
                 if measured is None:
                     continue
                 if abs(measured - expected) > FRAME_TOLERANCE_SECONDS:
+                    tail = '' if exit_ms == 0 else f'（其中 {exit_ms:g}ms 是尾转场）'
                     mismatched.append(
-                        f'{sid}：{label} {measured:.3f}s 与 timings 的 {expected:.3f}s 差 '
+                        f'{sid}：{label} {measured:.3f}s 与 timings 的 {expected:.3f}s{tail} 差 '
                         f'{abs(measured - expected) * 1000:.0f}ms（重录了但没重渲？）'
                     )
 

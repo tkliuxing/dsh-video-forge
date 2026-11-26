@@ -321,6 +321,11 @@ ${sentences}`)
     fragments: 3,
     pageFragments: [3],
     transitionMs: null,
+    pageTransitionMs: null,
+    overridesFragmentTransition: false,
+    nestedSections: false,
+    fragmentVariants: { dim: 0, plain: 0, custom: 0 },
+    pageVariants: null,
     hasCue: true,
     hasPage: true,
     hasReady: true,
@@ -642,11 +647,29 @@ ${sentences}`)
     fragments: 3,
     pageFragments: [3],
     transitionMs: null,
+    pageTransitionMs: null,
+    overridesFragmentTransition: false,
+    nestedSections: false,
+    fragmentVariants: { dim: 0, plain: 0, custom: 0 },
+    pageVariants: null,
     hasCue: true,
     hasPage: true,
     hasReady: true,
     ...patch,
   })
+
+  /** The same manuscript with a provider that reports word timings, i.e. cue mode. */
+  const cueBoard = (sentences: string) => parseStoryboard(`meta:
+  title: t
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+${sentences}`)
 
   it('counts only real markup, so a script or a comment is not a page', () => {
     // The shipped template talks about sections and fragments in its own script; a
@@ -693,6 +716,17 @@ segments:
         cues: [{ fragment: 1, at_word: 这一句 }]
 `)
     expect(auditDecks(board, new Map([['s01', info({ hasPage: false })]]))).toEqual({ structural: [], warnings: [] })
+  })
+
+  it('asks a multi-page cue-mode deck for teachPage, which is how its pages advance', () => {
+    const board = cueBoard('      - id: a\n        say: 这一句的第一个节拍落在第二页上。\n        cues: [{ fragment: 4, at_word: 这一句 }]\n')
+    // One page needs no page drive; two do, and finding that out at render time
+    // would be after the narration was paid for.
+    expect(auditDecks(board, new Map([['s01', info({ pageFragments: [3], hasPage: false })]]))).toEqual({ structural: [], warnings: [] })
+    const audit = auditDecks(board, new Map([['s01', info({ pageFragments: [3, 2], hasPage: false })]]))
+    expect(audit.structural).toHaveLength(1)
+    expect(audit.structural[0]).toContain('2 pages')
+    expect(audit.structural[0]).toContain('teachPage')
   })
 
   it('warns when the deck has fewer pages than the segment has sentences', () => {

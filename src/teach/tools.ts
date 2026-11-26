@@ -31,7 +31,7 @@ import { sessionContextOf } from '../session-context.ts'
 import { ConfigError, DEFAULT_VOICE_AUTH_REF, teachSettings } from '../settings.ts'
 import { workspaceFsOf } from '../workspace-fs.ts'
 import { countFrameColors } from './ffmpeg.ts'
-import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, estimateSentenceSeconds, judgeSamples, sampleTimes, type BeatSchedule, type DeckInfo, type SuspectSegment } from './rules.ts'
+import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, fragmentVariants, nestedSections, overridesFragmentTransition, pageVariants, estimateSentenceSeconds, judgeSamples, sampleTimes, type BeatSchedule, type DeckInfo, type SuspectSegment } from './rules.ts'
 import {
   DEFAULT_TEACH_PATHS,
   assembleVideo,
@@ -44,7 +44,7 @@ import {
   type TeachPaths,
 } from './pipeline.ts'
 import { assessDependencies, installHint, isMissing, type DependencyProbe } from './rules.ts'
-import { allSentences, cueOffsetMs, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, pagesUsed, parseStoryboard, reconcileTimings, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
+import { allSentences, cueOffsetMs, DEFAULT_VOICE, DEFAULT_VOICE_SPEAKER, exitSlots, pagesUsed, parseStoryboard, reconcileTimings, timelineDurationMs, totalDurationMs, type Storyboard, type Timings, type VoiceSpec } from './storyboard.ts'
 import { mediaTools, probeDependencies, teachPaths, voiceAuthRefFor } from './probe.ts'
 import { coverOutputs, renderCover, COVER_SIZES } from './cover.ts'
 import { buildSrt } from './subtitles.ts'
@@ -286,6 +286,14 @@ async function inspectDecks(board: Storyboard, projectRoot: string): Promise<Map
       hasReady: /(?:window\.)?teachReady\s*=(?!=)/.test(html),
       // D2 (docs/TEACH-MOTION.md §5): the durations a deck declares for itself.
       transitionMs: declaredMs(html, 'teachTransition'),
+      // D3: how long a page switch takes, which a tail transition has to be at
+      // least as long as (docs/TEACH-MOTION.md §6, §9).
+      pageTransitionMs: declaredMs(html, 'teachPageTransition'),
+      // D0's two pitfalls, visible from the deck's own CSS and markup.
+      overridesFragmentTransition: overridesFragmentTransition(html),
+      nestedSections: nestedSections(html),
+      fragmentVariants: fragmentVariants(html),
+      pageVariants: pageVariants(html),
     })
   }
   return decks
@@ -320,8 +328,11 @@ function declaredMs(html: string, name: string): number | null {
 function beatScheduleOf(board: Storyboard, timings: Timings | null): Map<string, BeatSchedule> {
   const timed = new Map((timings?.sentences ?? []).map(sentence => [sentence.id, sentence]))
   const schedule = new Map<string, BeatSchedule>()
+  // Every sentence, not only the ones with beats: the seam checks ask how long the
+  // sentence *after* a transition is, and a sentence that fires no beat still has a
+  // length (docs/TEACH-MOTION.md §7 rule 4). A cue list that is empty simply means
+  // no beat findings, which every consumer already handles.
   for (const { sentence } of allSentences(board)) {
-    if (sentence.cues.length === 0) continue
     const entry = timed.get(sentence.id)
     const durationMs = entry?.durationMs ?? Math.round(estimateSentenceSeconds(sentence.say.length) * 1000)
     const cueMs = sentence.cues.map(cue => {
@@ -379,6 +390,47 @@ async function staticSegments(
     if (suspect !== null) suspects.push(suspect)
   }
   return suspects
+}
+
+/**
+ * One line about the seams, for the plan's message: how many there are and how much
+ * they add. `video_teach_plan` runs before anything is paid for, so this is where
+ * the author learns that 20 transitions add 8 seconds to the film.
+ */
+function seamLine(board: Storyboard, wordTimings: boolean): string {
+  const spec = board.transition
+  if (spec === null || spec.mode !== 'deck') return 'transitions: none (every sentence joins the next with a hard cut)'
+  if (wordTimings) return 'transitions: declared, but this voice runs the deck in cue mode, where a sentence\'s page comes from its own beats: the state a transition would land on is not knowable from the manuscript (see the warning)'
+  const exits = exitSlots(board, 'page')
+  const recorded = [...exits.values()].filter(slot => slot.exitMs > 0)
+  const dropped = [...exits.values()].filter(slot => slot.dropped !== null && slot.dropped !== 'by-sentence')
+  const reasons = new Map<string, number>()
+  for (const slot of dropped) reasons.set(slot.dropped!, (reasons.get(slot.dropped!) ?? 0) + 1)
+  const why = [...reasons].map(([reason, count]) => `${count} ${reason}`).join(', ')
+  return `transitions: ${spec.durationMs} ms of tail transition on ${recorded.length} of ${exits.size} sentence(s), ${recorded.length * spec.durationMs} ms of extra picture${why === '' ? '' : `; dropped: ${why}`}`
+}
+
+/**
+ * The seams this render left alone, and the ones it invalidated.
+ *
+ * A sentence's first page is also where the sentence before it ends its tail
+ * transition. Re-recording a sentence means its opening layout changed, so the
+ * earlier tail still lands on the old picture: the author has to re-record that
+ * one too. Detecting it needs no snapshot — the exit slot carries the target page,
+ * and `exits` is the same resolution the recorder used (docs/TEACH-MOTION.md §6.8).
+ */
+function seamLedger(board: Storyboard, pageMode: boolean, fresh: ReadonlySet<string>): string[] {
+  const findings: string[] = []
+  const exits = exitSlots(board, pageMode ? 'page' : 'cue')
+  for (const { segment, sentence } of allSentences(board)) {
+    const exit = exits.get(sentence.id)
+    if (exit === undefined || exit.exitMs === 0 || exit.target === null) continue
+    const index = segment.sentences.findIndex(entry => entry.id === sentence.id)
+    const next = segment.sentences[index + 1]
+    if (next === undefined || !fresh.has(next.id) || fresh.has(sentence.id)) continue
+    findings.push(`sentence "${sentence.id}" still carries its ${exit.exitMs} ms tail transition into page ${exit.target.page + 1}, which "${next.id}" was just re-recorded on: if that page's layout changed, the seam ends on the old picture. Re-record it too: video_teach_render sentences: ["${sentence.id}"]`)
+  }
+  return findings
 }
 
 /** The next free `vNNN` number in a shot folder. */
@@ -578,6 +630,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         picture,
         ...plan.sentences.map(sentence => `- ${sentence.id} (${sentence.engine}, ${sentence.chars} chars) ${sentence.say}`),
         `narration: ${narration}`,
+        seamLine(board, plan.voice.wordTimings),
         `tools: ${assessment.summary}`,
         `required: ${dependencies.filter(entry => entry.scope === 'required').map(entry => `${entry.name} ${entry.state}`).join(', ')}`,
         `slides: ${dependencies.filter(entry => entry.scope === 'slides').map(entry => `chromium ${entry.state}`).join(', ')}`,
@@ -696,6 +749,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       'Rendering needs ffmpeg/ffprobe (everything) plus a Chromium for the slides; Python with Manim and a TeX with dvisvgm are needed only for the manim sentences actually being rendered. When those are missing this call refuses BEFORE rendering anything and names each missing program with what to install, so a slides-only manuscript is unaffected and a broken one costs nothing.',
       'With assemble (default true) the segments are concatenated, the narration is mixed in, and the result lands at renders/<shot>/vNNN.mp4 with a JSON sidecar. Shot names the folder under renders/ and defaults to ' + DEFAULT_SHOT + '.',
       'After rendering, each fresh segment is sampled for distinct frame colours and any segment that looks static is reported by name; the report is a heuristic hint, not a refusal.',
+      'A manuscript with meta.transition records each seam inside the earlier sentence: the segment is durationMs + exitMs long, the deck switches page after the body, and timings.json is rewritten with the recorded exitMs. seam_findings then names a reused segment whose length disagrees with the timeline, a film whose length disagrees with the timeline, and a sentence whose tail transition still lands on a page that was just re-recorded.',
       'The finished video is recorded in the ledger as a local render, so it appears in the video panel beside generated videos. Report the path it returns.',
     ].join(' '),
     parameters: {
@@ -714,6 +768,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           reused: { type: 'array', required: true, items: { type: 'string' } },
           ignored_cues: { type: 'array', required: true, items: { type: 'string' }, description: 'sentences whose cues could not fire; empty in both modes, because page mode honours at_progress beats' },
           motion_findings: { type: 'array', required: true, items: { type: 'string' }, description: 'beats that landed too late and segments whose motion is cut at the ending; empty when every beat finished in time' },
+          seam_findings: { type: 'array', required: true, items: { type: 'string' }, description: 'tail transitions that are stale, a film whose length disagrees with the timeline, and sentences whose leading page was re-recorded (so the sentence before them must be re-recorded too); empty when every seam matches the timeline' },
           output: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           task_id: { required: true, oneOf: [{ type: 'null' }, { type: 'string' }] },
           duration_ms: { type: 'number', required: true },
@@ -777,17 +832,23 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
 
       // Self-check before assembly: a segment that drew nothing is worth knowing
       // about before the mux hides it inside a longer file.
-      const durationById = new Map(timings.sentences.map(sentence => [sentence.id, sentence.durationMs]))
+      // The segment is `durationMs + exitMs` long, and the static-frame samples are
+      // taken from inside it: sampling by the audio length alone would never look at
+      // a tail transition, which is the one stretch of a segment that moves.
+      const durationById = new Map(timings.sentences.map(sentence => [sentence.id, sentence.durationMs + sentence.exitMs]))
       const suspects = await staticSegments(rendered, durationById, media, exec.signal)
 
       // Assembly is the only step that needs every sentence: a narrowed render
       // that is not assembling yet is a normal way to split a long run, so the
       // remaining sentences are reported as pending instead of failing the call
       // after the work it was asked to do is already done.
-      const plan = await planSegments(workspace.paths, timings, rendered, { requireAll: args.assemble !== false })
+      const plan = await planSegments(workspace.paths, timings, rendered, { requireAll: args.assemble !== false }, media)
       let output: string | null = null
       let taskId: string | null = null
-      let durationMs = totalDurationMs(timings)
+      // The film, not the narration: a tail transition makes the picture longer than
+      // the audio, and every duration this tool reports is the picture's.
+      let durationMs = timelineDurationMs(timings)
+      let lengthCheck: string | null = null
       // Why the picture may not carry burned-in lines, in the words the result
       // uses. The decision is taken before assembly so the reason is the probe's,
       // not a filter error's.
@@ -823,7 +884,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           kind: 'teach-video',
           title: board.title,
           storyboard: args.storyboard ?? DEFAULT_STORYBOARD,
-          segments: plan.segments.map(segment => ({ id: segment.id, durationMs: segment.durationMs })),
+          segments: plan.segments.map(segment => ({ id: segment.id, durationMs: segment.durationMs, exitMs: segment.exitMs })),
           durationMs: assembled.durationMs,
           // The sidecar is what a later reader has: whether the picture carries
           // the lines is a fact about this file, not a setting anyone remembers.
@@ -834,6 +895,13 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         await rm(staged, { force: true })
         output = `renders/${shot}/${name}.mp4`
         durationMs = assembled.durationMs ?? durationMs
+        // One account (docs/TEACH-MOTION.md §6.4): the film is exactly as long as the
+        // timeline says, or some segment was recorded against another manuscript.
+        // A few frames of slack for CFR rounding and AAC's priming; a stale tail is
+        // hundreds of milliseconds and would shift every later sentence.
+        if (assembled.durationMs !== null && Math.abs(assembled.durationMs - assembled.expectedMs) > 150) {
+          lengthCheck = `the finished film is ${assembled.durationMs} ms but the timeline says ${assembled.expectedMs} ms (a segment differs from its durationMs + exitMs). Re-record the segments named above, or re-run video_teach_export after fixing them`
+        }
         // The row is what puts the file in the video panel: the panel lists the
         // ledger, not the folder (TEACH-VIDEO.md §8).
         const info = await stat(target)
@@ -860,6 +928,12 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       // part of the result (docs/TEACH-MOTION.md §15).
       const motion = motionFindings(rendered)
       const retried = rendered.filter(segment => segment.retried).map(segment => segment.id)
+      // The seam ledger: what the timeline says each tail carries, and which earlier
+      // tails still land on a page that was re-recorded (docs/TEACH-MOTION.md §6.8).
+      // Reported, never re-recorded automatically: that would turn "one line" into two.
+      const seams = seamLedger(board, pageMode, new Set(plan.fresh))
+      if (plan.stale.length > 0) seams.unshift(...plan.stale)
+      if (lengthCheck !== null) seams.push(lengthCheck)
       const lines = [
         pageMode
           ? `picture: page mode with beats — voice "${timings.voice.provider}" reports no word timings, so each sentence starts on the page the manuscript gives it (its own, unless page shares it) and its beats fire on at_progress against the measured sentence length (not word-aligned)`
@@ -871,6 +945,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           : `self-check: ${suspects.length} segment(s) look static — ${suspects.map(suspect => `"${suspect.id}" (${suspect.reason}: ${suspect.detail})`).join('; ')}`,
         retried.length === 0 ? '' : `${retried.join(', ')}: recorded a second time after a late beat`,
         ...motion.map(finding => `warning: ${finding}`),
+        ...seams.map(finding => `seam: ${finding}`),
         output === null
           ? `assembly skipped (assemble: false)${plan.pending.length === 0 ? '' : `; ${plan.pending.length} sentence(s) still have no picture: ${plan.pending.join(', ')} — render them, then assemble`}`
           : `video: ${output} (${durationMs} ms, task ${taskId ?? 'unrecorded'})`,
@@ -882,6 +957,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
         reused: plan.reused,
         ignored_cues: ignoredCues,
         motion_findings: motion,
+        seam_findings: seams,
         output,
         task_id: taskId,
         duration_ms: durationMs,
@@ -940,7 +1016,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       const timeline = join(shotDir, `${stem}.timeline.json`)
       await writeFile(timeline, `${JSON.stringify({
         voice: timings.voice,
-        sentences: timings.sentences.map(sentence => ({ id: sentence.id, audio: sentence.audio, durationMs: sentence.durationMs, words: sentence.words })),
+        sentences: timings.sentences.map(sentence => ({ id: sentence.id, audio: sentence.audio, durationMs: sentence.durationMs, exitMs: sentence.exitMs, words: sentence.words })),
       }, null, 2)}\n`, 'utf8')
 
       const decks: string[] = []

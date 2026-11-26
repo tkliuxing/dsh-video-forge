@@ -1,0 +1,31 @@
+# Cross-sentence transitions (docs/TEACH-MOTION.md §6, TODO.md B13).
+#
+# Three sentences on three pages of one deck. `meta.transition` says every sentence
+# whose next sentence is on another page carries a 420 ms tail: the recorder plays
+# the body, then switches the deck to the next page and keeps recording, so the
+# page switch itself lands in this sentence's picture.
+#
+# The transition is *not* declared anywhere else. Its shape — a cross fade with a
+# small slide, 320 ms — is the deck's business (slides/s01/index.html), because that
+# is visual language. The manuscript only says "yes, and how long".
+meta:
+  title: 跨句转场
+  voice:
+    speaker: stella
+  transition:
+    mode: deck
+    durationMs: 420
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 第一页讲问题，句子念完之后画面才翻到第二页。
+        cues: [{ fragment: 1, at_progress: 0.45 }]
+      - id: s01-2
+        say: 翻页发生在上一句的尾部，所以这一句一开口就是完整画面。
+        cues: [{ fragment: 1, at_progress: 0.5 }]
+      - id: s01-3
+        say: 最后一句的尾部没有下一句，所以它是硬切收尾。
+        cues: [{ fragment: 1, at_progress: 0.5 }]

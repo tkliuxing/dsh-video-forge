@@ -204,6 +204,7 @@ describe.skipIf(!LIVE)('teaching pipeline, live', () => {
       text: sentence.say,
       audio: 'audio/s01-1.mp3',
       durationMs: 4000,
+      exitMs: 0,
       words: [
         { t: '先看', b: 120, e: 480 },
         { t: '前几项', b: 900, e: 1400 },
@@ -222,7 +223,7 @@ describe.skipIf(!LIVE)('teaching pipeline, live', () => {
     const timings = {
       voice: { provider: 'volcengine', speaker: 'zh_female_liuchangnv_uranus_bigtts', speedRatio: null },
       sentences: [
-        { id: 's01-1', text: '一。', audio: 'audio/s01-1.mp3', durationMs: 1000, words: [{ t: '一', b: 0, e: 400 }] },
+        { id: 's01-1', text: '一。', audio: 'audio/s01-1.mp3', durationMs: 1000, exitMs: 0, words: [{ t: '一', b: 0, e: 400 }] },
       ],
     }
     board.segments.length = 0

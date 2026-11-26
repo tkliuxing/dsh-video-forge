@@ -272,7 +272,7 @@ segments:
   })
 
   it('places a progress cue on the measured sentence length', () => {
-    const timed = { id: 'a', text: '先看前几项，它们逐项变小。', audio: 'audio/a.wav', durationMs: 4000, words: [] }
+    const timed = { id: 'a', text: '先看前几项，它们逐项变小。', audio: 'audio/a.wav', durationMs: 4000, exitMs: 0, words: [] }
     expect(cueOffsetMs(timed, { fragment: 1, atWord: null, atProgress: 0.5 })).toBe(2000)
     expect(cueOffsetMs(timed, { fragment: 1, atWord: null, atProgress: 0 })).toBe(0)
   })

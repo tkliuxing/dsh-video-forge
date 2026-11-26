@@ -338,6 +338,7 @@ describe('srt building', () => {
         text: '第一句。',
         audio: 'audio/a.mp3',
         durationMs: 2000,
+        exitMs: 0,
         words: [
           { t: '先', b: 0, e: 200 },
           { t: '看', b: 200, e: 400 },
@@ -349,6 +350,7 @@ describe('srt building', () => {
         text: '第二句。',
         audio: 'audio/b.mp3',
         durationMs: 1500,
+        exitMs: 0,
         words: [{ t: '其', b: 0, e: 250 }, { t: '实', b: 250, e: 500 }],
       },
     ],

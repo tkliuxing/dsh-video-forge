@@ -25,6 +25,7 @@ const timingsOf = (...ids: string[]): Timings => ({
     text: `第 ${index + 1} 句。`,
     audio: `audio/${id}.mp3`,
     durationMs: 1000 + index * 250,
+    exitMs: 0,
     words: [{ t: '第', b: 0, e: 200 }],
   })),
 })
@@ -128,7 +129,7 @@ describe('segment planning', () => {
       await mkdir(join(project.root, project.work, id), { recursive: true })
       await writeFile(segmentPath(project, id), 'fake mp4')
     }
-    const plan = await planSegments(project, timings, [{ id: 'c', path: join(project.root, 'fresh', 'c.mp4'), durationMs: timings.sentences[2]!.durationMs, frames: 3, beats: [], settle: null, retried: false }])
+    const plan = await planSegments(project, timings, [{ id: 'c', path: join(project.root, 'fresh', 'c.mp4'), durationMs: timings.sentences[2]!.durationMs, exitMs: 0, exitTarget: null, frames: 3, beats: [], settle: null, retried: false }])
     expect(plan.segments.map(segment => segment.id)).toEqual(['a', 'b', 'c'])
     expect(plan.reused).toEqual(['a', 'b'])
     expect(plan.fresh).toEqual(['c'])
@@ -147,7 +148,7 @@ describe('segment planning', () => {
       await mkdir(join(project.root, project.work, id), { recursive: true })
       await writeFile(segmentPath(project, id), 'fake')
     }
-    const plan = await planSegments(project, timings, [{ id: 'b', path: '/tmp/b.mp4', durationMs: 1250, frames: 1, beats: [], settle: null, retried: false }])
+    const plan = await planSegments(project, timings, [{ id: 'b', path: '/tmp/b.mp4', durationMs: 1250, exitMs: 0, exitTarget: null, frames: 1, beats: [], settle: null, retried: false }])
     expect(plan.segments.map(segment => segment.id)).toEqual(['a', 'b'])
     expect(plan.segments.map(segment => segment.durationMs)).toEqual([1000, 1250])
   })

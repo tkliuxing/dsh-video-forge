@@ -29,10 +29,13 @@ import { lateBeats, recordDeckSegment, type BeatTiming, type CueAt, type SettleC
 import {
   allSentences,
   cueOffsetMs,
+  exitSlots,
+  cueStartFragments,
+  pageSlots,
   pagesUsed,
-  pageSlotOf,
   parseTimings,
   serializeTimings,
+  timelineDurationMs,
   totalDurationMs,
   type Cue,
   type Storyboard,
@@ -133,6 +136,13 @@ export const DEFAULT_TEACH_PATHS: Omit<TeachPaths, 'root'> = {
 }
 
 export type NarrationMerge = 'auto' | 'none'
+
+/**
+ * How far a reused segment may differ from the timeline before it is called stale,
+ * in ms. One output frame at 30 fps: the encoder's own rounding is a frame or two,
+ * a changed tail transition is hundreds.
+ */
+const STALE_SEGMENT_MS = 34
 
 /** Sentences per merged request. Well under the service's own ceiling, and small enough that one bad line does not re-synthesize a whole section. */
 export const MAX_UTTERANCE_CHARS = 480
@@ -297,6 +307,12 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
       // must not land here with a padding rule it never agreed to.
       throw new Error(`provider "${options.voice.provider}" reports no word timings but asks for punctuation padding; the two decisions are inconsistent`)
     }
+    // The tail transition is a picture decision, not a voice one, but the timeline
+    // is the one ledger everything reads afterwards (docs/TEACH-MOTION.md §6.4), so
+    // it is seeded here from the manuscript: a project that was narrated and not
+    // yet rendered already carries the right numbers, and a narrowed re-narration
+    // does not zero the sentences it kept.
+    const picture = exitSlots(options.board, 'page')
     for (const entry of entries) {
       if (only !== undefined && !only.includes(entry.sentence.id)) {
         const kept = previous?.sentences.find(item => item.id === entry.sentence.id)
@@ -321,6 +337,7 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
         text: entry.sentence.say,
         audio: relative,
         durationMs: media.durationMs,
+        exitMs: picture.get(entry.sentence.id)?.exitMs ?? 0,
         words: [],
       })
       narrated.push(entry.sentence.id)
@@ -392,6 +409,12 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
         text: sentence.say,
         audio: relative,
         durationMs: media.durationMs ?? Math.round(timing.targetMs),
+        // Cue mode works a sentence's page out while recording it (its own beats
+        // plus the deck's live fragment counts), so there is no manuscript-level
+        // "next page state" for a transition to land on: every seam here is a hard
+        // cut, and the plan refuses a declared transition for that reason
+        // (docs/TEACH-MOTION.md §7 rule 2).
+        exitMs: 0,
         words,
       })
       narrated.push(sentence.id)
@@ -443,7 +466,12 @@ export interface RenderedSegment {
   id: string
   /** Absolute path of the encoded segment. */
   path: string
+  /** The sentence's own length: the audio's duration, without the tail transition. */
   durationMs: number
+  /** Tail transition recorded after the body, in ms; 0 for a hard cut. */
+  exitMs: number
+  /** Where that transition lands (the next sentence's opening page and beats), or null. */
+  exitTarget: { page: number, enter: number } | null
   /** Frames the browser capture produced; a slide with one frame is a slide that never moved. */
   frames: number | null
   /** When each beat was asked for and when it happened (slides only; empty otherwise). */
@@ -488,6 +516,7 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
   const board = options.board
   const byId = new Map(options.timings.sentences.map(sentence => [sentence.id, sentence]))
   const rendered: RenderedSegment[] = []
+  const exits = exitSlots(board, deckDriveMode(options.timings))
 
   for (const { segment, sentence } of allSentences(board)) {
     if (sentence.id === undefined) continue
@@ -509,7 +538,7 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
       })
       // Manim has no beats to be late or a deck state to compare: its scene is a
       // single timeline, and running short of it is the scene's own `run_time`.
-      rendered.push({ id: sentence.id, path: result.path, durationMs: timed.durationMs, frames: null, beats: [], settle: null, retried: false })
+      rendered.push({ id: sentence.id, path: result.path, durationMs: timed.durationMs, exitMs: 0, exitTarget: null, frames: null, beats: [], settle: null, retried: false })
       options.onSegment?.(sentence.id, result.path)
       continue
     }
@@ -521,11 +550,21 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
     // are resolved together by `pageSlots`, because the derived `enter` depends on
     // the sentence before it on the same page (docs/TEACH-VIDEO.md §25).
     const mode = deckDriveMode(options.timings)
-    const slot = mode === 'page' ? pageSlotOf(segment, sentence.id) : null
+    const slots = mode === 'page' ? pageSlots(segment) : null
+    // Cue mode: how much of the film is already on screen when this sentence starts,
+    // resolved from the manuscript (docs/TEACH-VIDEO.md §27).
+    const starts = mode === 'cue' ? cueStartFragments(segment) : null
+    const index = segment.sentences.findIndex(entry => entry.id === sentence.id)
+    const slot = slots === null ? null : slots[index] ?? null
     if (mode === 'page' && slot === null) throw new Error(`sentence "${sentence.id}" is not in segment "${segment.id}"`)
+    // The tail transition (docs/TEACH-MOTION.md §6): one slot per sentence, resolved
+    // from the manuscript alone so a narrowed render and a full one agree.
+    const exit = exits.get(sentence.id) ?? null
     const request = {
       deckPath: join(options.paths.root, segment.deck),
       ...(slot === null ? {} : { page: slot.page, enter: slot.enter }),
+      ...(starts === null ? {} : { startFragment: starts.get(sentence.id) ?? 0 }),
+      ...(exit === null || exit.exitMs === 0 || exit.target === null ? {} : { exit: { ...exit.target, ms: exit.exitMs } }),
       // In page mode the cues are `at_progress` cues resolved against the
       // measured sentence length; in cue mode they are `at_word` cues.
       cues: cuesFor(timed, sentence.cues),
@@ -547,6 +586,8 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
       id: sentence.id,
       path: recorded.path,
       durationMs: timed.durationMs,
+      exitMs: recorded.exitMs,
+      exitTarget: exit?.target ?? null,
       frames: recorded.frames,
       beats: recorded.beats,
       settle: recorded.settle,
@@ -554,7 +595,41 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
     })
     options.onSegment?.(sentence.id, recorded.path)
   }
+  // The timeline is the one ledger the assembly, the SRT and the per-act check all
+  // read (docs/TEACH-MOTION.md §6.4), and this is the only place that knows what a
+  // segment actually carries. What was recorded wins over what the manuscript asked
+  // for: a segment re-recorded after `meta.transition` changed moves the ledger
+  // with it, and a segment that was *not* re-recorded keeps the number it was
+  // recorded with, which is what makes a stale tail visible at assembly.
+  if (rendered.length > 0) await writeExitLedger(options, rendered)
   return rendered
+}
+
+/**
+ * Write the recorded tail transitions back into `timings.json`.
+ *
+ * Every other reader (assembly, `buildSrt`, the per-act collect script) adds
+ * `durationMs + exitMs`; a ledger that says 0 while the segment on disk is 400 ms
+ * longer shifts every sentence after it by 400 ms — audio against picture, and the
+ * SRT against both. Read-modify-write with the same staging-and-rename the voice
+ * step uses, so a crash cannot leave half a timeline behind.
+ */
+async function writeExitLedger(options: RenderOptions, rendered: readonly RenderedSegment[]): Promise<void> {
+  const recorded = new Map(rendered.map(segment => [segment.id, segment.exitMs]))
+  const sentences = options.timings.sentences.map(sentence => {
+    const exitMs = recorded.get(sentence.id)
+    return exitMs === undefined || exitMs === sentence.exitMs ? sentence : { ...sentence, exitMs }
+  })
+  if (sentences.every((sentence, index) => sentence === options.timings.sentences[index])) return
+  const target = join(options.paths.root, options.paths.timings)
+  await mkdir(dirname(target), { recursive: true })
+  const staging = `${target}.tmp`
+  await writeFile(staging, serializeTimings({ ...options.timings, sentences }, {
+    ...(options.timings.sampleRate === undefined ? {} : { sampleRate: options.timings.sampleRate }),
+    ...(options.timings.merge === undefined ? {} : { merge: options.timings.merge }),
+  }), 'utf8')
+  await rename(staging, target)
+  options.timings.sentences = sentences
 }
 
 /**
@@ -581,7 +656,7 @@ export function motionFindings(rendered: readonly RenderedSegment[]): string[] {
         : `sentence "${segment.id}": ${behind} — the motion after it is cut. Record that sentence again: video_teach_render sentences: ["${segment.id}"]`)
     }
     if (segment.settle?.status === 'unfinished') {
-      findings.push(`sentence "${segment.id}": its last frame is not the finished layout (${(segment.settle.changed * 100).toFixed(1)}% of its pixels differ from the deck driven to beat ${segment.settle.finalFragment}), so the segment is cut through an animation. Move that beat earlier, or declare a shorter teachTransition`)
+      findings.push(`sentence "${segment.id}": its last frame is not the finished layout (${(segment.settle.changed * 100).toFixed(1)}% of its pixels differ from the deck driven to beat ${segment.settle.finalFragment} of that page), so the segment is cut through an animation. Move that beat earlier, or declare a shorter teachTransition`)
     } else if (segment.settle?.status === 'skipped' && segment.beats.length > 0) {
       findings.push(`sentence "${segment.id}": the finished-layout check did not run (${segment.settle.reason})`)
     }
@@ -594,7 +669,10 @@ export interface SegmentRef {
   id: string
   /** Absolute path of the encoded segment. */
   path: string
+  /** The sentence's own length; the file is `durationMs + exitMs` long. */
   durationMs: number
+  /** Tail transition the timeline says this segment carries, in ms. */
+  exitMs: number
   /** Workspace-relative narration file for this sentence; absent means `audio/<id>.mp3`. */
   audio?: string | null
 }
@@ -613,6 +691,8 @@ export interface SegmentPlan {
   reused: string[]
   /** Sentences with no picture yet; empty unless `requireAll` was turned off. */
   pending: string[]
+  /** Reused segments whose measured length disagrees with the timeline (stale tails). */
+  stale: string[]
 }
 
 export interface SegmentPlanOptions {
@@ -642,6 +722,7 @@ export async function planSegments(
   timings: Timings,
   rendered: readonly RenderedSegment[] = [],
   options: SegmentPlanOptions = {},
+  tools: MediaTools = {},
 ): Promise<SegmentPlan> {
   const requireAll = options.requireAll ?? true
   const fresh = new Map(rendered.map(segment => [segment.id, segment]))
@@ -649,10 +730,11 @@ export async function planSegments(
   const freshIds: string[] = []
   const reusedIds: string[] = []
   const missing: string[] = []
+  const stale: string[] = []
   for (const sentence of timings.sentences) {
     const done = fresh.get(sentence.id)
     if (done !== undefined) {
-      segments.push({ id: sentence.id, path: done.path, durationMs: sentence.durationMs, audio: sentence.audio })
+      segments.push({ id: sentence.id, path: done.path, durationMs: sentence.durationMs, exitMs: done.exitMs, audio: sentence.audio })
       freshIds.push(sentence.id)
       continue
     }
@@ -664,13 +746,22 @@ export async function planSegments(
       missing.push(sentence.id)
       continue
     }
-    segments.push({ id: sentence.id, path, durationMs: sentence.durationMs, audio: sentence.audio })
+    // A reused segment is trusted only after it is measured: the ledger says how
+    // long the picture should be, and a segment recorded before the last
+    // `meta.transition` change is a different length. One probe per sentence is
+    // cheaper than an assembly that is 400 ms out from the second sentence on.
+    const expected = sentence.durationMs + sentence.exitMs
+    const measured = await probe(path, tools).then(media => media.durationMs).catch(() => null)
+    if (measured !== null && Math.abs(measured - expected) > STALE_SEGMENT_MS) {
+      stale.push(`sentence "${sentence.id}": the segment on disk is ${measured} ms but the timeline says ${expected} ms (${sentence.durationMs} + ${sentence.exitMs} of tail transition) — it was recorded before the manuscript changed. Re-record it: video_teach_render sentences: ["${sentence.id}"]`)
+    }
+    segments.push({ id: sentence.id, path, durationMs: sentence.durationMs, exitMs: sentence.exitMs, audio: sentence.audio })
     reusedIds.push(sentence.id)
   }
   if (requireAll && missing.length > 0) {
     throw new Error(`no picture for ${missing.map(id => `"${id}"`).join(', ')}; render ${missing.length === 1 ? 'that sentence' : 'those sentences'} first`)
   }
-  return { segments, fresh: freshIds, reused: reusedIds, pending: missing }
+  return { segments, fresh: freshIds, reused: reusedIds, pending: missing, stale }
 }
 
 export interface AssembleOptions {
@@ -699,6 +790,14 @@ export interface Assembled {
   path: string
   /** Measured duration of the finished file. */
   durationMs: number | null
+  /**
+   * What the timeline says the film should be: `Σ(durationMs + exitMs)`.
+   *
+   * The one number a stale tail transition moves, so the caller compares it with
+   * `durationMs` and names the disagreement instead of shipping a film that is
+   * silently 400 ms out (docs/TEACH-MOTION.md §6.4).
+   */
+  expectedMs: number
 }
 
 /**
@@ -715,7 +814,10 @@ export async function assembleVideo(options: AssembleOptions): Promise<Assembled
   await mkdir(dirname(silent), { recursive: true })
   await concatSegments(options.segments.map(segment => segment.path), silent, options.tools ?? {}, options.signal)
   const audioFiles = options.segments.map(segment => join(options.paths.root, segment.audio ?? audioRelativeFor(options.paths, segment.id)))
-  await concatAudio(audioFiles, narration, options.tools ?? {}, options.signal)
+  // The silence that goes with each tail transition: the picture segment is
+  // `durationMs + exitMs` long, so the track that runs underneath it must be too
+  // (docs/TEACH-MOTION.md §6.3).
+  await concatAudio(audioFiles, narration, options.tools ?? {}, options.signal, options.segments.map(segment => segment.exitMs))
   // The SRT is written next to the intermediate picture, not next to the
   // finished mp4: at this point the mp4 is still a staging file in the renders
   // folder, and `video_teach_export` owns the published `.srt`. Both are built by
@@ -728,7 +830,8 @@ export async function assembleVideo(options: AssembleOptions): Promise<Assembled
   }
   await muxNarration({ video: silent, audio: narration, output: options.output, ...(burn === undefined ? {} : { subtitles: burn }) }, options.tools ?? {}, options.signal)
   const media = await probe(options.output, options.tools ?? {}, options.signal)
-  return { path: options.output, durationMs: media.durationMs }
+  const expectedMs = options.segments.reduce((sum, segment) => sum + segment.durationMs + segment.exitMs, 0)
+  return { path: options.output, durationMs: media.durationMs, expectedMs }
 }
 
 /** `audio/<id>.mp3`, the convention `narrateSentences` writes. */

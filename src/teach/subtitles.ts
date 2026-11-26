@@ -137,7 +137,11 @@ export function buildSrt(timings: Timings, maxChars = 18): string {
     if (sentence.words.length === 0 && sentence.text !== '') {
       cues.push({ start: offset, end: offset + sentence.durationMs, text: sentence.text })
     }
-    offset += sentence.durationMs
+    // The picture segment is `durationMs + exitMs` long and the tail transition
+    // plays over silence, so the next sentence — in the film and in the SRT — starts
+    // after both (docs/TEACH-MOTION.md §6.4). A cue never runs into that silence:
+    // the last word of a sentence ends before the body is cut.
+    offset += sentence.durationMs + sentence.exitMs
   }
   return `${cues.map((cue, index) => `${index + 1}\n${stamp(cue.start)} --> ${stamp(cue.end)}\n${cue.text}\n`).join('\n')}\n`
 }

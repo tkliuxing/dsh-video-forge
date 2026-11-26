@@ -283,12 +283,55 @@ export async function probeFilter(tools: MediaTools, name: string, signal?: Abor
   return found ? `present (${name}, ${basename(command)})` : `missing (this ffmpeg build has no ${name} filter)`
 }
 
-/** Concatenate the per-sentence audio files in the same order the picture is assembled. */
-export async function concatAudio(inputs: readonly string[], output: string, tools: MediaTools = {}, signal?: AbortSignal): Promise<void> {
+/**
+ * Concatenate the per-sentence audio files in the same order the picture is
+ * assembled, optionally holding silence after each one.
+ *
+ * `padsMs` is the tail transition of each sentence (docs/TEACH-MOTION.md §6.3): the
+ * picture segment is `durationMs + exitMs` long, so the audio track has to be too or
+ * every sentence after the first would drift earlier against the picture and the
+ * SRT. The silence is added **here and only here** — never in
+ * `cutAudioSegment`, because `audio/<id>` is the re-recording unit and padding it
+ * would turn "re-record one line" into "re-record one line and rewrite its audio".
+ *
+ * All-zero pads keep the concat demuxer (a straight re-wrap); a real pad needs a
+ * filter chain, because the demuxer applies no per-file options.
+ */
+export async function concatAudio(
+  inputs: readonly string[],
+  output: string,
+  tools: MediaTools = {},
+  signal?: AbortSignal,
+  padsMs: readonly number[] = [],
+): Promise<void> {
   if (inputs.length === 0) throw new MediaError('nothing to concatenate', { command: tools.ffmpegPath ?? 'ffmpeg' })
   const command = tools.ffmpegPath ?? 'ffmpeg'
-  const listPath = await writeConcatList(inputs, output)
-  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:a', 'pcm_s16le', output]
+  const padded = inputs.some((_, index) => (padsMs[index] ?? 0) > 0)
+  if (!padded) {
+    const listPath = await writeConcatList(inputs, output)
+    const args = ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:a', 'pcm_s16le', output]
+    await run(command, args, signal)
+    return
+  }
+  // Every input is decoded once and padded to its own sentence's length; the
+  // concat filter then joins them sample-continuously. `apad` without `pad_dur`
+  // would pad to infinity, which is why the duration is always given.
+  // Every input is resampled to one rate before the concat filter: it requires
+  // matching sample formats, and a project that switched provider could carry files
+  // at another rate. The output format is the pipeline's own (`VOICE_SAMPLE_RATE`).
+  const chain = inputs.map((_, index) => {
+    const pad = (padsMs[index] ?? 0) / 1000
+    const padNode = pad > 0 ? `apad=pad_dur=${pad.toFixed(3)},` : ''
+    return `[${index}:a]${padNode}aresample=24000,aformat=sample_fmts=s16:channel_layouts=mono[a${index}]`
+  })
+  const labels = inputs.map((_, index) => `[a${index}]`).join('')
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    ...inputs.flatMap(input => ['-i', input]),
+    '-filter_complex', `${chain.join(';')};${labels}concat=n=${inputs.length}:v=0:a=1[out]`,
+    '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '24000', '-ac', '1',
+    output,
+  ]
   await run(command, args, signal)
 }
 

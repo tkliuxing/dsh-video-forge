@@ -89,6 +89,31 @@ export interface Cue {
   atProgress: number | null
 }
 
+/**
+ * The tail transition between two sentences (docs/TEACH-MOTION.md §6).
+ *
+ * The manuscript declares **whether and how long**, never **what**: the shape of a
+ * transition (fade / slide / zoom / Auto-Animate) is visual language and belongs
+ * to the deck, next to the dim strength and the type scale. Two sources for one
+ * decision is how a project ends up with five fade lengths.
+ *
+ * The transition is recorded at the **end of the earlier sentence**, so the next
+ * sentence still starts on a settled page (a transition at the head of a sentence
+ * would violate "the first frame is the complete picture", TEACH-VIDEO.md §3).
+ */
+export interface TransitionSpec {
+  /**
+   * `deck`: every seam between two pages of the same deck carries a transition.
+   * `none`: hard cuts everywhere (the default when `meta.transition` is absent).
+   */
+  mode: 'deck' | 'none'
+  /** How long to record after the sentence's body, in ms. Required with `mode: deck`. */
+  durationMs: number
+}
+
+/** What a sentence's `transition` key may say. */
+export type SentenceTransition = 'none'
+
 /** One spoken line. The sentence is the unit of recording, so it is also the unit of retry. */
 export interface Sentence {
   id: string
@@ -118,6 +143,15 @@ export interface Sentence {
    * (src/teach/rules.ts `pageFindings`).
    */
   enter: number | null
+  /**
+   * `none` turns this one sentence's tail back into a hard cut, overriding
+   * `meta.transition.mode: deck`.
+   *
+   * The one legitimate use is a seam that must not be softened — a punchline, or a
+   * section boundary inside one deck. There is deliberately no way to pick a
+   * *different* transition per sentence: that is the deck's business.
+   */
+  transition: SentenceTransition | null
 }
 
 export interface Segment {
@@ -144,6 +178,8 @@ export interface Storyboard {
    * instead of quietly shipping the film's first frame under a "cover" name.
    */
   cover: string | null
+  /** How sentences join (docs/TEACH-MOTION.md §6); null means hard cuts only. */
+  transition: TransitionSpec | null
   segments: Segment[]
 }
 
@@ -162,10 +198,29 @@ export interface TimedSentence {
   audio: string
   /** The audio's own duration, from the file — not the last word's end (TEACH-VIDEO.md §10.2). */
   durationMs: number
+  /**
+   * Milliseconds of tail transition recorded after this sentence's body
+   * (docs/TEACH-MOTION.md §6.4), 0 for a hard cut.
+   *
+   * This is the **picture's** extra length, and the one field the timeline ledger
+   * must never omit: the video segment is `durationMs + exitMs` long, the next
+   * sentence starts that much later in the picture *and* in the SRT, and the
+   * narration keeps only `durationMs` of audio (the transition plays over silence).
+   * `narrate` seeds it from the manuscript and `render` writes back what it
+   * actually recorded; every other reader only adds.
+   */
+  exitMs: number
   words: TimedWord[]
 }
 
 export interface Timings {
+  /**
+   * Provenance the voice step writes for a human reading the file: the sample rate the
+   * audio was produced at, and whether adjacent sentences were merged into one request.
+   * Carried so a rewrite (the render's `exitMs` ledger) does not silently drop them.
+   */
+  sampleRate?: number
+  merge?: string
   /** Which voice produced these files; a re-narration with another voice invalidates every offset. */
   voice: Pick<VoiceSpec, 'provider' | 'speaker'> & {
     speedRatio: number | null
@@ -194,6 +249,13 @@ export class StoryboardError extends ConfigError {
 
 /** A sentence longer than this is almost certainly a paragraph pasted into one line. */
 export const MAX_SAY_CHARS = 300
+
+/**
+ * The bounds of a tail transition's recorded length, in ms
+ * (docs/TEACH-MOTION.md §7 rule 1).
+ */
+export const MIN_EXIT_MS = 100
+export const MAX_EXIT_MS = 1200
 
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -357,7 +419,38 @@ function parseCues(value: unknown, say: string, provider: string, doc: Document 
   return cues
 }
 
-/** Parse and validate `storyboard.yaml`. */
+/**
+ * Parse `meta.transition` (docs/TEACH-MOTION.md §6.6).
+ *
+ * The duration is refused outside 100–1200 ms rather than clamped: below 100 ms a
+ * page switch is over before the recorder can see it (reveal's own `fade` is 500 ms),
+ * and above 1200 ms the seam is longer than most sentences and stops reading as a
+ * transition and starts reading as a gap. A refusal has a line number; a clamp would
+ * leave the author believing the number they wrote.
+ */
+function parseTransition(value: unknown, doc: Document | null, text: string, path: readonly (string | number)[]): TransitionSpec | null {
+  if (value === undefined || value === null) return null
+  const here = at(doc, text, path)
+  const raw = record(value, 'meta.transition')
+  knownKeys(raw, 'meta.transition', ['mode', 'durationMs'], here.line)
+  const mode = requiredString(raw.mode, here.fail, 'meta.transition.mode must be "deck" or "none"')
+  if (mode !== 'deck' && mode !== 'none') {
+    here.fail(`meta.transition.mode must be "deck" or "none", got "${mode}"`)
+  }
+  if (mode === 'none') {
+    if (raw.durationMs !== undefined && raw.durationMs !== null) {
+      here.fail('meta.transition.mode is "none", so durationMs means nothing: drop it, or set mode: deck with the duration the deck\'s own transition needs')
+    }
+    return { mode: 'none', durationMs: 0 }
+  }
+  const durationMs = positiveInt(raw.durationMs, here.fail, 'meta.transition.durationMs')
+  if (durationMs < MIN_EXIT_MS || durationMs > MAX_EXIT_MS) {
+    here.fail(`meta.transition.durationMs is ${durationMs}; it must be ${MIN_EXIT_MS}–${MAX_EXIT_MS} ms (a page switch shorter than ${MIN_EXIT_MS} ms is over before it can be recorded, and one longer than ${MAX_EXIT_MS} ms reads as a gap rather than a transition)`)
+  }
+  return { mode: 'deck', durationMs }
+}
+
+
 export function parseStoryboard(text: string): Storyboard {
   let doc: Document | null = null
   let raw: unknown
@@ -376,7 +469,7 @@ export function parseStoryboard(text: string): Storyboard {
 
   const metaProbe = at(doc, text, ['meta'])
   const meta = record(root.meta ?? {}, 'meta')
-  knownKeys(meta, 'meta', ['title', 'voice', 'video', 'cover'], metaProbe.line)
+  knownKeys(meta, 'meta', ['title', 'voice', 'video', 'cover', 'transition'], metaProbe.line)
   const title = requiredString(meta.title, metaProbe.fail, 'title is required')
   const voice = parseVoice(meta.voice, doc, text, ['meta', 'voice'])
   const video = parseVideo(meta.video, doc, text, ['meta', 'video'])
@@ -384,6 +477,7 @@ export function parseStoryboard(text: string): Storyboard {
   const cover = meta.cover === undefined || meta.cover === null
     ? null
     : projectPath(meta.cover, (message: string) => coverProbe.fail(`meta.cover ${message}`))
+  const transition = parseTransition(meta.transition, doc, text, ['meta', 'transition'])
 
   // The cue syntax depends on the voice: `at_word` is only meaningful when the
   // provider reports word timings, so the parser needs the provider before it
@@ -427,7 +521,7 @@ export function parseStoryboard(text: string): Storyboard {
     ;(raw.sentences as unknown[]).forEach((sentenceEntry, sentenceIndex) => {
       const there = at(doc, text, ['segments', index, 'sentences', sentenceIndex])
       const sentence = record(sentenceEntry, `sentences[${sentenceIndex}]`)
-      knownKeys(sentence, `segments[${index}].sentences[${sentenceIndex}]`, ['id', 'say', 'cues', 'page', 'enter'], there.line)
+      knownKeys(sentence, `segments[${index}].sentences[${sentenceIndex}]`, ['id', 'say', 'cues', 'page', 'enter', 'transition'], there.line)
       const sentenceId = requiredString(sentence.id, there.fail)
       if (!SLUG.test(sentenceId)) there.fail(`id "${sentenceId}" must be letters, digits, "-", "_" or "."`)
       // Sentence ids are the join key with timings.json and with the audio files, so they are unique document-wide.
@@ -445,12 +539,22 @@ export function parseStoryboard(text: string): Storyboard {
       if (enter !== null && page === null) {
         there.fail('enter needs page on the same sentence: use page to say which page this sentence is on, or drop enter and let the previous sentence on its page decide what is already lit')
       }
-      sentences.push({ id: sentenceId, say, cues, page, enter })
+      // Only `none` is allowed: the shape of a transition belongs to the deck, and a
+      // per-sentence *shape* would let one manuscript carry five different fades.
+      const transitionRaw = sentence.transition
+      let sentenceTransition: SentenceTransition | null = null
+      if (transitionRaw !== undefined && transitionRaw !== null) {
+        if (transitionRaw !== 'none') {
+          there.fail(`transition takes only "none" (it turns this sentence's tail transition back into a hard cut); the transition's shape and default duration come from meta.transition and the deck, got ${JSON.stringify(transitionRaw)}`)
+        }
+        sentenceTransition = 'none'
+      }
+      sentences.push({ id: sentenceId, say, cues, page, enter, transition: sentenceTransition })
     })
     segments.push({ id, engine, deck, scene, sentences })
   })
 
-  return { title, voice, video, cover, segments }
+  return { title, voice, video, cover, transition, segments }
 }
 
 /** Every sentence in document order, which is the order the timeline concatenates them in. */
@@ -498,11 +602,101 @@ export function pageSlots(segment: Segment): PageSlot[] {
   return slots
 }
 
+/**
+ * How many beats are already shown when each sentence of a segment starts (cue mode).
+ *
+ * Cue mode numbers beats across the whole deck, so the state a sentence opens in is
+ * a property of the manuscript, not of the deck's layout: everything the sentences
+ * before it have shown. A sentence with cues opens just before its first one, which
+ * is what lets the recorder light the beats that came earlier instead of replaying
+ * them at the first cue. A sentence with no cue of its own opens on the picture the
+ * story arrived at — the page it belongs to, with the same beats lit.
+ *
+ * Page mode ignores this: there a page is declared and `enter` gives the state.
+ */
+export function cueStartFragments(segment: Segment): Map<string, number> {
+  const starts = new Map<string, number>()
+  let shown = 0
+  for (const sentence of segment.sentences) {
+    const first = sentence.cues[0]
+    starts.set(sentence.id, first === undefined ? shown : Math.max(0, first.fragment - 1))
+    const last = sentence.cues[sentence.cues.length - 1]
+    if (last !== undefined) shown = Math.max(shown, last.fragment)
+  }
+  return starts
+}
+
 /** The slot for one sentence of a segment, or null when the sentence is not in it. */
 export function pageSlotOf(segment: Segment, id: string): PageSlot | null {
   const index = segment.sentences.findIndex(sentence => sentence.id === id)
   if (index < 0) return null
   return pageSlots(segment)[index] ?? null
+}
+
+/** Where one sentence's tail transition lands, or why it was not recorded. */
+export interface ExitSlot {
+  /** The sentence whose tail carries it. */
+  id: string
+  /** Milliseconds recorded after this sentence's body; 0 is a hard cut. */
+  exitMs: number
+  /** The next sentence's opening state: the page and beats the transition lands on. */
+  target: { page: number, enter: number } | null
+  /**
+   * Why a declared transition is not recorded here, or null when nothing was
+   * dropped. `by-sentence` is the author's own override and is not a finding;
+   * every other value is something the plan says out loud (src/teach/rules.ts).
+   */
+  dropped: 'cue-mode' | 'by-sentence' | 'segment-end' | 'same-page' | 'manim' | null
+}
+
+/**
+ * Resolve the tail transition of every sentence (docs/TEACH-MOTION.md §6).
+ *
+ * The transition belongs to the **tail of the earlier sentence**: it is recorded
+ * after that sentence's body, with the deck switched to the next page, so the body
+ * still starts on a complete picture and the finished layout still gets its hold.
+ * Recording it at the head of the next sentence would put the transition in the
+ * first frames of the sentence that is being spoken, which is the one thing the
+ * page-mode recorder exists to avoid.
+ *
+ * A transition is only possible when the next picture is in **the same document**:
+ * same segment (so the same deck), same engine, and a *different* page. Everything
+ * else is a hard cut, and the reason is returned rather than swallowed — a
+ * manuscript that asked for a transition and got a cut must not look like one that
+ * got what it asked for.
+ *
+ * `mode` is the drive mode `timings.json` ended up with, not the provider's
+ * intention. In cue mode a sentence's page is derived while it is recorded — from
+ * its own beats and the deck's live fragment counts — so the state a transition
+ * would have to land on is not knowable from the manuscript at all; the plan
+ * refuses `meta.transition` there for that reason (docs/TEACH-MOTION.md §7 rule 2).
+ */
+export function exitSlots(board: Storyboard, mode: 'page' | 'cue'): Map<string, ExitSlot> {
+  const slots = new Map<string, ExitSlot>()
+  const spec = board.transition
+  const declared = spec !== null && spec.mode === 'deck'
+  for (const segment of board.segments) {
+    const pages = pageSlots(segment)
+    segment.sentences.forEach((sentence, index) => {
+      const next = segment.sentences[index + 1]
+      const own = pages[index]!
+      const nextSlot = next === undefined ? null : pages[index + 1]!
+      const slot: ExitSlot = { id: sentence.id, exitMs: 0, target: null, dropped: null }
+      if (declared) {
+        if (segment.engine !== 'slides') slot.dropped = 'manim'
+        else if (mode === 'cue') slot.dropped = 'cue-mode'
+        else if (sentence.transition === 'none') slot.dropped = 'by-sentence'
+        else if (nextSlot === null) slot.dropped = 'segment-end'
+        else if (nextSlot.page === own.page) slot.dropped = 'same-page'
+        else {
+          slot.exitMs = spec!.durationMs
+          slot.target = { page: nextSlot.page, enter: nextSlot.enter }
+        }
+      }
+      slots.set(sentence.id, slot)
+    })
+  }
+  return slots
 }
 
 /** How many deck pages a segment's manuscript actually uses, for the plan and the deck check. */
@@ -543,7 +737,7 @@ export function parseTimings(text: string): Timings {
   ;(root.sentences as unknown[]).forEach((entry, index) => {
     const label = `timings.sentences[${index}]`
     const sentence = record(entry, label)
-    knownKeys(sentence, label, ['id', 'text', 'audio', 'durationMs', 'words'], null)
+    knownKeys(sentence, label, ['id', 'text', 'audio', 'durationMs', 'exitMs', 'words'], null)
     const id = requiredString(sentence.id, message => { throw new StoryboardError(`${label}.${message}`) })
     if (seen.has(id)) throw new StoryboardError(`${label}: id "${id}" appears twice`)
     seen.add(id)
@@ -552,6 +746,14 @@ export function parseTimings(text: string): Timings {
     const durationMs = sentence.durationMs
     if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) {
       throw new StoryboardError(`${label}.durationMs must be the audio's real duration in milliseconds`)
+    }
+    // The picture's extra length (docs/TEACH-MOTION.md §6.4). Absent means 0, which
+    // is what every timings file written before the field existed says: a hard cut.
+    const exitMs = sentence.exitMs === undefined || sentence.exitMs === null
+      ? 0
+      : sentence.exitMs
+    if (typeof exitMs !== 'number' || !Number.isFinite(exitMs) || exitMs < 0 || !Number.isInteger(exitMs)) {
+      throw new StoryboardError(`${label}.exitMs must be a whole number of milliseconds, >= 0 (the tail transition recorded after this sentence's body)`)
     }
     if (!Array.isArray(sentence.words)) throw new StoryboardError(`${label}.words must be a list`)
     let previousEnd = 0
@@ -583,10 +785,16 @@ export function parseTimings(text: string): Timings {
       text: optionalString(sentence.text, message => { throw new StoryboardError(`${label}.${message}`) }) ?? '',
       audio,
       durationMs,
+      exitMs,
       words,
     })
   })
-  return { voice, sentences }
+  return {
+    ...(typeof root.sampleRate === 'number' ? { sampleRate: root.sampleRate } : {}),
+    ...(typeof root.merge === 'string' ? { merge: root.merge } : {}),
+    voice,
+    sentences,
+  }
 }
 
 /**
@@ -636,17 +844,30 @@ export function reconcileTimings(storyboard: Storyboard, timings: Timings): stri
   return problems
 }
 
-/** Total length of the timeline, in milliseconds: the sum of the real audio durations. */
+/** Total length of the narration, in milliseconds: the sum of the real audio durations. */
 export function totalDurationMs(timings: Timings): number {
   return timings.sentences.reduce((sum, sentence) => sum + sentence.durationMs, 0)
 }
 
-/** Where a sentence starts on the assembled timeline, in milliseconds. */
+/**
+ * Total length of the **picture**, in milliseconds: every sentence plus its tail
+ * transition (docs/TEACH-MOTION.md §6.4).
+ *
+ * The two numbers are deliberately separate. `totalDurationMs` is what the voice
+ * cost and what the narration track is long; this one is how long the film is, and
+ * it is the number the per-act acceptance compares against ("the act is as long as
+ * its timings say"). Any consumer that means the film must use this one.
+ */
+export function timelineDurationMs(timings: Timings): number {
+  return timings.sentences.reduce((sum, sentence) => sum + sentence.durationMs + sentence.exitMs, 0)
+}
+
+/** Where a sentence starts in the assembled film, in milliseconds (tail transitions included). */
 export function sentenceStartMs(timings: Timings, id: string): number {
   let start = 0
   for (const sentence of timings.sentences) {
     if (sentence.id === id) return start
-    start += sentence.durationMs
+    start += sentence.durationMs + sentence.exitMs
   }
   throw new StoryboardError(`timings.json has no sentence "${id}"`)
 }

@@ -176,7 +176,7 @@ async function planWarnings(files: Record<string, string>): Promise<string[]> {
 function timings(durationMs: number): string {
   return JSON.stringify({
     voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' },
-    sentences: [{ id: 's01-1', text: '这一句在临近结束的时候才点亮最后一块，余量到底够不够要看后面的数。', audio: 'audio/s01-1.wav', durationMs, words: [] }],
+    sentences: [{ id: 's01-1', text: '这一句在临近结束的时候才点亮最后一块，余量到底够不够要看后面的数。', audio: 'audio/s01-1.wav', durationMs, exitMs: 0, words: [] }],
   })
 }
 
@@ -240,7 +240,7 @@ describe.skipIf(!CAN_RECORD)('the plan checks a beat against the declared transi
 
 /** A rendered segment with only the fields the motion findings read. */
 const rendered = (patch: Partial<RenderedSegment>): RenderedSegment => ({
-  id: 's01-1', path: '/nowhere.mp4', durationMs: 1000, frames: 10, beats: [], settle: null, retried: false, ...patch,
+  id: 's01-1', path: '/nowhere.mp4', durationMs: 1000, exitMs: 0, exitTarget: null, frames: 10, beats: [], settle: null, retried: false, ...patch,
 })
 
 const beat = (fragment: number, atMs: number, actualMs: number): BeatTiming => ({ fragment, atMs, actualMs })
@@ -353,7 +353,7 @@ segments:
 `)
     const timings: Timings = {
       voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' },
-      sentences: [{ id: 's01-1', text: '这一句的拍子会迟到。', audio: 'audio/s01-1.wav', durationMs: 2400, words: [] }],
+      sentences: [{ id: 's01-1', text: '这一句的拍子会迟到。', audio: 'audio/s01-1.wav', durationMs: 2400, exitMs: 0, words: [] }],
     }
     const rendered = await renderSegments({ board, timings, paths })
     expect(rendered).toHaveLength(1)

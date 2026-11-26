@@ -215,28 +215,30 @@ describe('timings round trip through the disk', () => {
   // never saw it because they passed the in-memory object straight to render.
   const wordTimings: Timings = {
     voice: { provider: 'volcengine', speaker: 'v', speedRatio: null, timestamps: 'word' },
-    sentences: [{ id: 'a', text: '好。', audio: 'audio/a.mp3', durationMs: 1200, words: [{ t: '好。', b: 0, e: 800 }] }],
+    sentences: [{ id: 'a', text: '好。', audio: 'audio/a.mp3', durationMs: 1200, exitMs: 0, words: [{ t: '好。', b: 0, e: 800 }] }],
   }
 
   it('reads back exactly what narrate wrote, provenance keys included', () => {
     const text = serializeTimings(wordTimings, { sampleRate: 24000, merge: 'auto' })
     expect(JSON.parse(text).sampleRate).toBe(24000)
     expect(JSON.parse(text).merge).toBe('auto')
-    expect(parseTimings(text)).toEqual(wordTimings)
+    // Provenance survives the parser now: the render's `exitMs` ledger rewrites this
+    // file, and a key the parser drops is a key that silently disappears from disk.
+    expect(parseTimings(text)).toEqual({ ...wordTimings, sampleRate: 24000, merge: 'auto' })
   })
 
   it('reads back a narration that carries no word timings', () => {
     const none: Timings = {
       voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' },
-      sentences: [{ id: 'a', text: '好。', audio: 'audio/a.wav', durationMs: 1200, words: [] }],
+      sentences: [{ id: 'a', text: '好。', audio: 'audio/a.wav', durationMs: 1200, exitMs: 0, words: [] }],
     }
-    expect(parseTimings(serializeTimings(none, { sampleRate: 24000 }))).toEqual(none)
+    expect(parseTimings(serializeTimings(none, { sampleRate: 24000 }))).toEqual({ ...none, sampleRate: 24000 })
   })
 })
 
 describe('planning the picture from what is on disk', () => {
   const paths = (root: string): TeachPaths => ({ root, audio: 'audio', timings: 'timings.json', work: '.dsh-video/teach', segments: '.dsh-video/teach/segments' })
-  const sentence = (id: string): TimedSentence => ({ id, text: `${id}。`, audio: `audio/${id}.wav`, durationMs: 1000, words: [] })
+  const sentence = (id: string): TimedSentence => ({ id, text: `${id}。`, audio: `audio/${id}.wav`, durationMs: 1000, exitMs: 0, words: [] })
   const timings = (...ids: string[]): Timings => ({ voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' }, sentences: ids.map(sentence) })
 
   it('reports the sentences with no picture yet instead of failing a narrowed render', async () => {
@@ -247,7 +249,7 @@ describe('planning the picture from what is on disk', () => {
     await writeFile(existing, 'picture', 'utf8')
 
     // assemble: false, only "b" rendered: a is reused, nothing is missing.
-    const narrowed = await planSegments(project, timings('a', 'b'), [{ id: 'b', path: join(root, 'b.mp4'), durationMs: 1000, frames: 3, beats: [], settle: null, retried: false }], { requireAll: false })
+    const narrowed = await planSegments(project, timings('a', 'b'), [{ id: 'b', path: join(root, 'b.mp4'), durationMs: 1000, exitMs: 0, exitTarget: null, frames: 3, beats: [], settle: null, retried: false }], { requireAll: false })
     expect(narrowed.reused).toEqual(['a'])
     expect(narrowed.fresh).toEqual(['b'])
     expect(narrowed.pending).toEqual([])
