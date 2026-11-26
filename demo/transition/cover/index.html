@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>接缝：跨句转场</title>
+<!--
+  The cover (docs/TEACH-VIDEO.md §26.2, the rule in memory
+  rule-teach-cover-authored-page-two-shapes): an authored page, not a frame of the
+  film — a frame is mid-sentence and mid-animation, and a poster has to read at
+  300 px wide.
+
+  Two shapes, one layout: 16:9 (1920×1080) and 4:3 (1440×1080) are screenshotted
+  from this same file, so the difference is written once, as a media query. Height
+  is the constant; the 4:3 crop is narrower.
+-->
+<style>
+  :root { --ink: #e8ecf4; --dim: #93a0b8; --accent: #ffd479; }
+  html, body { margin: 0; height: 1080px; width: 1920px; }
+  body {
+    background: #0b1020; color: var(--ink);
+    font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+    box-sizing: border-box; padding: 140px 160px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .kicker { font-size: 34px; letter-spacing: 6px; color: var(--accent); }
+  h1 { margin: 26px 0 0; font-size: 104px; line-height: 1.18; letter-spacing: 2px; }
+  .sub { margin-top: 30px; font-size: 40px; line-height: 1.5; color: var(--dim); max-width: 1180px; }
+  .seams { display: flex; gap: 22px; align-items: flex-end; height: 170px; margin-bottom: 34px; }
+  .seam { flex: 1; height: 100%; border-radius: 14px; background: #26355a; }
+  .seam.on { background: linear-gradient(100deg, #26355a 0%, #7aa2f7 55%, #ffd479 100%); }
+  .seam.cut { background: #e05252; height: 44%; border-radius: 14px; }
+  .legend { display: flex; gap: 26px; font-size: 30px; color: var(--dim); }
+  .legend b { color: var(--ink); font-weight: 600; }
+
+  /* 4:3 (1440×1080): narrower, so the type steps down and the padding tightens. */
+  @media (max-width: 1600px) {
+    body { width: 1440px; padding: 110px 120px; }
+    h1 { font-size: 84px; }
+    .sub { font-size: 34px; max-width: 1080px; }
+    .seams { height: 130px; }
+    .legend { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+  <div>
+    <div class="kicker">dsh-video-forge</div>
+    <h1>接缝：<br>跨句转场</h1>
+    <p class="sub">转场录在前一句的尾部，句首永远是完整画面。跨页形变（Auto-Animate）因此也能进成片。</p>
+  </div>
+  <div>
+    <div class="seams">
+      <div class="seam on"></div>
+      <div class="seam on"></div>
+      <div class="seam on"></div>
+      <div class="seam on"></div>
+      <div class="seam cut"></div>
+    </div>
+    <div class="legend"><span><b>4</b> 次尾转场</span><span><b>1</b> 次故意硬切</span><span><b>520 ms</b></span></div>
+  </div>
+</body>
+</html>

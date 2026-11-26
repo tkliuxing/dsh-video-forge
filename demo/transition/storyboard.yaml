@@ -1,0 +1,63 @@
+# The demo manuscript for cross-sentence transitions (docs/TEACH-MOTION.md §6, B13).
+#
+# Six sentences on six pages of one deck. Every seam between two sentences is a
+# recorded tail transition except the fifth, which says `transition: none` on
+# purpose: the film is a control as much as a demonstration, so a reviewer can
+# compare a seam that moves against one that cuts.
+#
+#   s01-1 → s01-2   fade, 520 ms
+#   s01-2 → s01-3   fade, 520 ms
+#   s01-3 → s01-4   fade, 520 ms
+#   s01-4 → s01-5   Auto-Animate, 520 ms  ← the one the design exists for
+#   s01-5 → s01-6   hard cut (this manuscript asks for it)
+#
+# The transition's *shape* is the deck's business (slides/s01/index.html): a
+# cross-page Auto-Animate between pages 4 and 5, reveal's own fade everywhere else.
+# The manuscript only says whether and how long — 520 ms, which is reveal's 500 ms
+# fade plus a little slack, and exactly the deck's `autoAnimateDuration`.
+#
+# Reproduce: video_teach_plan → video_teach_narrate → video_teach_render shot=transition
+# → video_teach_export shot=transition. The deck is the shipped template with the
+# six sections above filled in, so it also keeps the template's contract intact.
+meta:
+  title: 接缝：跨句转场
+  voice:
+    speaker: stella
+  cover: cover/index.html
+  transition:
+    mode: deck
+    durationMs: 520
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 这一支片子只看一件事：句子念完之后，画面怎么接上去。
+        cues:
+          - { fragment: 1, at_progress: 0.4 }
+          - { fragment: 2, at_progress: 0.72 }
+      - id: s01-2
+        say: 转场不算在下一句的开头，而是录在前一句的尾部，所以句首永远是完整画面。
+        cues:
+          - { fragment: 1, at_progress: 0.36 }
+          - { fragment: 2, at_progress: 0.7 }
+      - id: s01-3
+        say: 页内的拍子是四百八十毫秒，跨页的转场五百二十毫秒，两个数各管各的。
+        cues:
+          - { fragment: 1, at_progress: 0.36 }
+          - { fragment: 2, at_progress: 0.7 }
+      - id: s01-4
+        say: 现在看这一块方的东西，这句念完它就开始变形，翻页和形变是同一段录制。
+        cues:
+          - { fragment: 1, at_progress: 0.55 }
+      - id: s01-5
+        say: 同一句念完，它补间成结论的样子，中间没有断帧，也没有闪一下。
+        cues:
+          - { fragment: 1, at_progress: 0.5 }
+        transition: none
+      - id: s01-6
+        say: 最后这一页是故意硬切的，对比一下就看得出转场和直切差在哪里。
+        cues:
+          - { fragment: 1, at_progress: 0.38 }
+          - { fragment: 2, at_progress: 0.72 }
