@@ -240,8 +240,18 @@ export interface NormalizedPrices {
   dropped: number
 }
 
-/** Rows beyond this mean the feed is not what this parser understands (a normal normalization is ~40 rows). */
-export const MAX_PRICE_ROWS = 500
+/**
+ * Rows beyond this mean the feed is not what this parser understands.
+ *
+ * This is a function of how big upstream has grown, not a constant: the
+ * 2026-10-21 feed normalised to 82 rows, and the 2026-11-26 one to 753 (524
+ * `video_generation` entries, 473 of them priced). The old ceiling of 500 was
+ * therefore crossed on every refresh, and `normalizeLitellm` refused the whole
+ * table — see DESIGN §21.5 note 11. 5000 is ~6.6× today's measurement, still
+ * tight enough to refuse a file that is not this feed at all (that kind yields
+ * either tens of thousands of rows or none).
+ */
+export const MAX_PRICE_ROWS = 5000
 
 /** Longest model id / resolution a row may carry. */
 const MAX_MODEL_ID = 120
@@ -312,12 +322,27 @@ export function arkTokensPerSecond(width: number, height: number): number {
  *
  * Returns null when the feed cannot be used at all — not an object, no
  * `video_generation` entries, no usable row, or more rows than this parser was
- * built for.
+ * built for. {@link normalizeFeed} is the same pass with the reason attached;
+ * an operator needs it, because "the feed is not JSON" and "our own row ceiling
+ * is out of date" call for opposite actions (DESIGN §21.5 note 1).
  */
 export function normalizeLitellm(payload: unknown, options: NormalizeOptions = {}): NormalizedPrices | null {
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null
+  return normalizeFeed(payload, options).prices
+}
+
+/** What one normalization made of a payload: the table, or why it was refused as a whole. */
+export interface NormalizeOutcome {
+  prices: NormalizedPrices | null
+  /** One line naming the structural check that failed; null whenever `prices` is usable. */
+  refusal: string | null
+}
+
+/** {@link normalizeLitellm}, with the reason a refusal happened — it ends up in `lastError`. */
+export function normalizeFeed(payload: unknown, options: NormalizeOptions = {}): NormalizeOutcome {
+  const refuse = (refusal: string): NormalizeOutcome => ({ prices: null, refusal })
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return refuse('feed is not a JSON object of models')
   const fx = options.fx ?? FX_CNY_PER_USD
-  if (!Number.isFinite(fx) || fx <= 0) return null
+  if (!Number.isFinite(fx) || fx <= 0) return refuse('fx is not a positive number')
 
   const rows: PriceRow[] = []
   const skipped: string[] = []
@@ -434,10 +459,11 @@ export function normalizeLitellm(payload: unknown, options: NormalizeOptions = {
     }
   }
 
-  if (videoEntries === 0 || rows.length === 0) return null
-  if (rows.length > MAX_PRICE_ROWS) return null
+  if (videoEntries === 0) return refuse('no video_generation entry in the feed')
+  if (rows.length === 0) return refuse('no usable video_generation row')
+  if (rows.length > MAX_PRICE_ROWS) return refuse(`feed grew past the ${MAX_PRICE_ROWS}-row ceiling (${rows.length} rows)`)
 
-  return { rows, skipped, dropped }
+  return { prices: { rows, skipped, dropped }, refusal: null }
 }
 
 // ---------------------------------------------------------------------------

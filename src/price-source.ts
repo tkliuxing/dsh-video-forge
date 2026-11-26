@@ -24,7 +24,7 @@ import {
   DEFAULT_PRICE_TABLE,
   FX_CNY_PER_USD,
   MAX_PRICE_ROWS,
-  normalizeLitellm,
+  normalizeFeed,
   type PriceRow,
   type PriceSourceInfo,
   type PriceSourceKind,
@@ -365,9 +365,13 @@ export class PriceSource {
         return
       }
 
-      const normalized = normalizeLitellm(JSON.parse(response.body), { fx: this.#options.fx ?? FX_CNY_PER_USD })
+      // `normalizeFeed`, not `normalizeLitellm`: a refusal has to name the check
+      // that failed. "our row ceiling is out of date" and "the feed is not what
+      // we expect" send an operator in opposite directions.
+      const outcome = normalizeFeed(JSON.parse(response.body), { fx: this.#options.fx ?? FX_CNY_PER_USD })
+      const normalized = outcome.prices
       if (normalized === null) {
-        this.#fail('not JSON / no usable price rows')
+        this.#fail(outcome.refusal ?? 'no usable price rows')
         this.#schedule()
         return
       }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PriceSource, priceSourceUrlProblem, type PriceFetch, type PriceFetchResponse } from '../src/price-source.ts'
-import { DEFAULT_PRICE_TABLE, unitPrice, type PriceTable } from '../src/prices.ts'
+import { DEFAULT_PRICE_TABLE, MAX_PRICE_ROWS, unitPrice, type PriceTable } from '../src/prices.ts'
 
 const FEED_TEXT = readFileSync(new URL('../fixtures/litellm-video-sample.json', import.meta.url), 'utf8')
 const URL_UNDER_TEST = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
@@ -183,6 +183,37 @@ describe('PriceSource', () => {
     const source = sourceFor(await tempPath(), { fetch, configuredModelIds: () => ['my-relay-model'] })
     await source.refresh()
     expect(source.lastError).toBe('0 rows matched the configured models')
+    expect(source.effective(EMPTY_USER).info.kind).toBe('bundled')
+    source.dispose()
+  })
+
+  it('installs a feed that has grown past the old row ceiling instead of falling back to the cache', async () => {
+    // The real 2026-11-27 feed normalises to 753 rows. With the ceiling at 500
+    // every refresh was refused as a whole, so the table quietly stayed on a
+    // weeks-old cache and the only trace was a warning that blamed JSON
+    // (DESIGN §21.5 note 11). 800 rows here stands in for that feed.
+    const rows: Record<string, unknown> = {}
+    for (let index = 0; index < 800; index++) {
+      rows[`minimax/grown-${index}`] = { mode: 'video_generation', output_cost_per_second: 0.08 }
+    }
+    const { fetch } = scripted([response(200, JSON.stringify(rows), { etag: 'W/"grown"' })])
+    const source = sourceFor(await tempPath(), { fetch })
+    await source.refresh()
+    const { info } = source.effective(EMPTY_USER)
+    expect(info.kind).toBe('remote')
+    expect(info.lastError).toBeNull()
+    source.dispose()
+  })
+
+  it('names an overgrown feed as such, so the ceiling is not mistaken for a broken feed', async () => {
+    const rows: Record<string, unknown> = {}
+    for (let index = 0; index < MAX_PRICE_ROWS + 1; index++) {
+      rows[`minimax/absurd-growth-${index}`] = { mode: 'video_generation', output_cost_per_second: 0.08 }
+    }
+    const { fetch } = scripted([response(200, JSON.stringify(rows))])
+    const source = sourceFor(await tempPath(), { fetch })
+    await source.refresh()
+    expect(source.lastError).toBe(`feed grew past the ${MAX_PRICE_ROWS}-row ceiling (${MAX_PRICE_ROWS + 1} rows)`)
     expect(source.effective(EMPTY_USER).info.kind).toBe('bundled')
     source.dispose()
   })

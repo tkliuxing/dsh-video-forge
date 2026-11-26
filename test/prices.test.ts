@@ -1,11 +1,24 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_PRICE_TABLE, estimateArkTokens, estimateCost, normalizeLitellm, unitPrice, type PriceRow, type PriceTable } from '../src/prices.ts'
+import { DEFAULT_PRICE_TABLE, MAX_PRICE_ROWS, estimateArkTokens, estimateCost, normalizeFeed, normalizeLitellm, unitPrice, type PriceRow, type PriceTable } from '../src/prices.ts'
 import { knownModelIds } from '../src/provider-presets.ts'
 
 /** The frozen upstream sample (`fixtures/litellm-video-sample.json`), never the network. */
 function upstreamSample(): unknown {
   return JSON.parse(readFileSync(new URL('../fixtures/litellm-video-sample.json', import.meta.url), 'utf8'))
+}
+
+/**
+ * A synthetic feed of `count` priced video models: one row each, all in the
+ * pinned `minimax` namespace so the tier-less bare price becomes a row. Stands
+ * in for a feed that has grown, without checking in a megabyte fixture.
+ */
+function grownFeed(count: number): Record<string, unknown> {
+  const feed: Record<string, unknown> = {}
+  for (let index = 0; index < count; index++) {
+    feed[`minimax/grown-${index}`] = { mode: 'video_generation', output_cost_per_second: 0.08 }
+  }
+  return feed
 }
 
 /** Every model id this build's presets know, which is what the bundled snapshot may carry. */
@@ -212,11 +225,31 @@ describe('normalizeLitellm', () => {
     expect(normalizeLitellm({ 'gpt-4o': { mode: 'chat' } })).toBeNull()
     expect(normalizeLitellm({ 'x/y': { mode: 'video_generation' } })).toBeNull()
     // More rows than the parser was built for.
-    const huge: Record<string, unknown> = {}
-    for (let index = 0; index < 600; index++) {
-      huge[`minimax/m-${index}`] = { mode: 'video_generation', output_cost_per_second: 0.08 }
-    }
-    expect(normalizeLitellm(huge)).toBeNull()
+    expect(normalizeLitellm(grownFeed(MAX_PRICE_ROWS + 1))).toBeNull()
+  })
+
+  it('names the structural check that refused a feed, so the operator knows which way to look', () => {
+    // These call for opposite actions: a stale ceiling is ours to fix, a feed with
+    // no video entries is upstream's or the proxy's. Reporting both as "not JSON"
+    // (what the refresh did before 2026-11-27) sends everyone the wrong way.
+    expect(normalizeFeed(null).refusal).toContain('not a JSON object')
+    expect(normalizeFeed([]).refusal).toContain('not a JSON object')
+    expect(normalizeFeed({ 'gpt-4o': { mode: 'chat' } }).refusal).toContain('no video_generation entry')
+    expect(normalizeFeed({ 'x/y': { mode: 'video_generation' } }).refusal).toContain('no usable video_generation row')
+    const over = MAX_PRICE_ROWS + 1
+    expect(normalizeFeed(grownFeed(over)).refusal).toBe(`feed grew past the ${MAX_PRICE_ROWS}-row ceiling (${over} rows)`)
+    // A refusal always carries the reason, and a usable table never does.
+    expect(normalizeFeed(upstreamSample()).refusal).toBeNull()
+  })
+
+  it('accepts a feed that has grown well past the old 500-row ceiling', () => {
+    // The 2026-11-27 upstream feed normalises to 753 rows (524 video_generation
+    // entries, 473 priced). The ceiling used to be 500, so every refresh refused
+    // the whole table and the price table silently stayed on the 2026-11-10 cache
+    // (DESIGN §21.5 note 11). This is the regression: growth is not corruption.
+    const grown = normalizeLitellm(grownFeed(800))
+    expect(grown).not.toBeNull()
+    expect(grown!.rows).toHaveLength(800)
   })
 
   it('drops a row whose number looks like a changed unit, and names what it skipped', () => {
