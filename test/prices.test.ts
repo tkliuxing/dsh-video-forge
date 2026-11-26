@@ -307,7 +307,7 @@ describe('DEFAULT_PRICE_TABLE', () => {
 
   it('carries a currency, a snapshot date and the provenance line', () => {
     expect(DEFAULT_PRICE_TABLE.currency).toBe('CNY')
-    expect(DEFAULT_PRICE_TABLE.pricedAt).toBe('2026-10-21')
+    expect(DEFAULT_PRICE_TABLE.pricedAt).toBe('2026-11-26')
     expect(DEFAULT_PRICE_TABLE.source).toContain('etag:')
   })
 

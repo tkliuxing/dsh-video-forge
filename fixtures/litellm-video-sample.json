@@ -226,6 +226,7 @@
   },
   "openai/sora-2": {
     "deprecation_date": "2026-09-24",
+    "deprecation_source": "https://developers.openai.com/api/docs/deprecations",
     "litellm_provider": "openai",
     "mode": "video_generation",
     "output_cost_per_video_per_second": 0.1,
@@ -240,6 +241,7 @@
   },
   "openai/sora-2-pro": {
     "deprecation_date": "2026-09-24",
+    "deprecation_source": "https://developers.openai.com/api/docs/deprecations",
     "litellm_provider": "openai",
     "mode": "video_generation",
     "output_cost_per_video_per_second": 0.3,
@@ -269,6 +271,7 @@
     "litellm_provider": "fal_ai",
     "mode": "video_generation",
     "output_cost_per_second": 0.473,
+    "output_cost_per_second_1080p": 1.164,
     "output_cost_per_second_480p": 0.2205,
     "output_cost_per_second_720p": 0.473,
     "source": "https://fal.ai/models/bytedance/seedance-2.5/text-to-video",
@@ -298,21 +301,25 @@
       "video"
     ],
     "metadata": {
-      "comment": "Output: 20/30/68 credits per second at 480p/720p/1080p @ $0.01 per credit; input video billed additionally at 10/15/34 credits per input second and the 80 credit minimum per task are not modeled"
-    }
+      "comment": "Output: 20/30/68/110 credits per second at 480p/720p/1080p/4K @ $0.01 per credit; input video billed additionally at 10/15/34/57 credits per input second and the 80 credit minimum per task are not modeled"
+    },
+    "output_cost_per_second_4k": 1.1
   },
   "gpt-4o": {
     "cache_read_input_token_cost": 0.00000125,
     "cache_read_input_token_cost_priority": 0.000002125,
+    "deprecation_date": "2027-01-14",
+    "deprecation_source": "https://developers.openai.com/api/docs/deprecations",
+    "successor_model": "gpt-6-luna",
     "input_cost_per_token": 0.0000025,
     "input_cost_per_token_batches": 0.00000125,
     "input_cost_per_token_priority": 0.00000425,
     "litellm_provider": "openai",
     "max_input_tokens": 128000,
     "max_output_tokens": 16384,
-    "max_tokens": 16384,
     "mode": "chat",
     "output_cost_per_token": 0.00001,
+    "fedramp_uplift_multiplier": 1.1,
     "output_cost_per_token_batches": 0.000005,
     "output_cost_per_token_priority": 0.000017,
     "source": "https://developers.openai.com/api/docs/pricing",
@@ -330,7 +337,6 @@
     "input_cost_per_token_batches": 1e-8,
     "litellm_provider": "openai",
     "max_input_tokens": 8191,
-    "max_tokens": 8191,
     "mode": "embedding",
     "output_cost_per_token": 0,
     "output_cost_per_token_batches": 0,

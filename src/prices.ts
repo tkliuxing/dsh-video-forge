@@ -473,16 +473,22 @@ export function normalizeFeed(payload: unknown, options: NormalizeOptions = {}):
 /**
  * The rows this build ships, used when no fetched or cached table is available.
  * They are the same normalization as {@link normalizeLitellm} applied to the
- * 2026-10-21 upstream sample, restricted to the preset model ids — and a test
- * holds the two to each other, so a change in the normalization cannot silently
- * leave this snapshot behind.
+ * 2026-11-26 upstream sample (`fixtures/litellm-video-sample.json`), restricted
+ * to the preset model ids — and a test holds the two to each other, so a change
+ * in the normalization cannot silently leave this snapshot behind.
+ *
+ * Re-verified rather than re-priced: normalising the 2026-11-26 feed for these
+ * preset models gives these exact 16 rows, the same ones the 2026-10-21 feed
+ * gave. Only `fetchedAt`/`pricedAt` moved, which is the honest statement — these
+ * values are still the vendors' list prices as of that date. Re-run the check
+ * with the recipe in DESIGN §21.3 before trusting a date older than a quarter.
  *
  * Still an estimate, and still not a bill: `pricedAt` says how old it is.
  */
 export const DEFAULT_PRICE_TABLE: PriceTable = {
   currency: 'CNY',
-  pricedAt: '2026-10-21',
-  source: 'litellm main etag:d3ac3440 fetched 2026-10-21 · international list price ×7.0 · no video input',
+  pricedAt: '2026-11-26',
+  source: 'litellm main etag:0d9b9394 fetched 2026-11-26T09:08:51Z · international list price ×7.0 · no video input',
   rows: [
     // doubao-seedance-2-5-260628 — 70 CNY/million at 480p and 720p, 77 at 1080p.
     { providerId: '', modelId: 'doubao-seedance-2-5-260628', unit: 'token', resolution: '480p', pricePerUnit: 0.00007 },

@@ -1371,7 +1371,9 @@ token  行：pricePerUnit = usdPerSecond × 7.0 ÷ tokensPerSecond(tier)
 { providerId: '', modelId: 'MiniMax-H3',                  unit: 'second', resolution: '2K',   pricePerUnit: 0.91 }
 ```
 
-**内置快照**（`DEFAULT_PRICE_TABLE` 改成同一函数的产物，不再是手写两行）：上表四款 Seedance 的 token 行 + `MiniMax-H3`（768P 0.56 / 2K 0.91）+ `MiniMax-H3-Max`（480P 0.35 / 768P 0.56）+ `sora-2`（0.70，已弃用仍保留）。`pricedAt: '2026-10-21'`。
+**内置快照**（`DEFAULT_PRICE_TABLE` 改成同一函数的产物，不再是手写两行）：上表四款 Seedance 的 token 行 + `MiniMax-H3`（768P 0.56 / 2K 0.91）+ `MiniMax-H3-Max`（480P 0.35 / 768P 0.56）+ `sora-2`（0.70，已弃用仍保留）。`pricedAt: '2026-11-26'`。
+
+**复核：2026-11-26 核过一次，数值一行没变。** 按当天 feed（`etag:0d9b9394`）把 9 个预设模型归一化，得到的正是这 16 行、与 2026-10-21 的快照逐行相等，所以这次只动 `pricedAt` 与 `source` 里的 etag/时间，不动任何单价；`fixtures/litellm-video-sample.json` 同步换成同一次抓取的正文（键集与原来那 13 条一致，新增的只有 fal 1080p 与 runway 4K 两个网关档位，不进快照）。重新复核的做法（不联网跑测试，只手动核一次）：GET 一次价目文件 → 取 `fixtures/litellm-video-sample.json` 里那些键的当天条目 → 跑 `normalizeLitellm` → 用预设 model id 过滤 → 与 `DEFAULT_PRICE_TABLE.rows` 比 `toEqual`。**数值有变**就改快照并同步 §21.2 与 §21.8 的对照数字；**没变**只改 `pricedAt` 与 `source`——别为了让日期变新去改数，也别为了不改数就把日期留着。
 
 ### 21.4 抓取与缓存
 
