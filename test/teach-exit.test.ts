@@ -6,8 +6,9 @@
  * and with it Auto-Animate — lands in the finished picture. Three things this file
  * pins, in the order the doc claims them:
  *
- * 1. **Who gets a transition.** Same deck, same engine, a different page, and only in
- *    page mode. Everything else is a hard cut with a reason attached, never a silent
+ * 1. **Who gets a transition.** Same deck, same engine, a different page. Both drive
+ *    modes qualify since 2026-11-26 (cue mode resolves the landing from the deck's
+ *    pages); everything else is a hard cut with a reason attached, never a silent
  *    degradation.
  * 2. **The account.** A segment is `durationMs + exitMs` long, the timeline says so,
  *    and the SRT and the audio track follow the same number. Every earlier build read
@@ -127,7 +128,61 @@ segments:
     expect(exits.get('s01-2')).toMatchObject({ exitMs: 0, dropped: 'segment-end' })
   })
 
-  it('drops it in cue mode, on a manim segment, and where the author says so', () => {
+  it('lands a cue-mode tail on the page and beat the next sentence opens on', () => {
+    const board = parseStoryboard(`meta:
+  title: cue seams
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+  transition: { mode: deck, durationMs: 420 }
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 前两句都在第一页上，把两块依次点亮。
+        cues: [{ fragment: 1, at_word: 前 }, { fragment: 2, at_word: 依次 }]
+      - id: s01-2
+        say: 这一句开始翻到第二页，并且接着点亮它的两块。
+        cues: [{ fragment: 3, at_word: 翻到 }, { fragment: 4, at_word: 两块 }]
+      - id: s01-3
+        say: 最后一句没有节拍，画面停在同一页上。
+`)
+    // Page 0 carries two beats, page 1 carries two: beat 3 is the first of page 1.
+    const exits = exitSlots(board, 'cue', new Map([['s01', [2, 2]]]))
+    expect(exits.get('s01-1')).toEqual({ id: 's01-1', exitMs: 420, target: { page: 1, enter: 0 }, dropped: null })
+    // Beat 3 is the first beat of page 1, so the next sentence opens on a clean
+    // page: `enter` is always 0 here. It could only be > 0 if a page opened with
+    // beats already lit that the *previous* sentence lit elsewhere, which the
+    // contiguous numbering makes impossible.
+    // This one ends on page 1 and the next sentence continues on page 1: no page
+    // to turn, so the seam stays a cut (it still has beats, which is not a seam).
+    expect(exits.get('s01-2')).toMatchObject({ exitMs: 0, dropped: 'same-page' })
+    expect(exits.get('s01-3')).toMatchObject({ exitMs: 0, dropped: 'segment-end' })
+
+    const lastPair = exitSlots(parseStoryboard(`meta:
+  title: same page
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+  transition: { mode: deck, durationMs: 420 }
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 两句都停在同一页上，第二句只是把第二块点亮。
+      - id: s01-2
+        say: 这一句没有新的节拍，所以尾巴不翻页。
+`), 'cue', new Map([['s01', [2, 2]]]))
+    expect(lastPair.get('s01-1')).toMatchObject({ exitMs: 0, dropped: 'same-page' })
+    // Without a page count the same manuscript neither guesses nor refuses silently.
+    expect(exitSlots(board, 'cue').get('s01-1')).toMatchObject({ exitMs: 0, dropped: 'cue-mode' })
+  })
+
+  it('drops it on a manim segment and where the author says so', () => {
     const board = parseStoryboard(MANUSCRIPT.replace('        say: 最后一句', '        transition: none\n        say: 最后一句'))
     expect(exitSlots(board, 'cue').get('s01-1')).toMatchObject({ exitMs: 0, dropped: 'cue-mode' })
     expect(exitSlots(board, 'page').get('s01-3')).toMatchObject({ exitMs: 0, dropped: 'by-sentence' })
@@ -183,12 +238,21 @@ describe('what the plan says about the seams', () => {
     expect(auditManuscript(board).structural).toEqual([])
   })
 
-  it('refuses a declared transition in cue mode, where the landing state is the deck\'s to work out', () => {
+  // Cue mode used to be refused here outright ("the landing state is the deck's to
+  // work out"). It is not: the next sentence's opening picture is its first beat
+  // resolved against the deck's fragments per page, which is the same number the
+  // recorder lands on (`cueOpening`). The only remaining obstruction is a deck whose
+  // pages cannot be counted, and that is a warning, not a refusal.
+  it('accepts a declared transition in cue mode once the deck can be counted', () => {
     const board = parseStoryboard(MANUSCRIPT.replace('  voice:\n    speaker: stella', '  voice:\n    provider: volcengine\n    speaker: zh_female_liuchangnv_uranus_bigtts'))
-    const audit = auditManuscript(board)
-    expect(audit.structural.join(' ')).toContain('meta.transition is set')
-    expect(audit.structural.join(' ')).toContain('not knowable from the manuscript')
-    expect(audit.structural.join(' ')).toContain('meta.transition.mode: none')
+    const counted = auditManuscript(board, { pageFragments: new Map([['s01', [1, 1, 1]]]) })
+    expect(counted.structural.join(' ')).toBe('')
+    expect(counted.warnings.join(' ')).not.toContain('could not be counted')
+
+    const uncounted = auditManuscript(board, {})
+    expect(uncounted.structural.join(' ')).toBe('')
+    expect(uncounted.warnings.join(' ')).toContain('could not be counted')
+    expect(uncounted.warnings.join(' ')).toContain('those seams stay hard cuts')
   })
 
   it('warns when the tail is shorter than the deck\'s own page switch', () => {
@@ -313,7 +377,7 @@ describe.skipIf(!CAN_MEDIA || !CAN_RECORD)('a tail transition, recorded and asse
     // synthetic 1800 ms file decodes a frame longer than 1800, and the film is as
     // long as the longer of picture and narration.
     for (const sentence of timings.sentences) {
-      const file = join(root, sentence.audio)
+      const file = join(root, sentence.audio ?? (() => { throw new Error(`${sentence.id} has no audio`) })())
       await silentAudio(file, sentence.durationMs)
       const media = await probe(file, MEDIA)
       if (media.durationMs === null) throw new Error(`ffprobe reported no duration for ${file}`)

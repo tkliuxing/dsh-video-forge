@@ -1,0 +1,130 @@
+# 教学路线能力样片 · DeepSeek 版（页模式）
+#
+# 这一份稿本是「同一部片子、两个音色」中的 DeepSeek 版。它与
+# runs/volcengine/storyboard.yaml 共用同一批 deck（slides/）、同一批场景
+# （scenes/）与同一张封面（cover/），差别只在旁白与驱动模式：
+#
+#   DeepSeek 不报词级时间戳 → 页模式：一句一页（page 相同的句共用一页），
+#   页内节拍由 at_progress 按实测时长比例点亮；跨句转场（meta.transition）
+#   与共享页（page / enter）都只在页模式下成立。
+#
+# 复现（每个 storyboard 都要显式传，否则工具会去动别的稿本）：
+#
+#   video_teach_plan     storyboard: demo/showcase/runs/deepseek/storyboard.yaml
+#   video_teach_narrate  storyboard: demo/showcase/runs/deepseek/storyboard.yaml
+#   # 页尾停留：demo/showcase/hold.py，补静音并实测改写 durationMs
+#   # cues 按「页内变化次数」重算：demo/showcase/cues.py
+#   video_teach_render   storyboard: demo/showcase/runs/deepseek/storyboard.yaml  shot: showcase-deepseek
+#   video_teach_export   storyboard: demo/showcase/runs/deepseek/storyboard.yaml  shot: showcase-deepseek
+#
+# 幕结构（段与段之间一律硬切，转场只发生在段内的页之间）：
+#
+#   s01  slides × 6 句  页内动效库：fade-up / dim / beat / draw / count / bar
+#   s02  slides × 3 句  转场：跨页 Auto-Animate 一次，故意硬切一次
+#   s03  slides × 2 句  共享页：page 0 两拍，data-teach-stage 连续变形
+#   s04  manim  × 1 句  公式推导
+#   s05  manim  × 1 句  坐标系连续动画
+#   s06  slides × 2 句  封面两画幅与产物清单
+meta:
+  title: 旁白驱动：教学片是怎么排出来的
+  voice:
+    provider: deepseek
+    speaker: tide
+  cover: cover/index.html
+  transition:
+    mode: deck
+    durationMs: 520
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 幻灯片讲得再清楚，也怕画面和旁白各走各的：话过去了，图上还停在上一步。
+        cues:
+          - { fragment: 1, at_progress: 0.295 }
+          - { fragment: 2, at_progress: 0.589 }
+      - id: s01-2
+        say: 这条路线把时钟交给旁白：先合成每一句音频，画面再按音频长度排。
+        cues:
+          - { fragment: 1, at_progress: 0.297 }
+          - { fragment: 2, at_progress: 0.593 }
+      - id: s01-3
+        say: 一句就是一个录制单元，也只录一次，改一句就只重录那一句。
+        cues:
+          - { fragment: 1, at_progress: 0.285 }
+          - { fragment: 2, at_progress: 0.57 }
+      - id: s01-4
+        say: 页内的动静按这一句的长度铺开，两个节拍就落在三分之一和三分之二。
+        cues:
+          - { fragment: 1, at_progress: 0.288 }
+          - { fragment: 2, at_progress: 0.575 }
+      - id: s01-5
+        say: 要讲量级就用数字滚动，从零滚到目标值，滚动过程本身就是信息。
+        cues:
+          - { fragment: 1, at_progress: 0.294 }
+          - { fragment: 2, at_progress: 0.587 }
+      - id: s01-6
+        say: 并排比大小就让条形从左边长出来，比两个静态数字更快看出差距。
+        cues:
+          - { fragment: 1, at_progress: 0.29 }
+          - { fragment: 2, at_progress: 0.581 }
+  - id: s02
+    engine: slides
+    deck: slides/s02/index.html
+    sentences:
+      - id: s02-1
+        say: 句子之间默认硬切，要让翻页发生在画面里，就在稿件里写一条转场。
+        cues:
+          - { fragment: 1, at_progress: 0.44 }
+      - id: s02-2
+        say: 转场录在前一句的尾部，所以每一句的开头都是完整的一屏。
+        cues:
+          - { fragment: 1, at_progress: 0.421 }
+        # 这条接缝故意不转：下一句要证明硬切和形变的差别。
+        transition: none
+      - id: s02-3
+        say: 这条接缝故意写成硬切，对照一下，形变和直切的差别就在这一下。
+        cues:
+          - { fragment: 1, at_progress: 0.434 }
+  - id: s03
+    engine: slides
+    deck: slides/s03/index.html
+    sentences:
+      - id: s03-1
+        say: 三句讲同一件事的时候，让它们共用一页，翻页感就不会打断思路。
+        page: 0
+        cues:
+          - { fragment: 1, at_progress: 0.43 }
+      - id: s03-2
+        say: 第二句进来时第一拍已经亮着，同一个元素接着变形，中间没有断帧。
+        page: 0
+        enter: 1
+        cues:
+          - { fragment: 2, at_progress: 0.438 }
+  - id: s04
+    engine: manim
+    scene: scenes/s04-1.py
+    sentences:
+      - id: s04-1
+        say: 需要公式一步步长出来的时候，这一句交给 Manim 画，一段场景只服务一句。
+  - id: s05
+    engine: manim
+    scene: scenes/s05-1.py
+    sentences:
+      - id: s05-1
+        say: 曲线也能连续长出来，纵轴上的部分和一条条逼近，最后停在同一个值上。
+  - id: s06
+    engine: slides
+    deck: slides/s06/index.html
+    sentences:
+      - id: s06-1
+        say: 封面单独写一页，同一份版面截出十六比九和四比三两张。
+        cues:
+          - { fragment: 1, at_progress: 0.285 }
+          - { fragment: 2, at_progress: 0.57 }
+      - id: s06-2
+        say: 成片之外还有字幕、时间轴和能双击演示的 deck，都跟着版本号走。
+        cues:
+          - { fragment: 1, at_progress: 0.287 }
+          - { fragment: 2, at_progress: 0.574 }

@@ -196,11 +196,27 @@ export function joinUtterance(texts: readonly string[]): UtteranceJoin {
     const trimmed = raw.trim()
     if (trimmed === '') continue
     const part = TERMINALS.includes(trimmed.slice(-1)) ? trimmed : `${trimmed}。`
-    spans.push({ start: cursor, end: cursor + part.length })
+    spans.push({ start: cursor, end: cursor + spokenLength(part) })
     parts.push(part)
-    cursor += part.length
+    cursor += spokenLength(part)
   }
   return { text: parts.join(''), spans, parts }
+}
+
+/**
+ * Characters the service accounts for, i.e. everything except whitespace.
+ *
+ * The spans are counted in this unit, because the speech service **drops
+ * whitespace from the words it returns** while the text sent to it keeps them.
+ * Counting raw `String.length` made the cursor drift one character per space, so
+ * from the first spaced sentence onward every later sentence was cut a couple of
+ * characters off: the tail of one sentence ran into the next one's first word and
+ * the next one lost its opening (measured 2026-11-26 on a 15-sentence manuscript
+ * whose only spaces were around "Manim" and "deck" — 4 sentences came out wrong,
+ * two of them audibly clipped at the start).
+ */
+function spokenLength(text: string): number {
+  return text.replace(/\s+/gu, '').length
 }
 
 /**
@@ -220,7 +236,7 @@ export function assignWordsToSpans(words: readonly TimedWord[], spans: readonly 
     let index = spans.findIndex(span => cursor < span.end)
     if (index < 0) index = spans.length - 1
     assignment.push(index)
-    cursor += word.t.length
+    cursor += spokenLength(word.t)
   }
   return assignment
 }

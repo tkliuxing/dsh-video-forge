@@ -73,6 +73,28 @@ describe('mapping returned words back to sentences', () => {
     expect(assignWordsToSpans(returned, join.spans)).toEqual([0, 0, 0, 1, 1])
   })
 
+  // The defect this pins (measured 2026-11-26 on the showcase film): the service
+  // returns words with no whitespace while the text sent keeps it, so counting raw
+  // characters drifted the cursor one character per space. Everything after the
+  // first spaced sentence was cut off by that drift — s04-1's audio ended with the
+  // first two characters of s05-1, and s05-1 lost "曲线".
+  it('counts characters the service returns, not the whitespace it drops', () => {
+    const join = joinUtterance(['这一句交给 Manim 画。', '下一句从这里开始。'])
+    // The service returns no spaces at all.
+    const returned = words([
+      ['这', 0, 100], ['一', 100, 200], ['句', 200, 300], ['交', 300, 400], ['给', 400, 500],
+      ['M', 500, 600], ['a', 600, 700], ['n', 700, 800], ['i', 800, 900], ['m', 900, 1000],
+      ['画', 1000, 1100], ['。', 1100, 1200],
+      ['下', 1300, 1400], ['一', 1400, 1500], ['句', 1500, 1600], ['从', 1600, 1700],
+      ['这', 1700, 1800], ['里', 1800, 1900], ['开', 1900, 2000], ['始', 2000, 2100], ['。', 2100, 2200],
+    ])
+    const assignment = assignWordsToSpans(returned, join.spans)
+    expect(assignment.filter(index => index === 0)).toHaveLength(12)
+    expect(assignment.filter(index => index === 1)).toHaveLength(9)
+    // No word from the second sentence may be charged to the first one.
+    expect(assignment[12]).toBe(1)
+  })
+
   it('gives words past the last span to the last sentence rather than to nothing', () => {
     const join = joinUtterance(['好。'])
     const returned = words([['好。', 0, 300], ['　', 300, 350]])
@@ -261,5 +283,95 @@ describe('planning the picture from what is on disk', () => {
 
     // Assembling the same set is still refused, because a missing segment is a jump.
     await expect(planSegments(project, timings('a', 'c'), [])).rejects.toThrow(/no picture for "c"/)
+  })
+})
+
+describe('word timings after a merged request', () => {
+  // The defect this pins (measured 2026-11-26 on a 15-sentence film narrated with
+  // merge: auto): the service times every word against the whole utterance, the
+  // per-sentence audio is a slice of it, and the raw offsets were written to
+  // timings.json. The next render refused the file ("words ends at 12715 ms, past
+  // the audio's 7464 ms") and every at_word cue would have fired late.
+  it('rebases a sentence onto its own slice of the utterance', async () => {
+    const { rebaseWords } = await import('../src/teach/pipeline.ts')
+    const utterance = [
+      { t: '幻', b: 6835, e: 6985 },
+      { t: '灯', b: 6985, e: 7125 },
+      { t: '片。', b: 12235, e: 12715 },
+    ]
+    expect(rebaseWords(utterance, 6835)).toEqual([
+      { t: '幻', b: 0, e: 150 },
+      { t: '灯', b: 150, e: 290 },
+      { t: '片。', b: 5400, e: 5880 },
+    ])
+  })
+
+  it('leaves a single-sentence request alone and never writes a zero-length word', async () => {
+    const { rebaseWords } = await import('../src/teach/pipeline.ts')
+    const words = [{ t: '好。', b: 0, e: 800 }]
+    expect(rebaseWords(words, 0)).toEqual(words)
+    // A word that starts before the slice clamps to zero but keeps e > b, which is
+    // what parseTimings requires.
+    expect(rebaseWords([{ t: '好', b: 10, e: 20 }], 50)).toEqual([{ t: '好', b: 0, e: 1 }])
+  })
+})
+
+describe('the single-track narration contract', () => {
+  // docs/TEACH-VIDEO.md §29: one master audio file, each sentence a span of it.
+  // The point of the shape is that nothing is cut, so the schema must be able to
+  // say "the audio is one file" and nothing else.
+  const master = {
+    narration: 'audio/narration.mp3',
+    merge: 'single',
+    voice: { provider: 'volcengine', speaker: 'v', speedRatio: null, timestamps: 'word' as const },
+    sentences: [
+      { id: 'a', text: '第一句。', beginMs: 0, durationMs: 1200, exitMs: 0, words: [{ t: '第一句。', b: 0, e: 900 }] },
+      { id: 'b', text: '第二句。', beginMs: 1200, durationMs: 1000, exitMs: 0, words: [{ t: '第二句。', b: 0, e: 800 }] },
+    ],
+  }
+
+  it('round-trips, and keeps the master path', async () => {
+    const { parseTimings } = await import('../src/teach/storyboard.ts')
+    const read = parseTimings(serializeTimings(master as never, { sampleRate: 24000, merge: 'single' }))
+    expect(read.narration).toBe('audio/narration.mp3')
+    expect(read.sentences.map(s => s.beginMs)).toEqual([0, 1200])
+    expect(read.sentences[0]!.audio).toBeUndefined()
+  })
+
+  it('refuses two clocks: a master track and a per-sentence file', async () => {
+    const { parseTimings } = await import('../src/teach/storyboard.ts')
+    const text = JSON.stringify({ ...master, sentences: [{ ...master.sentences[0]!, audio: 'audio/a.mp3' }] })
+    expect(() => parseTimings(text)).toThrow(/cannot both name audio/)
+  })
+
+  it('refuses beginMs where there is no master track to be a span of', async () => {
+    const { parseTimings } = await import('../src/teach/storyboard.ts')
+    const legacy = {
+      voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' },
+      sentences: [{ id: 'a', text: '好。', audio: 'audio/a.wav', beginMs: 0, durationMs: 900, exitMs: 0, words: [] }],
+    }
+    expect(() => parseTimings(JSON.stringify(legacy))).toThrow(/beginMs is for a single-track narration/)
+  })
+
+  it('requires beginMs for every sentence once a master track is named', async () => {
+    const { parseTimings } = await import('../src/teach/storyboard.ts')
+    const missing = { ...master, sentences: [{ id: 'a', text: '第一句。', durationMs: 1200, exitMs: 0, words: [{ t: '第一句。', b: 0, e: 900 }] }] }
+    expect(() => parseTimings(JSON.stringify(missing))).toThrow(/beginMs must be a whole number/)
+  })
+
+  it('refuses spans that do not tile the master', async () => {
+    const { parseTimings } = await import('../src/teach/storyboard.ts')
+    // A gap of 200 ms between the two spans: the picture would cover 200 ms less than
+    // the audio, and everything after the gap drifts against the voice.
+    const gapped = { ...master, sentences: [{ ...master.sentences[0]!, durationMs: 1000 }, master.sentences[1]!] }
+    expect(() => parseTimings(JSON.stringify(gapped))).toThrow(/must tile the master/)
+  })
+
+  it('times the subtitles off the master, not off a running total', async () => {
+    const { buildSrt } = await import('../src/teach/subtitles.ts')
+    const srt = buildSrt(master as never)
+    // Second sentence starts where its span says, not where sentence one ended in
+    // some earlier file: 00:00:01,200.
+    expect(srt).toContain('00:00:01,200 --> 00:00:02,000')
   })
 })

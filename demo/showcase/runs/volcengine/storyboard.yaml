@@ -1,0 +1,124 @@
+# 教学路线能力样片 · 火山（ark）版（纯 cue 模式）
+#
+# 与 runs/deepseek/storyboard.yaml 是同一部片子：同一批 deck、同一批场景、
+# 同一张封面、同一串台词。唯一不同的是旁白供应商，以及由此决定的驱动模式：
+#
+#   火山（volcengine）报词级时间戳 → 纯 cue 模式：节拍写成 at_word，画面在
+#   那个词被念出来的瞬间切换，节拍编号在段内一路递增（不分页重来）。
+#
+# 两处只能二选一的取舍，写在稿子里的位置就是证据：
+#
+#   1. 转场要显式声明（2026-11-26 起 cue 模式也支持）。目标画面不是从稿件里直接
+#      读出来的，而是"下一句开口时的页与拍"——由它自己的节拍加上 deck 的每页
+#      fragment 数推出来（cueOpening），和录制器落地的那一页是同一个数。所以这一版
+#      和 DeepSeek 版一样有 520 ms 的尾转场，只是落点的算法不同。
+#   2. 没有 page / enter。共享页同样只在页模式下成立；这一版靠 cue 模式自己
+#      的规则表达"接着上一句"：开录前录制器把本句第一个 cue 之前的拍先点亮
+#      （cueStartFragments），所以 s03-2 开头就已经亮着第 1 拍。
+#
+# 复现：
+#
+#   video_teach_plan     storyboard: demo/showcase/runs/volcengine/storyboard.yaml
+#   video_teach_narrate  storyboard: demo/showcase/runs/volcengine/storyboard.yaml
+#   video_teach_render   storyboard: demo/showcase/runs/volcengine/storyboard.yaml  shot: showcase-ark
+#   video_teach_export   storyboard: demo/showcase/runs/volcengine/storyboard.yaml  shot: showcase-ark
+meta:
+  title: 旁白驱动：教学片是怎么排出来的
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+  cover: cover/index.html
+  transition:
+    mode: deck
+    durationMs: 520
+segments:
+  - id: s01
+    engine: slides
+    deck: slides/s01/index.html
+    sentences:
+      - id: s01-1
+        say: 幻灯片讲得再清楚，也怕画面和旁白各走各的：话过去了，图上还停在上一步。
+        cues:
+          - { fragment: 1, at_word: 画面 }
+          - { fragment: 2, at_word: 上一步 }
+      - id: s01-2
+        say: 这条路线把时钟交给旁白：先合成每一句音频，画面再按音频长度排。
+        cues:
+          - { fragment: 3, at_word: 旁白 }
+          - { fragment: 4, at_word: 长度 }
+      - id: s01-3
+        say: 一句就是一个录制单元，也只录一次，改一句就只重录那一句。
+        cues:
+          - { fragment: 5, at_word: 录制单元 }
+          - { fragment: 6, at_word: 重录 }
+      - id: s01-4
+        say: 页内的动静按这一句的长度铺开，两个节拍就落在三分之一和三分之二。
+        cues:
+          - { fragment: 7, at_word: 铺开 }
+          - { fragment: 8, at_word: 三分之二 }
+      - id: s01-5
+        say: 要讲量级就用数字滚动，从零滚到目标值，滚动过程本身就是信息。
+        cues:
+          - { fragment: 9, at_word: 数字滚动 }
+          - { fragment: 10, at_word: 本身 }
+      - id: s01-6
+        say: 并排比大小就让条形从左边长出来，比两个静态数字更快看出差距。
+        cues:
+          - { fragment: 11, at_word: 条形 }
+          - { fragment: 12, at_word: 差距 }
+  - id: s02
+    engine: slides
+    deck: slides/s02/index.html
+    sentences:
+      - id: s02-1
+        say: 句子之间默认硬切，要让翻页发生在画面里，就在稿件里写一条转场。
+        cues:
+          - { fragment: 1, at_word: 翻页 }
+      - id: s02-2
+        say: 转场录在前一句的尾部，所以每一句的开头都是完整的一屏。
+        cues:
+          - { fragment: 2, at_word: 尾部 }
+        # 与 DeepSeek 版一致：这一条接缝故意不转，下一句要证明硬切的差别。
+        transition: none
+      - id: s02-3
+        say: 这条接缝故意写成硬切，对照一下，形变和直切的差别就在这一下。
+        cues:
+          - { fragment: 3, at_word: 形变 }
+  - id: s03
+    engine: slides
+    deck: slides/s03/index.html
+    sentences:
+      - id: s03-1
+        say: 三句讲同一件事的时候，让它们共用一页，翻页感就不会打断思路。
+        cues:
+          - { fragment: 1, at_word: 共用一页 }
+      - id: s03-2
+        say: 第二句进来时第一拍已经亮着，同一个元素接着变形，中间没有断帧。
+        cues:
+          - { fragment: 2, at_word: 变形 }
+  - id: s04
+    engine: manim
+    scene: scenes/s04-1.py
+    sentences:
+      - id: s04-1
+        say: 需要公式一步步长出来的时候，这一句交给 Manim 画，一段场景只服务一句。
+  - id: s05
+    engine: manim
+    scene: scenes/s05-1.py
+    sentences:
+      - id: s05-1
+        say: 曲线也能连续长出来，纵轴上的部分和一条条逼近，最后停在同一个值上。
+  - id: s06
+    engine: slides
+    deck: slides/s06/index.html
+    sentences:
+      - id: s06-1
+        say: 封面单独写一页，同一份版面截出十六比九和四比三两张。
+        cues:
+          - { fragment: 1, at_word: 十六比九 }
+          - { fragment: 2, at_word: 四比三 }
+      - id: s06-2
+        say: 成片之外还有字幕、时间轴和能双击演示的 deck，都跟着版本号走。
+        cues:
+          - { fragment: 3, at_word: 字幕 }
+          - { fragment: 4, at_word: 版本号 }

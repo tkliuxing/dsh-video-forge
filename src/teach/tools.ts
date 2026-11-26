@@ -20,7 +20,7 @@
  * (TEACH-VIDEO.md §8, §23).
  */
 
-import { copyFile, cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
@@ -35,6 +35,7 @@ import { auditDecks, auditManuscript, countDeckFragments, deckPageFragments, fra
 import {
   DEFAULT_TEACH_PATHS,
   assembleVideo,
+  deckPageCounts,
   motionFindings,
   narrateSentences,
   planSegments,
@@ -397,11 +398,25 @@ async function staticSegments(
  * they add. `video_teach_plan` runs before anything is paid for, so this is where
  * the author learns that 20 transitions add 8 seconds to the film.
  */
-function seamLine(board: Storyboard, wordTimings: boolean): string {
+function seamLine(board: Storyboard, wordTimings: boolean, pageFragments: ReadonlyMap<string, readonly number[]>, continuous: boolean): string {
   const spec = board.transition
-  if (spec === null || spec.mode !== 'deck') return 'transitions: none (every sentence joins the next with a hard cut)'
-  if (wordTimings) return 'transitions: declared, but this voice runs the deck in cue mode, where a sentence\'s page comes from its own beats: the state a transition would land on is not knowable from the manuscript (see the warning)'
-  const exits = exitSlots(board, 'page')
+  // The contract answers this before the manuscript does: a single master track has
+  // no sentence seams at all, so "every sentence joins the next with a hard cut" would
+  // send the author looking for a setting that cannot help (found by the 2026-11-26
+  // skill audit: the line said "hard cut" for the contract that has no cuts).
+  if (continuous) {
+    if (spec === null || spec.mode !== 'deck') {
+      return 'transitions: no seams (single master narration: one continuous recording per segment, so the deck turns pages where the story goes and nothing is cut)'
+    }
+  } else if (spec === null || spec.mode !== 'deck') {
+    return 'transitions: none (every sentence joins the next with a hard cut)'
+  }
+  if (continuous) {
+    return `transitions: declared (${spec.durationMs} ms), but this narration is a single master track: the picture is one continuous recording per segment, so the deck turns pages where the story goes and no seam is cut. Delete meta.transition, or narrate with merge: none for the per-sentence contract`
+  }
+  // Cue mode resolves the landing against the deck's pages; page mode reads it off
+  // the manuscript (docs/TEACH-MOTION.md §7 rule 2, revised 2026-11-26).
+  const exits = exitSlots(board, wordTimings ? 'cue' : 'page', pageFragments)
   const recorded = [...exits.values()].filter(slot => slot.exitMs > 0)
   const dropped = [...exits.values()].filter(slot => slot.dropped !== null && slot.dropped !== 'by-sentence')
   const reasons = new Map<string, number>()
@@ -419,9 +434,14 @@ function seamLine(board: Storyboard, wordTimings: boolean): string {
  * one too. Detecting it needs no snapshot — the exit slot carries the target page,
  * and `exits` is the same resolution the recorder used (docs/TEACH-MOTION.md §6.8).
  */
-function seamLedger(board: Storyboard, pageMode: boolean, fresh: ReadonlySet<string>): string[] {
+function seamLedger(board: Storyboard, pageMode: boolean, fresh: ReadonlySet<string>, pageFragments: ReadonlyMap<string, readonly number[]>, continuous = false): string[] {
   const findings: string[] = []
-  const exits = exitSlots(board, pageMode ? 'page' : 'cue')
+  // A single master track records no tail transitions at all (`exitMs` is 0), so every
+  // sentence's seam report here would describe a seam that does not exist (found by the
+  // 2026-11-26 audit: `seam_findings` named "still carries its 520 ms tail transition"
+  // on a contract where nothing is carried).
+  if (continuous) return findings
+  const exits = exitSlots(board, pageMode ? 'page' : 'cue', pageFragments)
   for (const { segment, sentence } of allSentences(board)) {
     const exit = exits.get(sentence.id)
     if (exit === undefined || exit.exitMs === 0 || exit.target === null) continue
@@ -452,6 +472,19 @@ async function nextVersion(dir: string): Promise<number> {
 /** Whether these timings can drive a picture inside a sentence (see `deckDriveMode`). */
 function timingsWordTimings(timings: Timings): boolean {
   return timings.voice.timestamps !== 'none'
+}
+
+/**
+ * Same-directory files a deck loads by relative path: `./reveal.js` and friends.
+ *
+ * The pattern deliberately excludes anything with a slash or `..`: an asset that
+ * lives elsewhere in the project is either a `materials/` bitmap (which the
+ * export does not own) or a mistake, and neither belongs in `deck/<segment>/`.
+ */
+export function localDeckAssets(html: string): string[] {
+  const names = new Set<string>()
+  for (const match of html.matchAll(/(?:src|href)\s*=\s*"\.\/([A-Za-z0-9._-]+)"/g)) names.add(match[1]!)
+  return [...names]
 }
 
 /**
@@ -580,8 +613,15 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       // discover at render time.
       const decks = await inspectDecks(board, workspace.projectRoot)
       const fragmentCounts = new Map([...decks].flatMap(([id, info]) => (info.fragments === null ? [] : [[id, info.fragments] as const])))
-      const audit = auditManuscript(board, { deckFragments: fragmentCounts })
-      const deckAudit = auditDecks(board, decks, { beats: beatScheduleOf(board, timings) })
+      // Per-page counts, not just totals: cue mode's tail transition lands on the
+      // next sentence's opening beat, which only exists relative to a page.
+      const pageCounts = new Map([...decks].flatMap(([id, info]) => (info.pageFragments === null ? [] : [[id, info.pageFragments] as const])))
+      const audit = auditManuscript(board, {
+        deckFragments: fragmentCounts,
+        pageFragments: pageCounts,
+        continuous: timings?.narration !== undefined,
+      })
+      const deckAudit = auditDecks(board, decks, { beats: beatScheduleOf(board, timings), continuous: timings?.narration !== undefined })
       const structural = [...audit.structural, ...deckAudit.structural]
       if (structural.length > 0) {
         throw new ConfigError(`${workspace.storyboardPath}: ${structural.join('; ')}. Fix the cues or the deck; nothing was narrated or rendered.`)
@@ -621,16 +661,23 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           ? ['no meta.cover page: video_teach_export will deliver no cover (a cover is an authored HTML page rendered at 16:9 and 4:3, not a frame of the film)']
           : []),
       ]
+      // Drive mode and narration contract are two different questions, and the
+      // `picture:` line used to answer only the first: a master-track narration and a
+      // per-sentence one from the same provider printed the same text, so an author
+      // could not tell which re-work unit applied (found by the 2026-11-26 audit).
+      const contract = timings?.narration === undefined
+        ? `narration: per-sentence (${plan.voice.wordTimings ? 'one request and one file per sentence' : 'one file per sentence'})`
+        : `narration: single master track ${timings.narration} (one continuous recording per segment; exitMs is always 0)`
       const picture = plan.voice.wordTimings
-        ? `picture: cue-driven (voice "${plan.voice.provider}" reports word timings, so a fragment can fire on a spoken word)`
-        : `picture: page-driven — voice "${plan.voice.provider}" reports no word timings, so each sentence starts on its own deck page (or on the page it shares, when the manuscript says page) and its beats fire on at_progress shares of the measured length (not word-aligned; cue-driven fragments need volcengine)`
+        ? `picture: cue-driven (voice "${plan.voice.provider}" reports word timings, so a fragment can fire on a spoken word) — ${contract}`
+        : `picture: page-driven — voice "${plan.voice.provider}" reports no word timings, so each sentence starts on its own deck page (or on the page it shares, when the manuscript says page) and its beats fire on at_progress shares of the measured length (not word-aligned; cue-driven fragments need volcengine) — ${contract}`
       const beats = board.segments.flatMap(segment => segment.sentences).reduce((sum, sentence) => sum + sentence.cues.length, 0)
       const lines = [
         `${plan.title}: ${plan.sentences.length} sentence(s), ${plan.totalChars} characters, about ${plan.estimatedSeconds} s spoken.`,
         picture,
         ...plan.sentences.map(sentence => `- ${sentence.id} (${sentence.engine}, ${sentence.chars} chars) ${sentence.say}`),
         `narration: ${narration}`,
-        seamLine(board, plan.voice.wordTimings),
+        seamLine(board, plan.voice.wordTimings, pageCounts, timings?.narration !== undefined),
         `tools: ${assessment.summary}`,
         `required: ${dependencies.filter(entry => entry.scope === 'required').map(entry => `${entry.name} ${entry.state}`).join(', ')}`,
         `slides: ${dependencies.filter(entry => entry.scope === 'slides').map(entry => `chromium ${entry.state}`).join(', ')}`,
@@ -754,7 +801,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
     ].join(' '),
     parameters: {
       storyboard: { type: 'string', description: `Workspace-relative path of the manuscript. Defaults to ${DEFAULT_STORYBOARD}.` },
-      sentences: { type: 'array', items: { type: 'string' }, description: 'Only these sentence ids (default: every sentence that has no segment yet, plus any named).' },
+      sentences: { type: 'array', items: { type: 'string' }, description: 'Only these sentence ids. Omitted means every sentence is recorded (a segment already on disk is measured and reused only by video_teach_plan, not by this call). With a single master narration a partial list is widened to the whole segment it belongs to.' },
       assemble: { type: 'boolean', description: 'Concatenate and mux the finished video (default true).' },
       burn_subtitles: { type: 'boolean', description: 'Burn the narration into the picture at assembly (default true). Needs an ffmpeg built with libass; when this build has no `subtitles` filter the film is assembled without burned-in lines and the result says so. The external .srt from video_teach_export is written either way.' },
       shot: { type: 'string', description: `Folder under renders/ for the finished video. Defaults to ${DEFAULT_SHOT}.` },
@@ -872,6 +919,7 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
           segments: plan.segments,
           video: board.video,
           output: staged,
+          narration: timings.narration ?? null,
           // The burned cues and the exported .srt are the same text from the same
           // function, so a platform that shows the file's subtitles and a viewer
           // reading the picture see one timeline (src/teach/subtitles.ts).
@@ -931,7 +979,8 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       // The seam ledger: what the timeline says each tail carries, and which earlier
       // tails still land on a page that was re-recorded (docs/TEACH-MOTION.md §6.8).
       // Reported, never re-recorded automatically: that would turn "one line" into two.
-      const seams = seamLedger(board, pageMode, new Set(plan.fresh))
+      const seamPages = await deckPageCounts(board, workspace.projectRoot)
+      const seams = seamLedger(board, pageMode, new Set(plan.fresh), seamPages, timings.narration !== undefined)
       if (plan.stale.length > 0) seams.unshift(...plan.stale)
       if (lengthCheck !== null) seams.push(lengthCheck)
       const lines = [
@@ -1023,12 +1072,29 @@ export function registerTeachTools(runtime: ToolRuntime, overrides: { probe?: ()
       for (const segment of board.segments) {
         if (segment.engine !== 'slides' || segment.deck === null) continue
         const source = join(workspace.projectRoot, ...segment.deck.split('/'))
-        const target = join(workspace.root, 'deck', segment.id)
+        const targetDir = join(workspace.root, 'deck', segment.id)
         try {
-          await cp(source, target, { recursive: true, force: true })
-          decks.push(`deck/${segment.id}`)
+          // The exported deck has to open on its own. Copying the deck *file* to
+          // `deck/<segment>` (what this did before 2026-11-26) produced a file a
+          // browser does not render as HTML and without the runtime it links to,
+          // so double-clicking it showed source text. Instead the deck becomes
+          // `deck/<segment>/index.html` and every same-directory file it
+          // references as `./name` is copied beside it.
+          const html = await readFile(source, 'utf8')
+          await mkdir(targetDir, { recursive: true })
+          await writeFile(join(targetDir, 'index.html'), html, 'utf8')
+          const siblings = dirname(source)
+          for (const asset of localDeckAssets(html)) {
+            try {
+              await copyFile(join(siblings, asset), join(targetDir, asset))
+            } catch {
+              // A missing `./name` is the deck's own problem, and it shows up when
+              // the page is opened; the export does not invent a file.
+            }
+          }
+          decks.push(`deck/${segment.id}/index.html`)
         } catch (error: unknown) {
-          throw new ConfigError(`could not copy ${segment.deck} into deck/${segment.id} (${error instanceof Error ? error.message : String(error)})`)
+          throw new ConfigError(`could not copy ${segment.deck} into deck/${segment.id}/index.html (${error instanceof Error ? error.message : String(error)})`)
         }
       }
 

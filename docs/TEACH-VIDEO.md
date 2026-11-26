@@ -967,9 +967,200 @@ storyboard 多两个可选键，`rules.ts` 的页面检查、`slides.ts` 一次�
 
 `teachPage` 只在**真要翻页**时才要求：单页的 cue deck 仍然只需要 `teachReady` + `teachCue`（第一版实现一律走"先切页再点灯"，把这类 deck 从第二句起全打断了，独立复核抓到后拆成 `turnPage()` 与 `lightBeats()`）。
    - 新增一条结构性拒绝：**多页的 cue 模式 deck 必须定义 `teachPage`**（`auditDecks`），否则要等到钱花完才发现翻不了页。
-   - `meta.transition` 在 cue 模式下**仍然拒绝**，但理由换成真的那个：页由节拍推出、`exitSlots` 在稿件层算不出转场要落到的初态，不是"没有页驱"。
+   - `meta.transition` 在 cue 模式下**仍然拒绝**，但理由换成真的那个：页由节拍推出、`exitSlots` 在稿件层算不出转场要落到的初态，不是"没有页驱"。（2026-11-26 起这条不再成立：落点可由 `cueOpening()` 算出，见 §28.5。原文保留供对照。）
 3. **改台词只重录一句**。返工矩阵原来把"改 `say`"写成全量重录，与"默认 provider 逐句请求""`sentences` 可只重录指定句"两处相反。口径是：没补过页尾停留时 `narrate sentences:[<id>]` 只重合成那一句，成片重新生成；补过停留的项目仍要全量（已补的静音会被再补一次）。
 
 配套三条 warning（都在花钱前）：没有 fragment 的页在 cue 模式下永远走不到、页数数不出来时 `teachPage` 无从核对、纵向栈让两份页数算法不一致。
 
 验证：`test/teach-cue-pages.test.ts`（5 条换算 + 3 条开录状态 + 4 条真录制：首 cue 定页、句内跨页并断言末帧自检 `finished`、无 cue 句继承、单页 deck 不定义 `teachPage` 也能录）、`test/teach-rules.test.ts` 的"多页 cue deck 要 teachPage"、`test/teach-exit.test.ts` 的 page 模式负对照。无能力的机器上真录制那几条按既有约定跳过（CI 没有 Chromium、ffmpeg、ffprobe）。完整复核记录见 [`SKILL-CONSISTENCY.md`](SKILL-CONSISTENCY.md) §八。
+
+## 28. 两版能力样片：DeepSeek 页模式与火山纯 cue 模式（2026-11-26）
+
+用户的要求是「用现在的项目技能和代码做一支 teach 路线的视频，包含页内动画、转场、Manim 动画等现有能力包含的所有内容，DeepSeek TTS 与 ark TTS 各一版」。`demo/motion`、`demo/transition`、`demo/contract` 各自只演示一项能力，没有一支片子同时跑过页内动效库、共享页、跨句转场、`engine: manim`、封面与六种产物，所以新开 `demo/showcase/`。
+
+### 28.1 结构：一份内容，两个稿本
+
+同一批 deck（`slides/s01…s06`）、同两个 Manim 场景、同一张封面，两份稿本只差旁白与驱动模式：
+
+| 段 | 引擎 | 句数 | 演示什么 |
+|---|---|---|---|
+| s01 | slides × 6 页 | 6 | 页内动效库：`fade-up` / `dim` / `beat`（`custom` 聚焦）/ `draw` / `count` / `bar` |
+| s02 | slides × 3 页 | 3 | 跨页 Auto-Animate 一次（520 ms 尾转场）+ 一条 `transition: none` 的硬切对照 |
+| s03 | slides × 1 页 | 2 | 共享页 `page` / `enter`，同一元素 `data-teach-stage` 连续变形 |
+| s04 | manim | 1 | 公式推导（`MathTex` 逐行长出来） |
+| s05 | manim | 1 | 坐标系连续动画（部分和逼近 π²/6） |
+| s06 | slides × 2 页 | 2 | 封面两画幅、产物清单 |
+
+成片：`renders/showcase-deepseek/v003.mp4`（15 句 / 107.3 s）、`renders/showcase-ark/v003.mp4`（15 句 / 105.8 s）。
+
+### 28.2 两个 provider 分歧的三处，都写进了稿本注释
+
+1. **转场只有页模式能拍**。`meta.transition` 在 cue 模式被拒（§27 第 2 条），所以 ark 版 15 句全是硬切，deepseek 版 7 处尾转场共 3 640 ms。
+2. **共享页只有页模式能声明**。ark 版不写 `page` / `enter`，靠 `cueStartFragments()` 表达"接着上一句"：开录前把本句第一个 cue 之前的拍点亮，画面看起来一样，机制不同。
+3. **SRT 的切分不同**。deepseek 一句一条 cue；ark 按词切（`v003.srt` 24 条 vs 15 条）。
+
+音色差异有客观证据：同一句在成片里的中位基频，DeepSeek `tide` 约 96 Hz（10–90 分位 79–139），火山 `zh_female_liuchangnv_uranus_bigtts` 约 235 Hz（170–348）。
+
+### 28.3 尾停留与节拍重算：`demo/showcase/hold.py` 与 `cues.py`
+
+插件没有尾停留参数，做法按 `video-teach-iterate` 的「页尾停留」：给每句音频尾部补 900 ms 静默、用 `ffprobe` **实测**改写 `durationMs`、再按页内变化次数重算 `at_progress`。两个脚本把三条硬约束落成断言：
+
+- `timings.json` 是白名单，不留 `tailHoldMs`，"补过没有"记在 `.page-hold.json` 的 sha256 上（不用 mtime）；
+- 补静音前逐句核对"音频实测长度 vs `durationMs`"，不一致就拒绝——那说明只重录了一部分，再补会叠加第二遍静音；
+- cues 用公式算而不是手写：`at_progress(k) = (k/(m+1) × spoken) / durationMs`，实测落在 0.285–0.593，尾停留 900 ms 的分母已经含在里面。
+
+### 28.4 这一轮发现并修掉的两个缺陷
+
+**一、合并合成的词级时间戳没有换算成句内偏移（默认路径上的功能级缺陷）。** `merge: auto`（默认）把相邻句一次请求发出，服务端按整段音频报时间戳；`segmentTiming()` 把每句切出来存成 `audio/<id>.mp3`，但写进 `timings.json` 的 `words` 仍是整段的绝对偏移。后果两条：`video_teach_render` 在解析阶段就拒绝（`timings.sentences[1].words ends at 12715 ms, past the audio's 7464 ms`），即便放过，`cueOffsetMs()` 会把 `at_word` 当成句内偏移，纯 cue 模式每一拍都晚一整段。改法：`pipeline.ts` 新增 `rebaseWords(words, startMs)`，合并路径写盘前减掉切片起点。已花的合成费不重花——数据侧用 `demo/showcase/words.py` 就地换算（断言换算后每句首个词为 0、末词不晚于该句 `durationMs`）。
+
+**二、导出的 deck 打不开。** `video_teach_export` 把 deck **文件**拷到 `deck/<段 id>`：没有扩展名，浏览器当纯文本；`./reveal.js`、`./reveal.css`、`./theme.css` 也没跟过去。实测：headless Chromium 打开 `deck/s03`，`innerText` 就是 `<!doctype html>…` 源码，`window.Reveal` 不存在。改法：deck 写成 `deck/<段 id>/index.html`，并用 `localDeckAssets()` 把 HTML 里 `./名字` 形式的同目录文件一并拷过去。
+
+验证：`test/teach-narration.test.ts` 新增两条（换算结果、单句请求不变且不产生零长词）；`test/teach-tools.test.ts` 新增两条（真走 `video_teach_export`：`decks` 为 `deck/s01/index.html` 且 `reveal.js`/`reveal.css` 已落盘；`localDeckAssets` 只收同目录引用）。`pnpm run build` 通过，`pnpm test` 782 passed / 7 skipped（含新增 4 条）。
+
+**未验证的部分说清楚**：这两处修复都还没有在宿主内跑过一次完整链路——当前 3080 那个实例加载的是修复前的构建，合成本身是付费且要联网的，所以 `merge: auto` 的新路径只有单测证据；导出 deck 的新形状有端到端导出测试（离线、真实代码路径），但"重启宿主后重跑 export 才看得到"这件事没有在本实例上发生过。
+
+### 28.5 补记（同日）：两处推翻上文
+
+**一、句子被切错，根因不是合并、也不是上文第 28.4 条那个换算。** 用户听完说"volcengine 的音频有问题，大概是句子拆分"。查下去是第三个缺陷，比前两个都严重：
+
+`assignWordsToSpans()` 用**字符游标**把服务端返回的词分配到各句：每读一个词，游标前进 `word.t.length`。但服务端返回的词**不含空白**，而发给它的文本含空白（本片里是 `交给 Manim 画`、`演示的 deck` 这样的三处空格）。于是游标每遇一个空格就少走一格，从句子里第一个空格所在的那句起，后面每句的边界都错位：前一句的音频尾巴粘上了后一句的开头两个字，而后一句丢了开头——实测 15 句里 4 句错，其中 `s05-1` 的开头"曲线"被整段切掉（`s04-1` 的音频里能听到"…一句。曲线"）。
+
+改法：`joinUtterance()` 与 `assignWordsToSpans()` 统一按**非空白字符**计数（`spokenLength()`），并补一条回归用例（带空格的两句，断言第一句恰好 12 个词、第二句第一个词归第二句）。这只影响词到句的映射，不改音频本身。
+
+**同时这说明了合并路径的整体状态**：`merge: auto` 上有两个独立缺陷（§28.4 的绝对偏移、本节的空白漂移），其中任何一个都会切错句子。渲染器会拒绝绝对偏移那种（`words ends past the audio`），但**空白漂移不报错**——它只是安静地切错。所以这一版先按 `merge: none` 重录了火山那条（15 次请求，逐句独立），每句的词拼起来必须等于该句 `say`（去掉空白），15 句全部通过；成片里每句开头的静音 62–102 ms 与源文件一致，没有切掉起音。修复落地后想回到合并合成的韵律连续性，重跑一次 `video_teach_narrate`（默认）。这条路径已经用 `test/teach-live.test.ts` 的 `M2b` 在真实服务上验过（2026-11-26，`TEACH_VIDEO_LIVE=1`，一次合并请求两句、稿件里故意带空格）：每句的词拼起来等于该句 `say`（去空白）、每句首个词在 0、末词不越过该句音频长度。离线侧另有 `assignWordsToSpans` / `rebaseWords` 的单测。
+
+**二、`meta.transition` 在 cue 模式下不再拒绝，转场真的能拍了**（推翻 §27 第 2 条与 §26 之前的口径）。当初拒绝的理由是"那一句的页由它自己的节拍推出来，稿件层不知道落点"——这个理由在 §27 实现的 `cueLandings()` 之后就不成立了：给定 deck 的每页 fragment 数，第 n 号节拍落在第几页第几拍是算得出来的，而"下一句开口时的页与拍"正是 `cueOpening()`。所以：
+
+- `exitSlots(board, mode, pageFragments?)` 里 cue 模式不再一律 `dropped: 'cue-mode'`，而是算出 `target = { page, enter }`，用的是录制器会落到的那一页、那一拍（两侧同一个函数）。
+- 落点与这一句**结束时**所在页相同则仍是硬切（`same-page`）：没有页可翻，尾巴只会把下一句的开头状态提前抖出来。
+- 唯一还算"拍不了"的情形是 deck 的页数数不出来（`<section>` 在 JS 里生成）：那时 `video_teach_plan` 给一条 warning 说明这些接缝保持硬切，不再拒绝整份稿件。
+- 每页 fragment 数由 `pipeline.ts` 的 `deckPageCounts()` 读（narrate 与 render 共用），plan 那份直接复用 `inspectDecks()` 已经读到的 `DeckInfo.pageFragments`。
+- `cueLandings()` / `cueOpening()` 从 `slides.ts` 挪进新模块 `src/teach/beats.ts`：`storyboard.ts` 是每个离线测试都会加载的模块，不能为了一个纯计算把 `playwright-core` 拖进来。
+
+验证：`test/teach-exit.test.ts` 新增两条（cue 模式下带页数的落点、页数缺失时的 `cue-mode` 丢弃与 warning），并把原来那条"cue 模式拒绝"的用例改成"接受 + 只在数不出页数时 warning"；`test/teach-narration.test.ts` 新增空白漂移用例。
+
+**还没发生的事**：这两处改动都在 `lib/` 里，而 3080 那个实例加载的仍是改动前的构建（用 `video_teach_plan` 探过：它还在报"meta.transition is set, but … cue mode"）。所以 `renders/showcase-ark/v005.mp4` 的音频已经是对的（重录于 `merge: none`），但**接缝还是硬切**；宿主重启后重跑 `video_teach_render` + `video_teach_export` 才会把稿件里那 520 ms 尾转场录进去（旁白不用重录）。
+
+### 28.6 补记二：cue 模式转场真跑起来之后，又抓到一个（2026-11-26 晚）
+
+宿主还没重启（进程起于 10:25，改动构建于 11:41），所以这一段是**直接调 `src/teach/pipeline.ts` 里 `video_teach_render` 实际使用的同一批函数**跑出来的：`renderSegments` → `planSegments` → `assembleVideo`，参数照工具那几行抄。目的不是绕开工具，是在等重启的时候先把"cue 模式到底能不能拍出转场"这件事验掉。
+
+**抓到的缺陷：cue 模式下"末帧是否播完"的自检永远看错页。** 录制带尾转场的段之后，`finishedLayout()` 要回到**正文所在那一页**把最后一拍的版面复现出来做对比。页模式知道那是第几页（`pageSlots`），cue 模式的页要由节拍推出——而它用了 `options.page ?? 0`，cue 模式根本没有这个字段，于是每次都回第 0 页复现、再和正文最后一帧比：凡是不在第 0 页的正文字段都被判成"被动画切断了"。实测 `s01-2`…`s01-5` 各报 5.5–7.8%（阈值 0.2%），看着像节拍太迟，其实节拍余量都在 2.6 s 以上。改法：`finishedLayout()` 多收一个 `finalPage`，cue 模式传最后一拍落地的页（`landings.at(-1).page`）。回归用例加在 `test/teach-cue-pages.test.ts`（正文落在第 2 页、尾部翻回第 1 页，断言 `settle.status === 'finished'` 且尾部画面确实换了页），并用**负对照**跑过：把 `finalPage` 退回 `null` 时这条用例失败，恢复后通过。
+
+**验证（`renders/showcase-ark/v007.mp4`，105.6 s）**：
+
+| 项 | 结果 |
+|---|---|
+| 时间轴 | 7 处 `exitMs = 520`，合计 3 640 ms；`sum(durationMs + exitMs) = 105 546 ms`，成片 105.6 s |
+| 8 处接缝抽查（正文最后一刻 / 尾部最后一刻 / 下一句第一帧） | 7 处尾转场：正文→尾部画面确实翻了页（1.4%–11.4%，`s02-1` 是 Auto-Animate 形变 11.4%），尾部最后一帧与下一句第一帧差 **0.00%–0.40%**（接缝连续）；`s02-2` 那句`transition: none` 仍是硬切 |
+| 旁白没动 | 中位基频 231.9 Hz（火山音色）；15 句句首静音 62–102 ms，没有一句被切掉起音 |
+| 导出物 | `v007.srt`（31 条按词切）· `v007.timeline.json` · 两张封面 · `deck/<段>/index.html` |
+
+顺带把之前那个"导出 deck 打不开"的修复也验实了：`deck/s03/index.html` 在 headless Chromium 里 `window.Reveal` 存在、`teachReady === true`、标题读得到（改之前是纯文本源码）。
+
+**补记三（同日 12:06 宿主重启后，工具路径跑通）**：`video_teach_render` + `video_teach_export` 各跑一次，得到 `renders/showcase-ark/v008.mp4`（105 600 ms，台账行 `v-20261126-0009`，右侧面板可列）。产物与上面那份脚本渲的 v007 **同内容**（四个时间点抽帧差 0.00%–0.45%），说明这条链路与工具走的确实是同一份代码。逐项复核：
+
+- 时间轴：7 处 `exitMs = 520`（`s01-1…s01-5`、`s02-1`、`s06-1`），`sum(durationMs) = 101 906 ms` + `3 640 ms` = `105 546 ms`；
+- 8 处接缝（7 转场 + `s02-2` 硬切）：尾部翻页 1.4%–11.4%（`s02-1` 形变 11.4%），尾部最后一帧与下一句第一帧差 **0.00%–0.40%**；`s02-2 → s02-3` 在 50 ms 内跳变 11.7%，没有渐变；
+- 旁白：15 句句首静音 62–102 ms（无一句被切），中位基频 231.9 Hz；整片解码零错误；
+- 导出 deck：`deck/{s01,s02,s03,s06}/index.html` 四个都在 headless Chromium 里 `window.Reveal` 存在、`teachReady === true`、页数 6/3/1/2 与稿件一致，没有加载失败的资源。
+
+## 29. 第三种画面契约：单文件母带 + 连续录制（2026-11-26 起）
+
+用户听完火山版后提出两点：语音一致性不好（那是 `merge: none` 的临时状态，默认合并已修好，实测逐句中位基频离散从 9.87% 降到 5.03%），以及**不要再把母带逐句切开**——一次请求生成全文，然后按词时间点对轨做 slide 录制。DeepSeek 那条路（分句合成、分句录制）保持原样。
+
+### 29.1 契约
+
+`timings.json` 多了一个根键，两种时钟二选一（`parseTimings` 拒绝同时出现）：
+
+```jsonc
+{
+  "narration": "audio/narration.mp3",   // 母带：整片一条音轨
+  "merge": "single",
+  "voice": { "provider": "volcengine", "speaker": "…", "timestamps": "word" },
+  "sentences": [
+    { "id": "s01-1", "text": "…", "beginMs": 0, "durationMs": 6987, "exitMs": 0,
+      "words": [{ "t": "幻", "b": 0, "e": 125 }] }   // 词时间仍相对本句
+  ]
+}
+```
+
+- **词时间与 cue 偏移仍相对本句**，所以所有既有的 timing 代码不动；`beginMs` 是把它们变成绝对时间的那一个数（字幕、连续录制、混音校验各自取用）。
+- **span 首尾相接**：span 0 从 0 开始，span i 结束在 span i+1 开始处，最后一段一直延伸到母带末尾。因此画面总长**恰好**等于母带长度，混音不需要任何补静音。
+- **`exitMs` 恒为 0**：没有接缝，就没有尾转场可放。`renderSegments` 在母带模式下强制归零并把 `dropped` 记成 `continuous`；`video_teach_plan` 的 `transitions:` 行会说清"这条片子没有接缝，删掉 meta.transition 或改用 `merge: none`"。
+
+### 29.2 为什么这条形状值得单开一节
+
+裁一个句子 = 猜它什么时候说完。2026-11-26 一天里两个静默缺陷都长在这个"猜"上：绝对偏移没换算（§28.4）、服务端丢空白导致游标漂移（§28.5）。母带形状**根本不做这个猜测**：音频整条保留，画面按绝对时间贴上去。实测（`renders/showcase-ark/v010.mp4`，91.9 s）：
+
+| 项 | 结果 |
+|---|---|
+| 请求数 | 1（整片一次） |
+| 母带 | `audio/narration.mp3`，91 992 ms；15 段 span 首尾相接、合计 91 992 ms |
+| 成片音轨 vs 母带包络相关 | **0.9999**（同一段，没有被切、没有补静音） |
+| 成片时长 vs 时间轴 | 91 992 vs 91 992 ms（差 0） |
+| 字幕 | 按 `beginMs` 绝对定位，不再靠累加 |
+
+### 29.3 录制也变成"一段一次"（同日晚补齐）
+
+这一节落地的是**音频侧**：`narrate` 一次请求写母带、`assembleVideo` 直接混母带、`buildSrt` 走绝对时间、母带模式禁掉接缝。画面侧**仍然逐句录**（每句一次 `page.goto`），所以句子之间的换页发生在开录之前、录不到，观感是硬切——这正是用户要的下一步：一个段一次 screencast，deck 不重载，跨句天然连续。
+
+设计已经定下（写在这里以免下一轮重新推）：`recordDeckSegment` 增加一个可选的已打开会话（page + 已读到的每页 fragment 数），跳过 `page.goto` 与开录前的驱页；连续模式开录前**不重放 `page` / `enter` / `teachCue(enter)`**——上一句的节拍已经留下状态，全局递增的编号让"接着来"是免费的。新函数 `recordDeckRun` 一个段开一次会话，逐句开停 screencast、各存各的段文件，这样 `planSegments` 的逐句返工、`only` 收窄、逐句末帧自检全部保留。迟到节拍的重录只能整段重来（重录单句会与前一帧的版面差几像素），这是这条路的代价，要写进 skill。
+
+TTS 成本：一次请求（整片），比 `merge: none` 便宜，也比"逐句独立合成"更连贯。
+
+**已落地**（`renders/showcase-ark/v011.mp4`，91.99 s）：新函数 `recordDeckRun()`（`src/teach/slides.ts`）一个 slides 段开一次浏览器会话，逐句开停 screencast、各存各的段文件；`renderSegments` 在母带模式下按段分组调用它，段内的 `page` / `enter` / `exitMs` 全部不出现——节拍编号本来就跨全段递增，上一句留下的状态就是下一句的开场，翻页发生在它该发生的那个节拍上、被录进画面。
+
+逐缝核对（相邻段文件、320×180 灰度）：
+
+| 接缝 | 类型 | 末帧 vs 下一句首帧 |
+|---|---|---|
+| s01-1…s01-6 之间（5 处） | 段内连续 | **0.01–0.02%** |
+| s02-1…s02-3、s03-1→s03-2、s06-1→s06-2 | 段内连续 | **0.00–0.01%** |
+| s01-6→s02-1、s02-3→s03-1 | 段间（换 deck） | 6.77% / 4.04%（该切就切） |
+
+段的内部还能看到翻页本身：s01-1 的页在 s01-2 的第一个节拍处交叉淡入（相邻帧差 8% 量级），不再是"开录前偷偷换页"。
+
+代价与边界，写进注释也写在这里：
+
+- **迟到节拍只能整段重录**。重录单句要在新页面里把 deck 驱回它的开场状态，reveal 在换页时才排版，那一帧与上一句留下的能差几像素——所以 `renderSegments` 在任一句迟到时把整个段重录一次（本片 0 次）。
+- **`sentences: [...]` 收窄在母带模式下扩到整段**并如实报告多录的句 id（半段重录会在全新 deck 上从故事中间开始）。
+- **段与段之间仍是硬切**：另一个 deck 的初态拿不到，这条与非目标一样，不会变。
+- **两处实现是有意重复的**：`recordDeckRun` 与 `recordDeckSegment` 各自管一种生命周期（连续 vs 逐句），page 模式与逐句 cue 契约不能被这次改造带回归。
+
+### 29.4 换页时机：字幕在句首就切了，画面却等到第一个节拍的词（2026-11-26 晚）
+
+用户看完 v011 说"前半截换页有半秒到一秒的延迟，拿画面和字幕一比就看出来了"。查下来不是录制延迟，也不是气口——是两个时钟的顺序问题：
+
+1. **字幕**在句子的**第一个字**就切到新句（母带契约下 span 起点就落在第一个词上，`beginMs` 即字幕起点）。
+2. **翻页**却在第**一个 `at_word` 的词**才发生——因为 cue 模式一直把"这一句在哪一页"当成"它第一个节拍落在哪一页"。
+
+实测这一差值就是那个词的偏移：本片 13 句里 645 / 440 / 295 / 1010 / 290 / 170 / 790 / 520 / 1390 / 1420 / 2774 / 2110 / 0 ms。观众看到的是"字幕已经换句，画面还停在上一页"。
+
+**改法**：连续录制器在每句开录后、第一个节拍之前，先把页面翻到这一句的开场页（`cueOpening` 的页与拍），节拍照旧按词触发。页切换动画因此录在句首（与字幕同时），节拍仍落在各自的词上。
+
+验证（同一时刻 s01-2 起点 +0.15 s，字幕都已经是新句）：
+
+| 版本 | 画面 |
+|---|---|
+| v011（改前） | 仍是上一页"画面跟不上旁白" |
+| v012（改后） | 正在交叉淡入到"时钟交给旁白" |
+
+回归用例：`test/teach-cue-pages.test.ts` 新增"句子边界就换页"（起点帧仍是上一页、400 ms 时已是新页）；原来那条"跨句边界画面连续"改成"边界不跳变（首帧≈上一句末帧，容差 40/255）+ 翻页录在第二句开头"——连续契约下接缝里本来就有一次翻页，要求帧完全相等是过时的断言。
+
+**顺带纠正一个猜测**：这不是"气口"的问题。句子 span 的起点就落在第一个词上（实测 13 句首词偏移全是 0），所以字幕没有超前；超前的只有画面。
+
+### 29.5 工具路径跑通（2026-11-26 15:10 宿主重启后）
+
+`video_teach_render` + `video_teach_export` 各跑一次，得到 `renders/showcase-ark/v013.mp4`（91 992 ms，任务 `v-20261126-0011`，右侧面板可列）。与脚本渲的 v012 同内容（同一时刻抽帧一致）。复核：
+
+| 项 | 结果 |
+|---|---|
+| 时长 | 成片 91 992 ms，时间轴 91 992 ms |
+| 换页与字幕 | s01-2 起点 +0.15 s：画面正在交叉淡入新页、字幕已是新句；+0.9 s 新页完全落定 |
+| 段内接缝（末帧 vs 下一句首帧） | 0.01–0.12%（七处），另有 s01-1→s01-2、s02-1→s02-2、s02-2→s02-3 三处 2.1–2.9%——那三处是句首捕获到的那一帧已经吃到一点淡入进度，不是跳切 |
+| 段间接缝（换 deck） | 6.76% / 4.03%，该切就切 |
+| 产物 | `v013.mp4 / .srt / .timeline.json / cover-16x9 / cover-4x3 / deck/` |
+
+一处运行期行为要记住：s03 段第一遍有一拍迟到，连续契约下**整段重录了一次**（`recorded a second time after a late beat`），重录后无 motion finding。这是 §29.3 写下的代价，实际发生过一次。
+

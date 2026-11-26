@@ -18,3 +18,18 @@ coverage/
 demo/*/audio/
 demo/*/timings.json
 demo/*/.dsh-video/
+
+# A run directory keeps its own copies of the deck / scenes / cover (the manuscript
+# may not point outside its own directory), so those stay tracked: they are what the
+# recorder actually read. What it *produced* is machine-local, same reasoning as above.
+demo/*/runs/*/audio/
+demo/*/runs/*/timings.json
+demo/*/runs/*/.dsh-video/
+demo/*/runs/*/.page-hold.json
+
+# Manim writes bytecode beside the scene file it imports.
+__pycache__/
+
+# video_teach_export writes the interactive deck here, at the workspace root.
+# Anchored with a slash so it cannot swallow assets/teach/deck.
+/deck/

@@ -4,7 +4,7 @@
 
 ## 最小骨架
 
-教学工具认的 deck 契约是三个全局，两个驱动模式都会用到其中至少两个（页模式 + 共享页时三个全用；cue 模式的多页 deck 也要 `teachPage`）：
+教学工具认的 deck 契约是三个全局，按需要至少两个（页模式 + 共享页时三个全用；cue 模式的母带契约下多页 deck 也要 `teachPage`）：
 
 ```html
 <script>
@@ -21,7 +21,7 @@
 两种驱动模式对应两种 provider：
 
 - **页模式 + 页内节拍（默认，`deepseek`）**：一句一页（稿件声明 `page` 时连续几句共用一页，见下文「一页承载多句」），句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(该句的页)`，再按时长比例调 `teachCue(fragment)`，共享页还会在开录前调一次 `teachCue(enter)`。一页 n 个 fragment → n+1 次画面变化（换页算第一次），节拍比例由这个数算出（见 `video-teach-storyboard` 的「页内节拍」）。
-- **纯 cue 模式（`volcengine`）**：一页或多页都行，`teachCue` 按词触发（`at_word`）。节拍编号全片递增，跨页时由录制器在那一拍翻页（翻页动画从那一拍开始播，所以别把跨页拍放在句尾）。每句都是一次新的页面加载，所以开录前录制器会先把这一句第一个 cue 之前的拍点亮——不要把"上手状态"交给 deck 自己记。
+- **cue 模式（`volcengine`）**：一页或多页都行，`teachCue` 按词触发（`at_word`）。**注意 cue 模式 ≠ 母带契约**：cue 模式由词时间戳决定（`volcengine` 就有），是否"一个段一次连续录制"另由旁白契约决定——`merge: auto`（默认）是母带契约，一个段只加载一次 deck；`merge: none` 回到逐句加载，每句开录前就翻好页、页切换动画不进画面。节拍编号在段内一路递增，录制器按这个号翻页（翻页动画从那一拍开始播，所以别把跨页拍放在句尾）。**一个 slides 段只有一次页面加载**：跨句时 deck 不重载，上一句留下的状态就是下一句的开场；而且每句开录时录制器会先把页面翻到这一句的第一拍所在页，再按词推进节拍。不要把"上手状态"交给 deck 自己记，也**不要**依赖 `localStorage` 之类跨加载的手段。
 
 页模式下 deck 的结构默认是"一个 `<section>` 对应一句"，顺序必须与稿件一致，页数不能少于该段的句数（少了后面几句会停在最后一页，`video_teach_plan` 会点名）。稿件写 `page` 时几句共用一个 `<section>`，此时页数以稿件声明的为准，见下文「一页承载多句」。
 
@@ -43,7 +43,7 @@ window.teachCue = function teachCue(n) {
 }
 ```
 
-包里带了一份现成的 reveal.js（6.0.2，MIT）与模板：`video_teach_export` 会把 deck 连同 `reveal.js` / `reveal.css` / `theme.css` 一起抄进 `deck/`，直接双击就能演示。
+包里带了一份现成的 reveal.js（6.0.2，MIT）与模板：`video_teach_export` 会把 deck 写成 `deck/<段 id>/index.html`，并把 HTML 里 `./名字` 引用的同目录文件（`reveal.js` / `reveal.css` / `theme.css`）一并拷过去，直接双击就能演示。
 
 ### 动效时长也可以声明：`teachPageTransition` 与 `teachTransition`
 
@@ -54,7 +54,7 @@ window.teachPageTransition = 500   // 切页动画播完要多久
 window.teachTransition = 480       // 页内一拍动画播完要多久
 ```
 
-- **`teachPageTransition`**：录制器在 `teachPage(n)` 之后等这么久才开始录。不写就是默认的 300 ms。**用 reveal 的 `fade` 就要写 500** —— reveal.css 里它是固定的 0.5 s，`transitionSpeed` 改不了它，按 300 ms 等会从转场中间开录（观众看不出错，只看到每句开头有一帧在动）。其它转场听 `transitionSpeed`：`fast` 0.2 s、`default` 0.4 s、**`slow` 1.2 s**，所以要声明的是那一档的数（用 `slow` 写了 900 就不够，这一点是照着实测发现的：样本片按 900 声明时，两页首帧与稳态差 2.2，改成 1300 后六句全部 ≤ 0.04）。写长了只是每句多等一会儿，不多录、不错位，因为 t=0 取的是等待之后的第一帧。
+- **`teachPageTransition`**：录制器在 `teachPage(n)` 之后等这么久才开始录。不写就是默认的 300 ms。**用 reveal 的 `fade` 就要写 500** —— reveal.css 里它是固定的 0.5 s，`transitionSpeed` 改不了它，按 300 ms 等会从转场中间开录（观众看不出错，只看到每句开头有一帧在动）。其它转场听 `transitionSpeed`：`fast` 0.4 s、`default` 0.8 s、**`slow` 1.2 s**，所以要声明的是那一档的数（用 `slow` 写了 900 就不够，这一点是照着实测发现的：样本片按 900 声明时，两页首帧与稳态差 2.2，改成 1300 后六句全部 ≤ 0.04）。写长了只是每句多等一会儿，不多录、不错位，因为 t=0 取的是等待之后的第一帧。
 - **`teachTransition`**：它不决定节拍的时刻（录屏按拍触发，动画由 CSS 自己播），两处会读它：录制器录完后用它决定等多久再截末帧做自检，`video_teach_plan` 用它校验余量——某拍之后到下一拍（或到句末）的余量比它短时给一条 warning，说清是"会和下一拍重叠"还是"句尾会被切"。不写就不校验。声明得比实际动效短，末帧自检会在动画中途取样，报"末帧没播完"。模板的值是 `--teach-dur` 的 480 ms；页里用了 `count` 或 `draw`（这两个是 900 ms）就把这行写成 900。
 - 缺这两个全局，契约仍然成立，行为与没有它们时完全一样。
 
@@ -112,7 +112,7 @@ reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` 
 
 ### 同一元素连续变形：`data-teach-stage`
 
-跨页 auto-animate 在"一句一录"里拍不到（每句开录前才切页），页内可以自己做一个：容器加 `data-teach-stage`，`teachCue` 会把它的 `data-step` 跟着拍数写进去，形状全交给 CSS。
+跨页 auto-animate 在逐句契约里拍不到（每句开录前才切页）——除非声明了 `meta.transition`，那时它就是被录进前一句尾部的那段页切换动画（见下文「跨句转场」）；母带契约里它自然发生在句首翻页处。页内想自己做连续变形：容器加 `data-teach-stage`，`teachCue` 会把它的 `data-step` 跟着拍数写进去，形状全交给 CSS。
 
 ```html
 <div class="r-stack" data-teach-stage data-step="1"><div class="mover"></div></div>
@@ -152,9 +152,10 @@ reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` 
 
 - 有词时间戳（`volcengine`）时，`teachCue` 按**词**触发：稿子里 `at_word` 写哪个词，画面就在那个词发音时切换。
 - 没有词时间戳（`deepseek`，默认）时，节拍按 `at_progress` × 该句实测时长触发。这个比例不是随手写的：一页 n 个 fragment → n+1 次变化（换页算第一次），第 k 个 fragment 落在说话时长的 k/(n+1)，并且分母含尾停留（算法见 `video-teach-storyboard`「页内节拍」）。它与发音不是逐字对齐的关系，**不要**据此承诺"讲到哪个字画面动到哪"。
+- **母带契约（`volcengine`）下页面在句首就翻过去**：一句开始时录制器先把 deck 翻到这一句的页（`cueOpening` 的页与拍），节拍照旧按词触发。所以"这一句的页"在第一个字就出现在画面里，不等到第一个节拍；页切换动画录在这一句的开头。
 - **所有动作要在这一句念完之前播完**，不要靠句尾去补。画面长度等于该句音频长度（`timings.json` 的 `durationMs`；声明了 `meta.transition` 的那句再多出 `exitMs`），DeepSeek 默认不补停顿；要让最后一屏停住约 1 秒，得给音频尾部补静默（见 `video-teach-iterate` 的「页尾停留」），再按新时长重算 cues。
 - 每句结尾的版面必须是**完整构图**，不要留半截动画或空位；最后一屏要能独立看 1 秒以上。
-- 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`，不会重录别的句子（补过页尾停留的项目要全量重录，见 `video-teach-iterate`）。
+- 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`。逐句契约只重录这一句（补过页尾停留的项目要全量重录，见 `video-teach-iterate`）；**母带契约下会扩到整段**（一句的代价是一段）。
 
 ## 静态资源：图标内联、位图外链
 
@@ -183,9 +184,9 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 
 排版上没有新东西，但上限更快撞到：**一页两句、每句两拍**是这类页面的常态规划；三句各两拍就是 6，正好到顶，再多就该拆页（每页 6 个 fragment 的上限仍然成立）。
 
-页数与节拍数有几处边界，`video_teach_plan` 会分别处理：稿件声明的页号超过 deck 的页数会被**拒绝**（那一页根本不存在，句子会停在录制器上一次停的地方）；`enter` 超过该页的 fragment 数只是 warning（deck 会夹在页末，但页面一开就全亮，通常不是你要的）；页数**数不出来**（deck 没有 `<section>`，页在 JS 里生成）时也给一条 warning，说清页号没被核对过——别让它变成静默通过。
+页数与节拍数有几处边界，`video_teach_plan` 会分别处理：稿件声明的页号**改变了句→页映射**且超过 deck 的页数会被**拒绝**（那一页根本不存在，句子会停在录制器上一次停的地方）；`enter` 超过该页的 fragment 数只是 warning（deck 会夹在页末，但页面一开就全亮，通常不是你要的）；页数**数不出来**（deck 没有 `<section>`，页在 JS 里生成）时也给一条 warning，说清页号没被核对过——别让它变成静默通过。
 
-`page` / `enter` 只对 `engine: slides` 的段有意义；Manim 段由场景自己的时长决定，写上去不会有任何效果。
+`page` / `enter` 只对**页模式**（没有词时间戳的 `deepseek`）的 slides 段有意义；Manim 段由场景自己的时长决定，cue 模式（`volcengine`）下这两个键静默失效。写上去不会有任何效果。
 
 ## 跨句转场：形态归 deck
 
@@ -193,6 +194,8 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 
 - **页切换自带动画**：reveal 的 `transition`（`fade` / `slide` / `zoom` / `convex` …），或者自己写 CSS（模板的命令式 deck 就是给 `.page` 加 `transition: opacity/transform`，`teachPage` 切 `.on` 类）。转场长度就是 `teachPageTransition` 声明的那一个数。
 - **跨页 Auto-Animate**：相邻两个 `<section>` 都写 `data-auto-animate`，元素用 `data-id` 对上，reveal 会把它们补间过去。**这时真正的时长是 `autoAnimateDuration`（默认 1 秒）**，所以要 `Reveal.configure({ autoAnimateDuration: 0.52 })` 并让稿件的 `meta.transition.durationMs` 不小于它 —— 补间比 `exitMs` 长就会在中间被切（观感是"滑到一半就断"）。
+
+**母带契约（`volcengine`）不经过这套**：一个 slides 段一次连续录制，句子之间没有接缝，翻页直接录在它发生的时刻（句首换页、句中跨页的拍）。`meta.transition` 在这条路上不生效，`video_teach_plan` 会提示；deck 自己的页切换就是转场，所以真正要调的是 deck 的 `transition` / `transitionSpeed` 与 Auto-Animate 参数。
 
 三条边界：
 
@@ -209,9 +212,10 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 - 页模式下切到一页时**一个拍都不亮**（模板 `teachPage` 用 `Reveal.slide(n, 0, -1)`）：第一拍留给稿件的第一条 cue。传 `0` 会让每页的第一拍提前亮起，于是它对应的那条 cue 永远不生效（后面的节拍照常），`enter: 0` 也无法兑现。
 - 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍或 `enter > 0` 时）、检查 `teachPage`（页模式，或多页的 cue 模式），缺了在**录音之前**就拒绝。
 - 每页的 fragment 数不少于稿件里这一页用到的最大编号；多出来的 fragment 永远不显示（页末夹住），只是浪费。页内节拍数 = fragment 数 + 1（换页算第一次变化）。共享页按整页数，不是按句数。
-- 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
+- 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器（仅逐句契约：`deepseek`，或 `volcengine` + `merge: none`；母带契约没有逐句音频可补）。
 - 动效类来自模板（`dim` / `draw` / `count` / `bar`）或 reveal 内置变体，节奏靠 `--teach-dur` 覆盖；deck 里**没有** `.reveal .fragment { transition: … }` 这样的整体覆盖。
 - `data-teach-stage` 的容器自己不是 fragment，但同一页要有足够多的 fragment 给它数拍（2 拍 → 3 种形状）；`data-step` 初值写成 `"1"`。
+- 如果这条路是母带契约（跨句连续录制）：`teachPage` 必须幂等且带完整切页动画（动画会被录进画面），每一页的 fragment 数决定节拍落在哪一页。
 - 声明了 `teachPageTransition`（用 reveal 的 `fade` 就是 500）与 `teachTransition`（等于这页实际最长的那段动效）；`video_teach_plan` 会因为后者报警，也会因为稿件声明的转场比前者短而报警。
 - 稿件写了 `meta.transition` 时：切页动画是真的有（别在 `teachPage` 里关掉动画），Auto-Animate 的 `autoAnimateDuration` 与 `durationMs` 对齐，转场落点那一页在 `enter` 状态下不是空页。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
@@ -223,7 +227,7 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 写 deck 时守住五条：
 
 1. **一句至少一个 fragment**。一句话讲三个要点就拆三个 fragment，别让一句只停在一个静态版面上。页模式下这句单独占一页时，换页本身就是那次变化，写不写节拍都行。
-2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。只有真标记算数：注释与 `<script>` 里的 `class="fragment"` 不算节拍；整份 deck 数不出来时（节拍在 JS 里生成）plan 会明说一句，不会静默跳过。
+2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。只有真标记算数：注释与 `<script>` 里的 `class="fragment"` 不算节拍；整份 deck 数不出来时（节拍在 JS 里生成），**cue 模式**下 plan 会明说一句；页模式只在稿件声明过页号时才提这一句。
 3. **同一页别塞超过 6 个 fragment**。reveal 会缩放适配，行数一多字号就被压到看不清；正文超过 10 行就该换页。
 4. **`teachCue(n)` 是"显示到第 n 步"**，`Reveal.getIndices().f` 是零基下标，两者差一。模板里已经处理，自己写 deck 时注意别再把 `f` 直接当目标值。
 5. **改了这一页的 fragment 数，就重算这一句的 cues**。节拍比例由变化次数算出（见 `video-teach-storyboard`「页内节拍」），重算后只需要重渲染，不用重录旁白。

@@ -24,13 +24,13 @@
 2. **TeX**：macOS 上推荐 TinyTeX（用户可写、自带 `dvisvgm`）：`curl -sL https://yihui.org/tinytex/install-bin-unix.sh | sh`，二进制在 `~/Library/TinyTeX/bin/universal-darwin`。
 3. **`dvisvgm`**：**BasicTeX 有 `latex` 但没有 `dvisvgm`**，只装 basictex 会在首次渲染报 `latex error converting to dvi`。用 TinyTeX，或在可写的 TeX 上 `tlmgr install dvisvgm`。把 `TEACH_TEXBIN` 指到含 `latex` 与 `dvisvgm` 的 bin 目录（两个分属不同安装时，插件会建 shim 目录把两者拼到同一 `PATH`）。
 
-`video_teach_plan` 会把依赖按「必需 / 仅幻灯 / 仅 Manim」分开报，并在缺 Manim 依赖时**在花钱前拒绝**，同时给出上面这些命令与「改用 slides」这条路。
+`video_teach_plan` 会把依赖按「必需 / 仅幻灯 / 字幕（不阻塞）/ 仅 Manim」四档分开报，并在缺 Manim 依赖时**在花钱前拒绝**，同时给出上面这些命令与「改用 slides」这条路。
 
 ## 文件约定
 
 - 一句一个 `.py`：`scenes/<sentence-id>.py`（路径写进 `storyboard.yaml` 的 `scene`）。
 - **一个文件里只放一个 `Scene` 子类**。插件取第一个 `class X(Scene)`；放两个说明稿件结构出了问题，不是特性。
-- 场景**不需要**自己算时长对齐旁白：插件会把它重定时到这句旁白的真实长度。反过来，场景写得太短会在尾部停顿（补最后一帧），写得太长会被截断并报告超长量。
+- 场景**不需要**自己算时长对齐旁白：插件会把它重定时到这句旁白的真实长度。反过来，场景写得太短会在尾部停顿（补最后一帧），写得太长会被裁在旁白结束处，并在渲染结果的 `motion_findings` 里点名超长量。
 
 ## 一个能用的模板
 
@@ -67,7 +67,7 @@ class PartialSums(Scene):
 
 - `latex error converting to dvi` → TeX 缺包或缺 `dvisvgm`，看 `media/Tex/*.log` 里第一个 `!` 开头的行。
 - 画面比旁白短一截 → 这是正常的补帧，但动画在句子中途结束观感会断；把最后一段 `run_time` 拉长或补 `wait`。
-- 报超长 → 场景实际长度超过旁白，插件裁在旁白结束处。要么缩短动画，要么把那句话写长。
+- 报超长（`motion_findings` 里 `runs N ms past the narration`）→ 场景实际长度超过旁白，插件裁在旁白结束处。要么缩短动画的 `run_time`，要么把那句话写长。
 
 ## 一句一场景，别复用
 
@@ -75,8 +75,10 @@ class PartialSums(Scene):
 
 三条做法：
 
-1. **一句一个 `.py`**，文件名用句子 id（`scenes/s02-1.py`），改哪句的重录代价就锁在那一句。
+1. **一句一个 `.py`**，文件名用句子 id（`scenes/s02-1.py`），改哪句的**画面**重录代价就锁在那一句。注意旁白侧的代价更大：母带契约下改一句台词仍要重合成整条母带（见 `video-teach-iterate`）。
 2. **场景时长配到该句旁白的 70%–100%**。太短，尾部会补最后一帧，看着像卡住；太长，会被裁在旁白结束处，动画断在半截。
 3. 真要复用同一段画面（比如同一坐标系下讲两句），把这两句**并成一句**，比留两个引用更诚实。
 
-`video_teach_plan` 会列出所有共用场景的句子 id；渲染完后 `video_teach_render` 还会抽样帧颜色，把"看着像静帧"的段点名。
+`video_teach_plan` 会列出所有共用场景的句子 id；渲染完后 `video_teach_render` 还会抽样帧颜色，把「看着像静帧」的段点名。
+
+**`volcengine` 的母带契约下，Manim 句会打断连续录制**：一句 Manim 就是一个独立段，它前后都是段边界，也就是硬切。想把一条片子做成「幻灯片连续 + 中间插一段数学动画」，那两处接缝不可能有转场——这是结构性限制，不是参数问题。

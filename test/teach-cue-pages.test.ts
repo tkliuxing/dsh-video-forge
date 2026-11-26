@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { describe, expect, it } from 'vitest'
 import { writeDeck } from '../src/teach/deck.ts'
-import { cueLandings, cueOpening, recordDeckSegment, type CueAt } from '../src/teach/slides.ts'
+import { cueLandings, cueOpening, recordDeckRun, recordDeckSegment, type CueAt } from '../src/teach/slides.ts'
 
 const cue = (fragment: number): CueAt => ({ atMs: 120, fragment })
 
@@ -153,11 +153,12 @@ describe.skipIf(!CAN_RECORD || !CAN_MEDIA)('cue mode drives the pages its beats 
   const record = async (
     deckPath: string,
     label: string,
-    options: { cues: CueAt[], durationMs: number, startFragment?: number },
+    options: { cues: CueAt[], durationMs: number, startFragment?: number, exit?: { page: number, enter: number, ms: number } },
   ): ReturnType<typeof recordDeckSegment> => recordDeckSegment({
     deckPath,
     cues: options.cues,
     ...(options.startFragment === undefined ? {} : { startFragment: options.startFragment }),
+    ...(options.exit === undefined ? {} : { exit: options.exit }),
     durationMs: options.durationMs,
     width: 640,
     height: 360,
@@ -198,6 +199,28 @@ describe.skipIf(!CAN_RECORD || !CAN_MEDIA)('cue mode drives the pages its beats 
     expect(previousOnPageOne(inheritedMean, firstMean)).toBe(true)
   }, 120_000)
 
+  // Cue mode can carry a tail transition since 2026-11-26 (docs/TEACH-VIDEO.md §28.5).
+  // Recording one exposed a second defect: the finished-layout check re-drove
+  // `teachPage(options.page ?? 0)`, and cue mode has no `options.page`, so a body that
+  // sits on page 2 or later was compared against page 1 and reported as cut through an
+  // animation. Measured on the showcase film: 5.5–7.8% on s01-2…s01-5, all of which had
+  // more than 2.6 s of room after their last beat.
+  it('records a tail transition and still calls the body finished, on a page above the first', async () => {
+    const entry = await scaffold('cue-exit', PAGES)
+    // The body's only beat is film-wide number 2 = the first beat of page 1 (dark).
+    // The tail turns to page 0, so body and tail are unmistakably different pages.
+    const segment = await record(entry, 'cue-exit', {
+      cues: [cue(2)],
+      durationMs: 1000,
+      exit: { page: 0, enter: 0, ms: 400 },
+    })
+    expect(segment.exitMs).toBe(400)
+    expect(segment.settle.status).toBe('finished')
+    const body = await frameMean(segment.path, 0.9)
+    const tail = await frameMean(segment.path, 1.35)
+    expect(tail).toBeGreaterThan(body + 100)
+  }, 120_000)
+
   it('records a single-page cue deck that never defines teachPage', async () => {
     const entry = await scaffold('cue-onepage', ONE_PAGE)
     // The contract before multi-page support: `teachReady` + `teachCue`, nothing else.
@@ -208,6 +231,82 @@ describe.skipIf(!CAN_RECORD || !CAN_MEDIA)('cue mode drives the pages its beats 
     const segment = await record(entry, 'onepage', { cues: [{ atMs: 400, fragment: 2 }], durationMs: 1200 })
     expect(segment.frames).toBeGreaterThan(0)
   }, 120_000)
+})
+
+/**
+ * The continuous contract (docs/TEACH-VIDEO.md §29.3): one deck session for a whole
+ * slides segment. Two things only this shape can prove — the sentence boundary is not
+ * a cut (the picture simply continues), and a page turn that belongs between two
+ * sentences is recorded where it happens instead of being replaced by one.
+ */
+describe.skipIf(!CAN_RECORD || !CAN_MEDIA)('a slides segment recorded as one continuous run', () => {
+  // The page a sentence lives on has to be on screen when the sentence starts, not
+  // when its first beat word arrives (docs/TEACH-VIDEO.md §29.4): waiting for the
+  // cue left the previous page up for the first 0.2–2.8 s of the sentence while the
+  // subtitle had already switched.
+  it('turns the page at the sentence boundary, before its first beat fires', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'teach-boundary-'))
+    const deckPath = await writeDeck(join(root, 'slides', 's01'), { title: 'boundary', slides: PAGES })
+    // Sentence 2's only beat is on page 1 (dark page) and fires 500 ms in; the turn
+    // has to be at ~0. Frame brightness separates "which page" with no threshold.
+    const recorded = await recordDeckRun({
+      deckPath,
+      sentences: [
+        { id: 'a', durationMs: 700, cues: [{ atMs: 200, fragment: 1 }] },
+        { id: 'b', durationMs: 1200, cues: [{ atMs: 500, fragment: 2 }] },
+      ],
+      width: 640,
+      height: 360,
+      fps: 30,
+      workDirFor: (id: string) => join(root, 'work', id),
+    })
+    const atStart = await frameMean(recorded[1]!.path, 0)
+    const afterFade = await frameMean(recorded[1]!.path, 0.4)
+    // The first frame is still the page sentence 1 ended on, and the new page is up
+    // well before the beat at 500 ms: the turn belongs to the boundary.
+    expect(atStart).toBeGreaterThan(150)
+    expect(afterFade).toBeLessThan(60)
+  }, 180_000)
+
+  it('carries the picture across a sentence boundary and records the page turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'teach-run-'))
+    const deckPath = await writeDeck(join(root, 'slides', 's01'), { title: 'continuous', slides: PAGES })
+    const workDirFor = (id: string): string => join(root, 'work', id)
+    // Sentence 1 stays on page 0 (light); sentence 2's only beat is the first beat of
+    // page 1 (dark), so the turn happens *inside* sentence 2's capture.
+    const recorded = await recordDeckRun({
+      deckPath,
+      sentences: [
+        { id: 'a', durationMs: 900, cues: [{ atMs: 300, fragment: 1 }] },
+        { id: 'b', durationMs: 900, cues: [{ atMs: 400, fragment: 2 }] },
+      ],
+      width: 640,
+      height: 360,
+      fps: 30,
+      workDirFor,
+    })
+    expect(recorded.map(segment => segment.frames > 0)).toEqual([true, true])
+    expect(recorded.every(segment => segment.exitMs === 0)).toBe(true)
+
+    // 1. No jump at the boundary: the first frame of one sentence is the page the
+    //    previous one ended on. Two separate `page.goto`s would restart the deck on
+    //    page 0 and show a different picture. Compared against the two settled pages
+    //    rather than a fixed threshold: how far into the fade frame 0 already is
+    //    depends on when the screencast sampled it.
+    const aEnd = await frameMean(recorded[0]!.path, 0.85)
+    const bStart = await frameMean(recorded[1]!.path, 0)
+    const bLate = await frameMean(recorded[1]!.path, 0.8)
+    expect(Math.abs(bStart - aEnd)).toBeLessThan(Math.abs(bStart - bLate))
+
+    // 2. The page turn is in the picture, and it belongs to the second sentence: at
+    //    some point in its first third the frame is *between* the light page it came
+    //    from and the dark page it settles on. Sampling a window instead of one
+    //    instant keeps this from turning into a race against the fade.
+    const midFrames: number[] = []
+    for (const at of [0.03, 0.1, 0.17, 0.25]) midFrames.push(await frameMean(recorded[1]!.path, at))
+    expect(midFrames.some(mean => mean < aEnd - 10 && mean > bLate + 10)).toBe(true)
+    expect(bLate).toBeLessThan(aEnd - 100)
+  }, 180_000)
 })
 
 /** The inherited frame is the dark page; the film's first sentence opens on the light one. */

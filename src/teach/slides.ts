@@ -29,6 +29,7 @@
  * still frame and were shipped once (§15).
  */
 
+import { cueLandings, cueOpening } from './beats.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -86,79 +87,13 @@ export interface CueAt {
   fragment: number
 }
 
-/** Where one cue-mode fragment number lands on a multi-page deck. */
-export interface CueLanding {
-  /** reveal.js horizontal index of the page, 0-based. */
-  page: number
-  /** Beats lit inside that page, 1-based — what `teachCue` takes. */
-  step: number
-}
-
-/**
- * Resolve cue-mode fragment numbers onto a deck's pages.
- *
- * Cue mode counts beats across the whole deck (one counter for the film, see
- * `video-teach-storyboard`), while `teachCue` counts inside the page it is on. With
- * one page those are the same number; with several they are not, and a number that
- * is never translated either lands on the wrong beat or is clamped at the first
- * page's last fragment, which is why a multi-page cue-mode deck used to record its
- * first page and nothing else. A number past the last fragment lands on the last
- * beat, matching the template's clamp.
- *
- * `null` when the deck exposes no pages at all (the deck builds its sections in
- * JavaScript): guessing the layout would be worse than keeping the old single-page
- * behaviour, and `video_teach_plan` already says the numbers went unchecked.
+/*
+ * `cueLandings` / `cueOpening` live in `beats.ts` so the tail-transition planner
+ * can resolve a cue number without importing this module (which pulls in
+ * playwright-core). Re-exported here because callers of the recorder have always
+ * found them beside it — `test/teach-cue-pages.test.ts` is one.
  */
-export function cueLandings(pageFragments: readonly number[], cues: readonly CueAt[]): CueLanding[] | null {
-  if (pageFragments.length === 0) return null
-  const total = pageFragments.reduce((sum, count) => sum + count, 0)
-  // A deck with pages but no fragments has nothing for a beat to land on: staying
-  // on page 0 is what the single-page recorder always did, and clamping to the last
-  // page would record that page for the whole film.
-  if (total === 0) return cues.map(() => ({ page: 0, step: 0 }))
-  const land = (fragment: number): CueLanding => {
-    const wanted = Math.max(1, Math.min(Math.round(fragment), total))
-    let offset = 0
-    for (const [page, count] of pageFragments.entries()) {
-      if (count > 0 && wanted <= offset + count) return { page, step: wanted - offset }
-      offset += count
-    }
-    // Past the end (or only empty pages left): the last page that carries a beat.
-    for (let page = pageFragments.length - 1; page >= 0; page -= 1) {
-      if ((pageFragments[page] ?? 0) > 0) return { page, step: pageFragments[page]! }
-    }
-    return { page: 0, step: 0 }
-  }
-  return cues.map(cue => land(cue.fragment))
-}
-
-/**
- * The state a cue-mode sentence opens in.
- *
- * Each sentence is its own `page.goto`, so the deck comes up empty and dark. Two
- * different pictures are wanted:
- *
- * - a sentence with cues opens **just before its first one** — on that cue's page,
- *   with the beats before it inside that page already lit. That is the picture the
- *   sentence is talking about, and it is what stops the first cue from re-popping
- *   every earlier beat.
- * - a sentence with no cue of its own opens on **the picture the story arrived at**:
- *   the page holding beat `shown` and that beat lit (`shown` comes from the
- *   manuscript, `cueStartFragments`, because this sentence cannot tell).
- *
- * `null` when the deck exposes no pages; `{ page: 0, step: 0 }` when nothing is shown
- * yet.
- */
-export function cueOpening(pageFragments: readonly number[], cues: readonly CueAt[], shown: number): CueLanding | null {
-  if (pageFragments.length === 0) return null
-  const first = cues[0]
-  if (first !== undefined) {
-    const landing = cueLandings(pageFragments, [first])?.[0]
-    return landing === undefined ? null : { page: landing.page, step: Math.max(0, landing.step - 1) }
-  }
-  if (shown <= 0) return { page: 0, step: 0 }
-  return cueLandings(pageFragments, [{ atMs: 0, fragment: shown }])?.[0] ?? null
-}
+export { cueEndPage, cueLandings, cueOpening, type CueLanding } from './beats.ts'
 
 /** Fragments per page in the live deck, in page order; empty when the deck has no pages to count. */
 async function livePageFragments(page: Page): Promise<number[]> {
@@ -536,7 +471,14 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
     // beat: there is no motion to finish.
     const settle = options.cues.length === 0
       ? { status: 'skipped' as const, reason: 'this sentence fires no beat, so there is no motion to finish' }
-      : await finishedLayout(page, options, bodyEndFrame ?? frames[frames.length - 1]!.file, tools, landings === null ? null : (landings[landings.length - 1]?.step ?? null)).catch((error: unknown) => ({
+      : await finishedLayout(
+        page,
+        options,
+        bodyEndFrame ?? frames[frames.length - 1]!.file,
+        tools,
+        landings === null ? null : (landings[landings.length - 1]?.step ?? null),
+        landings === null ? null : (landings[landings.length - 1]?.page ?? null),
+      ).catch((error: unknown) => ({
         status: 'skipped' as const,
         reason: `the finished-layout check could not run (${error instanceof Error ? error.message : String(error)})`,
       }))
@@ -572,6 +514,206 @@ export async function recordDeckSegment(options: RecordDeckOptions, tools: Media
   }
 }
 
+
+/** One sentence as the continuous recorder needs it: its cues on its own clock. */
+export interface RunSentence {
+  id: string
+  /** Cues relative to this sentence's start, in ms — what `cuesFor()` already gives. */
+  cues: readonly { atMs: number, fragment: number }[]
+  durationMs: number
+}
+
+export interface RecordDeckRunOptions {
+  deckPath: string
+  /** In timeline order. The run's length is the sum of their durations. */
+  sentences: readonly RunSentence[]
+  width: number
+  height: number
+  fps: number
+  /** Where one sentence's intermediates live; `segment.mp4` is written inside it. */
+  workDirFor: (id: string) => string
+  chromiumPath?: string | null
+  settleMs?: number
+  signal?: AbortSignal
+}
+
+/**
+ * Record one slides segment as a **single continuous session** (docs/TEACH-VIDEO.md §29.3).
+ *
+ * The difference from `recordDeckSegment` is the deck's lifetime: it is loaded once,
+ * and every sentence in the segment is captured against it. Nothing is re-driven
+ * between sentences — cue-mode beats are numbered across the whole deck, so the state
+ * the previous sentence left *is* the state the next sentence opens on, and the page
+ * turns that belong between two sentences are recorded where they happen instead of
+ * being replaced by a hard cut. That is the whole point: with a single master track
+ * there are no seams, and with one session there is nothing to cut.
+ *
+ * Segments stay one file per sentence on disk, so per-sentence re-recording, the
+ * `only` narrowing and the per-sentence finished-layout check all keep working.
+ * The cost of a retry is different: re-recording one sentence inside an already
+ * recorded run means re-driving it to its opening state in a *fresh* page, which can
+ * differ from the frame the previous sentence left by a few pixels (reveal lays the
+ * stage out on the slide change). A late beat therefore re-runs the whole run.
+ *
+ * This duplicates the capture plumbing of `recordDeckSegment` on purpose: page mode
+ * and the per-sentence cue contract have their own, tested lifecycle, and this
+ * contract must not be able to regress them.
+ */
+export async function recordDeckRun(options: RecordDeckRunOptions, tools: MediaTools = {}): Promise<RecordedSegment[]> {
+  const recorded: RecordedSegment[] = []
+  let browser: Browser | null = null
+  try {
+    browser = await chromium.launch({
+      ...(options.chromiumPath === undefined || options.chromiumPath === null ? {} : { executablePath: options.chromiumPath }),
+      args: ['--hide-scrollbars', '--force-device-scale-factor=1', '--disable-lcd-text'],
+    })
+    const context = await browser.newContext({
+      viewport: { width: options.width, height: options.height },
+      deviceScaleFactor: 1,
+      reducedMotion: 'no-preference',
+    })
+    const page = await context.newPage()
+    await page.goto(pathToFileURL(options.deckPath).href, { waitUntil: 'load' })
+    await page.waitForFunction(() => (globalThis as DeckGlobals).teachReady === true, undefined, { timeout: 15_000 })
+    if (options.settleMs !== undefined && options.settleMs > 0) await page.waitForTimeout(options.settleMs)
+
+    const firstWorkDir = options.workDirFor(options.sentences[0]!.id)
+    await mkdir(firstWorkDir, { recursive: true })
+    const probePath = join(firstWorkDir, 'first-frame.png')
+    await page.screenshot({ path: probePath })
+    const colors = await countFrameColors(probePath, {}, tools, options.signal)
+    if (colors <= 1) {
+      throw new DeckRecordError(
+        `the deck at ${options.deckPath} painted a single flat colour (${colors} distinct colour${colors === 1 ? '' : 's'}); `
+        + 'the stage did not lay out, so this segment would be blank. Check that the deck loads its stylesheets and that reveal.js reports ready (window.teachReady).',
+      )
+    }
+
+    // The beat numbering is the deck's, translated once for the whole run.
+    const pages = await livePageFragments(page)
+    const allCues = options.sentences.flatMap(sentence => [...sentence.cues])
+    const landings = allCues.length === 0 ? null : cueLandings(pages, allCues)
+    const cdp: CDPSession = await context.newCDPSession(page)
+    let cursor = 0
+    // Tracked locally rather than read back from the deck: a page turn only has to
+    // happen when the beat's landing says so, and a deck without a `Reveal` global
+    // (the template always has one) must not make the recorder guess.
+    let pageNow = 0
+
+    for (const sentence of options.sentences) {
+      const workDir = options.workDirFor(sentence.id)
+      const framesDir = join(workDir, 'frames')
+      await mkdir(framesDir, { recursive: true })
+      const mine = landings === null ? null : landings.slice(cursor, cursor + sentence.cues.length)
+      cursor += sentence.cues.length
+
+      const frames: { file: string, atMs: number }[] = []
+      let startedAt: number | null = null
+      const onFrame = (event: unknown): void => {
+        const frame = event as ScreencastFrame
+        const timestamp = typeof frame.metadata.timestamp === 'number' ? frame.metadata.timestamp : Date.now() / 1000
+        if (startedAt === null) startedAt = timestamp
+        const file = join(framesDir, `f${String(frames.length).padStart(6, '0')}.jpg`)
+        frames.push({ file, atMs: Math.max(0, Math.round((timestamp - startedAt) * 1000)) })
+        void writeFile(file, Buffer.from(frame.data, 'base64')).catch(() => {})
+        void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {})
+      }
+      cdp.on('Page.screencastFrame', onFrame)
+      await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, everyNthFrame: 1, maxWidth: options.width, maxHeight: options.height })
+
+      const readyAt = await waitForFirstFrame(() => frames.length > 0, options.signal)
+
+      // The page this sentence lives on is shown when the sentence *starts*, not when
+      // its first beat fires. A cue names a word ("…也怕「画面」和旁白…"), so waiting
+      // for it left the previous page on screen for another 0.2–2.8 s while the
+      // narration had already moved on — measured on the showcase film, where every
+      // sentence's first cue word sat 170–2774 ms in and the subtitle had switched at
+      // the sentence's first word (docs/TEACH-VIDEO.md §29.4). Turning here records
+      // the deck's own page transition at the boundary, and the beats still land on
+      // their words.
+      const opening = mine === null || mine.length === 0
+        ? null
+        : { page: mine[0]!.page, step: Math.max(0, mine[0]!.step - 1) }
+      if (opening !== null) {
+        if (opening.page !== pageNow) {
+          await turnPage(page, opening.page)
+          pageNow = opening.page
+        }
+        // Idempotent in a continuous run: the beats before a first cue are the ones
+        // the previous sentence already lit. A sentence whose first cue opens a page
+        // has none, and `lightBeats(0)` does nothing.
+        if (opening.step > 0) await lightBeats(page, opening.step)
+      }
+
+      const beats: BeatTiming[] = []
+      for (const [index, cue] of sentence.cues.entries()) {
+        const landing = mine?.[index] ?? null
+        const waitMs = cue.atMs - (performance.now() - readyAt)
+        if (waitMs > 0) await page.waitForTimeout(waitMs)
+        if (landing !== null) {
+          // The deck's own page transition is the transition here: it starts at the
+          // beat that crosses the page and is recorded like any other motion.
+          if (landing.page !== pageNow) {
+            await turnPage(page, landing.page)
+            pageNow = landing.page
+          }
+          await lightBeats(page, landing.step)
+        }
+        beats.push({ fragment: cue.fragment, atMs: cue.atMs, actualMs: Math.round(performance.now() - readyAt) })
+      }
+      const hold = sentence.durationMs - (performance.now() - readyAt)
+      if (hold > 0) await page.waitForTimeout(hold)
+
+      const bodyEnd = frames.length === 0 ? null : frames[frames.length - 1]!.file
+      await cdp.send('Page.stopScreencast')
+      cdp.off('Page.screencastFrame', onFrame)
+      if (frames.length === 0) throw new DeckRecordError('the screencast produced no frames at all')
+      await settleFiles(frames.map(frame => frame.file))
+
+      const settle = bodyEnd === null
+        ? { status: 'skipped' as const, reason: 'the capture produced no frame to compare' }
+        : await finishedLayout(
+          page,
+          { ...options, deckPath: options.deckPath, cues: sentence.cues, durationMs: sentence.durationMs, workDir, width: options.width, height: options.height, fps: options.fps },
+          bodyEnd,
+          tools,
+          mine === null ? null : (mine[mine.length - 1]?.step ?? null),
+          mine === null ? null : (mine[mine.length - 1]?.page ?? null),
+        ).catch((error: unknown) => ({
+          status: 'skipped' as const,
+          reason: `the finished-layout check could not run (${error instanceof Error ? error.message : String(error)})`,
+        }))
+
+      const listPath = join(workDir, 'frames.txt')
+      const totalMs = sentence.durationMs
+      const list = frames
+        .map((frame, index) => {
+          const next = frames[index + 1]
+          const seconds = ((next === undefined ? totalMs : next.atMs) - frame.atMs) / 1000
+          return `file '${frame.file.replaceAll("'", "'\\''")}'\nduration ${Math.max(seconds, 0.001).toFixed(4)}`
+        })
+        .join('\n')
+      await writeFile(listPath, `${list}\nfile '${frames[frames.length - 1]!.file}'\n`, 'utf8')
+      const path = join(workDir, 'segment.mp4')
+      await encodeFrames(
+        { listPath, output: path, durationMs: totalMs, width: options.width, height: options.height, fps: options.fps },
+        tools,
+        options.signal,
+      )
+      recorded.push({ path, frames: frames.length, media: await probe(path, tools, options.signal), beats, settle, exitMs: 0 })
+    }
+    await page.close()
+    await context.close()
+    return recorded
+  } catch (error: unknown) {
+    if (error instanceof DeckRecordError) throw error
+    throw new DeckRecordError(`could not record the deck (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+  } finally {
+    await browser?.close().catch(() => {})
+  }
+}
+
+
 /**
  * Drive the deck to the state the last beat asked for and compare it with the
  * frame the segment was cut on.
@@ -591,6 +733,14 @@ async function finishedLayout(
   tools: MediaTools,
   /** Cue mode: the beat inside its page, when the caller translated the number. */
   finalStep: number | null = null,
+  /**
+   * The page the body ended on. Page mode knows it from the manuscript; cue mode
+   * only from the last beat's landing, and re-driving page 0 instead reported every
+   * body that sits on page 2 or later as "cut through an animation" (measured
+   * 2026-11-26: 5.5–7.8% against a 0.2% threshold, on exactly the sentences whose
+   * page index was ≥1).
+   */
+  finalPage: number | null = null,
 ): Promise<SettleCheck> {
   const finalFragment = finalStep ?? options.cues[options.cues.length - 1]!.fragment
   // With a tail transition the deck is left on the *next* page, so the finished
@@ -608,7 +758,7 @@ async function finishedLayout(
     await page.evaluate(index => {
       const deck = globalThis as DeckGlobals
       if (typeof deck.teachPage === 'function') deck.teachPage(index)
-    }, options.page ?? 0)
+    }, finalPage ?? options.page ?? 0)
   }
   const declared = await page.evaluate(() => {
     const value = (globalThis as DeckGlobals).teachTransition

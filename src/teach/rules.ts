@@ -89,6 +89,21 @@ export interface AuditOptions {
    * fragments are not range-checked.
    */
   deckFragments?: ReadonlyMap<string, number>
+  /**
+   * Fragments per page for each slides deck, keyed by segment id.
+   *
+   * Only cue mode needs it: a tail transition there lands on the beat the next
+   * sentence opens on, and that beat is resolved against these counts. A segment
+   * missing from the map is reported as "the seam will be cut" instead of being
+   * guessed (see `exitSlots`).
+   */
+  pageFragments?: ReadonlyMap<string, readonly number[]>
+  /**
+   * Whether the narration is one master track, i.e. the picture is recorded as one
+   * continuous run per segment. Changes what `meta.transition` means: there is no
+   * sentence seam to turn.
+   */
+  continuous?: boolean
 }
 
 /** Which sentences share one Manim scene file, for the "same animation twice" rule. */
@@ -216,19 +231,25 @@ export function auditManuscript(board: Storyboard, options: AuditOptions = {}): 
     }
   }
 
-  // --- a declared tail transition needs a page to turn to -------------------
-  // A transition is recorded by switching the deck's page inside the earlier
-  // sentence's segment, so it lands on the state the *next* sentence opens in. In
-  // cue mode that state is derived from the deck's own fragment counts at record
-  // time, not from the manuscript, so `exitSlots` cannot name a target and the
-  // manuscript would get hard cuts with no word about it (docs/TEACH-MOTION.md §7
-  // rule 2). Kept a refusal rather than a warning for that reason.
-  if (board.transition !== null && board.transition.mode === 'deck' && wordTimings && board.segments.some(segment => segment.engine === 'slides')) {
-    structural.push(
-      `meta.transition is set, but the voice "${board.voice?.provider ?? DEFAULT_VOICE_PROVIDER}" reports word timings, so the slides run in cue mode. `
-      + 'A cue-mode sentence\'s page is worked out from its own beats and the deck\'s fragment counts when it is recorded, so the state a tail transition would have to land on is not knowable from the manuscript. '
-      + 'Either set meta.transition.mode: none, or narrate with a provider that reports no word timings (page mode, the DeepSeek route)',
-    )
+  // --- a declared tail transition in cue mode needs the deck's pages ---------
+  // Cue mode *can* record a tail transition (2026-11-26): the next sentence's
+  // opening picture is derivable — `cueOpening()` resolves its first beat against
+  // the deck's fragments per page, and the recorder lands on exactly that page and
+  // beat. The remaining obstruction is a deck whose pages cannot be counted (the
+  // deck builds its `<section>`s in JavaScript), where guessing would record a
+  // transition onto a picture the next sentence never opens on.
+  if (board.transition !== null && board.transition.mode === 'deck' && wordTimings && options.continuous === true) {
+    // The default contract for a voice with word timings is one continuous
+    // recording per segment (docs/TEACH-VIDEO.md §29): sentences follow each other
+    // with no seam for a tail transition to sit in, so the deck's own page turn is
+    // the whole transition.
+    warnings.push('meta.transition is set, but this narration is a single master track: the picture is one continuous recording per segment, so there are no sentence seams to turn and the deck\'s own page transition is recorded where it happens. Drop meta.transition, or narrate with merge: none to keep the per-sentence contract')
+  } else if (board.transition !== null && board.transition.mode === 'deck' && wordTimings) {
+    const uncounted = board.segments.filter(segment => segment.engine === 'slides'
+      && options.pageFragments?.get(segment.id) === undefined)
+    if (uncounted.length > 0) {
+      warnings.push(`${uncounted.map(segment => `segment "${segment.id}"`).join(', ')}: meta.transition is declared, but the deck's pages could not be counted, so the next sentence's opening picture is not knowable and those seams stay hard cuts. Give the deck top-level <section> elements, or set meta.transition.mode: none`)
+    }
   }
 
   // --- per-sentence: every sentence changes one picture ---------------------
@@ -568,6 +589,12 @@ export interface BeatSchedule {
 export interface DeckAuditOptions {
   /** Where each sentence's beats land. Missing sentences are simply not checked. */
   beats?: ReadonlyMap<string, BeatSchedule>
+  /**
+   * Whether the narration is one master track, i.e. the picture is recorded as one
+   * continuous run per segment. Transition findings are skipped when it is: there are
+   * no seams for a tail transition to sit in.
+   */
+  continuous?: boolean
 }
 
 /** A deck finding, in the same two buckets `auditManuscript` uses. */
@@ -712,7 +739,12 @@ export function auditDecks(board: Storyboard, decks: ReadonlyMap<string, DeckInf
   }
 
   warnings.push(...transitionFindings(board, decks, options))
-  warnings.push(...seamFindings(board, decks, exitSlots(board, pageMode ? 'page' : 'cue'), options))
+  // Transition findings only make sense where a seam exists: a single master narration is
+  // one continuous recording per segment, so `exitMs` is 0 throughout and every seam
+  // finding here would describe a transition the render will not record.
+  if (options.continuous !== true) {
+    warnings.push(...seamFindings(board, decks, exitSlots(board, pageMode ? 'page' : 'cue'), options))
+  }
   return { structural, warnings }
 }
 

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>旁白驱动：教学片是怎么排出来的</title>
+<!--
+  封面是作者写的一页，不是成片首帧（docs/TEACH-VIDEO.md §26.2；记忆条目
+  rule-teach-cover-authored-page-two-shapes）。同一份文件被截两次：16:9
+  （1920×1080）与 4:3（1440×1080）。等高、只改宽，所以版面差异只用一条
+  media query 写一次。
+
+  契约比 deck 轻：不需要 teachReady / teachCue / teachPage。截图前等
+  `document.fonts.ready` 加 150 ms，所以这里不写无限动画，也没有要点击才
+  出现的内容。
+-->
+<style>
+  :root { --ink: #e8ecf4; --dim: #93a0b8; --accent: #ffd479; }
+  html, body { margin: 0; height: 1080px; width: 1920px; }
+  body {
+    background: #0b1020; color: var(--ink);
+    font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+    box-sizing: border-box; padding: 132px 150px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .kicker { font-size: 34px; letter-spacing: 6px; color: var(--accent); }
+  h1 { margin: 24px 0 0; font-size: 108px; line-height: 1.16; letter-spacing: 2px; }
+  .sub { margin-top: 32px; font-size: 40px; line-height: 1.5; color: var(--dim); max-width: 1180px; }
+  .beats { display: flex; gap: 20px; align-items: flex-end; height: 150px; margin-bottom: 32px; }
+  .beat { flex: 1; height: 100%; border-radius: 14px; background: #26355a; }
+  .beat.on { background: linear-gradient(100deg, #26355a 0%, #7aa2f7 60%, #ffd479 100%); }
+  .beat.manim { background: linear-gradient(100deg, #26355a 0%, #e879f9 100%); }
+  .legend { display: flex; gap: 30px; font-size: 30px; color: var(--dim); }
+  .legend b { color: var(--ink); font-weight: 600; }
+
+  /* 4:3（1440×1080）：更窄，字号与内边距一起收，否则标题会顶到边。 */
+  @media (max-width: 1600px) {
+    body { width: 1440px; padding: 104px 116px; }
+    h1 { font-size: 86px; }
+    .sub { font-size: 34px; max-width: 1100px; }
+    .beats { height: 118px; }
+    .legend { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+  <div>
+    <div class="kicker">dsh-video-forge ・ teach 路线</div>
+    <h1>旁白驱动：<br>教学片是怎么排出来的</h1>
+    <p class="sub">时间轴归音频。页内节拍、跨句转场、Manim 段，都长在同一条音轨上。</p>
+  </div>
+  <div>
+    <div class="beats">
+      <div class="beat on"></div>
+      <div class="beat on"></div>
+      <div class="beat on"></div>
+      <div class="beat on"></div>
+      <div class="beat manim"></div>
+      <div class="beat on"></div>
+      <div class="beat on"></div>
+      <div class="beat on"></div>
+    </div>
+    <div class="legend">
+      <span><b>15</b> 句旁白</span>
+      <span><b>2</b> 段 Manim</span>
+      <span><b>520 ms</b> 尾转场</span>
+      <span><b>2</b> 个音色</span>
+    </div>
+  </div>
+</body>
+</html>

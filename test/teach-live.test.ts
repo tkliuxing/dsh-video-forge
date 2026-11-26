@@ -146,6 +146,43 @@ describe.skipIf(!LIVE)('teaching pipeline, live', () => {
     expect(assembled.durationMs).toBe(final.durationMs)
   }, 180_000)
 
+  // Two defects in the merged path, both silent (docs/TEACH-VIDEO.md §28.4–§28.5): the
+  // words came back timed against the whole utterance instead of each sentence's slice,
+  // and the sentence a returned word belonged to was worked out by counting characters
+  // over the text *sent*, which carries whitespace the service drops. Either one cuts a
+  // sentence short, and the render only refuses the first. These two assertions are what
+  // catches both, and they are why the manuscript below deliberately contains spaces.
+  it('M2b: a merged utterance writes each sentence its own words, on its own clock', async () => {
+    const board = parseStoryboard(`meta:
+  title: 句子边界
+  voice:
+    provider: volcengine
+    speaker: zh_female_liuchangnv_uranus_bigtts
+segments:
+  - id: s01
+    engine: slides
+    sentences:
+      - id: s01-1
+        say: 这一句交给 Manim 画，后面还跟着一句。
+      - id: s01-2
+        say: 第二句带着 deck 这个英文词，也要切得准。
+`)
+    const paths = await project('boundaries')
+    const narrated = await narrateSentences({ board, voice: board.voice!, apiKey: KEY, paths, merge: 'auto' })
+    expect(narrated.timings.sentences.map(sentence => sentence.id)).toEqual(['s01-1', 's01-2'])
+    // One request for two sentences: this is the merged path, not per-sentence.
+    expect(narrated.requests).toBe(1)
+    for (const sentence of narrated.timings.sentences) {
+      const spoken = sentence.words.map(word => word.t).join('')
+      // The service drops whitespace from the words it returns; compare on the same terms.
+      expect(spoken, `sentence ${sentence.id} was cut against another sentence's words`).toBe(sentence.text.replace(/\s+/gu, ''))
+      // Rebased onto the sentence's own audio: its first word starts the file and its
+      // last one cannot outlast it.
+      expect(sentence.words[0]!.b).toBe(0)
+      expect(sentence.words[sentence.words.length - 1]!.e).toBeLessThanOrEqual(sentence.durationMs + 1)
+    }
+  }, 180_000)
+
   it('M2: re-recording one sentence keeps the others, and the timeline stays whole', async () => {
     const board = parseStoryboard(STORYBOARD)
     const paths = await project('m2')

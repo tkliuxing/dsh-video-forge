@@ -15,6 +15,7 @@
  * rendering, because both are the expensive half of the loop.
  */
 
+import { cueEndPage, cueOpening } from './beats.ts'
 import { parseDocument, YAMLParseError, type Document } from 'yaml'
 import { ConfigError } from '../settings.ts'
 import { supportsWordTimings } from './voice.ts'
@@ -194,8 +195,21 @@ export interface TimedWord {
 export interface TimedSentence {
   id: string
   text: string
-  /** Workspace-relative path of the audio file. */
-  audio: string
+  /**
+   * Workspace-relative path of this sentence's own audio file. Absent when the
+   * narration is one master track: the sentence then occupies
+   * `[beginMs, beginMs + durationMs)` of `Timings.narration` instead of owning a
+   * file (2026-11-26, the continuous contract).
+   */
+  audio?: string
+  /**
+   * Where this sentence starts inside the master narration, in ms.
+   *
+   * Only present in the single-track contract. `words` and every cue offset stay
+   * relative to the sentence, so all the timing code is unchanged; this number is
+   * what turns them absolute when the master track is the clock.
+   */
+  beginMs?: number
   /** The audio's own duration, from the file — not the last word's end (TEACH-VIDEO.md §10.2). */
   durationMs: number
   /**
@@ -221,6 +235,18 @@ export interface Timings {
    */
   sampleRate?: number
   merge?: string
+  /**
+   * Workspace-relative path of the one audio track that carries the whole
+   * narration, or absent for the per-sentence contract (DeepSeek's, and every
+   * project narrated before 2026-11-26).
+   *
+   * Written by `narrate` when the voice reports word timings: one request for the
+   * whole text keeps the prosody continuous, and not cutting the result into
+   * per-sentence files removes the step that produced two silent audio defects
+   * (docs/TEACH-VIDEO.md §28.4–§28.5). A master track also means the picture must
+   * cover it exactly, so `exitMs` is always 0 in this contract.
+   */
+  narration?: string
   /** Which voice produced these files; a re-narration with another voice invalidates every offset. */
   voice: Pick<VoiceSpec, 'provider' | 'speaker'> & {
     speedRatio: number | null
@@ -645,8 +671,10 @@ export interface ExitSlot {
    * Why a declared transition is not recorded here, or null when nothing was
    * dropped. `by-sentence` is the author's own override and is not a finding;
    * every other value is something the plan says out loud (src/teach/rules.ts).
+   * `cue-mode` means the deck's pages could not be counted, not that cue mode
+   * refuses transitions: that refusal was lifted on 2026-11-26.
    */
-  dropped: 'cue-mode' | 'by-sentence' | 'segment-end' | 'same-page' | 'manim' | null
+  dropped: 'cue-mode' | 'continuous' | 'by-sentence' | 'segment-end' | 'same-page' | 'manim' | null
 }
 
 /**
@@ -666,31 +694,53 @@ export interface ExitSlot {
  * got what it asked for.
  *
  * `mode` is the drive mode `timings.json` ended up with, not the provider's
- * intention. In cue mode a sentence's page is derived while it is recorded — from
- * its own beats and the deck's live fragment counts — so the state a transition
- * would have to land on is not knowable from the manuscript at all; the plan
- * refuses `meta.transition` there for that reason (docs/TEACH-MOTION.md §7 rule 2).
+ * intention. The two modes know the next picture differently:
+ *
+ * - **page mode** reads it off the manuscript (`pageSlots`): one page per sentence,
+ *   or the page a shared one names.
+ * - **cue mode** derives it from the cues plus the deck's fragments per page, which
+ *   is why `pageFragments` is required there. Without it the slot is dropped as
+ *   `cue-mode` rather than guessed — a wrong target records a transition onto a
+ *   picture the next sentence never opens on, which is worse than a cut.
  */
-export function exitSlots(board: Storyboard, mode: 'page' | 'cue'): Map<string, ExitSlot> {
+export function exitSlots(
+  board: Storyboard,
+  mode: 'page' | 'cue',
+  pageFragments: ReadonlyMap<string, readonly number[]> = new Map(),
+): Map<string, ExitSlot> {
   const slots = new Map<string, ExitSlot>()
   const spec = board.transition
   const declared = spec !== null && spec.mode === 'deck'
   for (const segment of board.segments) {
     const pages = pageSlots(segment)
+    const starts = cueStartFragments(segment)
+    const counted = pageFragments.get(segment.id)
     segment.sentences.forEach((sentence, index) => {
       const next = segment.sentences[index + 1]
       const own = pages[index]!
       const nextSlot = next === undefined ? null : pages[index + 1]!
       const slot: ExitSlot = { id: sentence.id, exitMs: 0, target: null, dropped: null }
-      if (declared) {
-        if (segment.engine !== 'slides') slot.dropped = 'manim'
-        else if (mode === 'cue') slot.dropped = 'cue-mode'
-        else if (sentence.transition === 'none') slot.dropped = 'by-sentence'
-        else if (nextSlot === null) slot.dropped = 'segment-end'
-        else if (nextSlot.page === own.page) slot.dropped = 'same-page'
+      if (!declared) {
+        slots.set(sentence.id, slot)
+        return
+      }
+      if (segment.engine !== 'slides') slot.dropped = 'manim'
+      else if (sentence.transition === 'none') slot.dropped = 'by-sentence'
+      else if (nextSlot === null || next === undefined) slot.dropped = 'segment-end'
+      else if (mode === 'page') {
+        if (nextSlot.page === own.page) slot.dropped = 'same-page'
         else {
           slot.exitMs = spec!.durationMs
           slot.target = { page: nextSlot.page, enter: nextSlot.enter }
+        }
+      } else {
+        const target = counted === undefined ? null : cueOpening(counted, next.cues, starts.get(next.id) ?? 0)
+        const end = counted === undefined ? null : cueEndPage(counted, sentence.cues, starts.get(sentence.id) ?? 0)
+        if (target === null || end === null) slot.dropped = 'cue-mode'
+        else if (target.page === end.page) slot.dropped = 'same-page'
+        else {
+          slot.exitMs = spec!.durationMs
+          slot.target = { page: target.page, enter: target.step }
         }
       }
       slots.set(sentence.id, slot)
@@ -718,7 +768,13 @@ export function parseTimings(text: string): Timings {
   // be accepted: refusing the very keys the writer emits made every narrate →
   // render round-trip fail with "timings has unknown key sampleRate"
   // (found 2026-11-20 by the page-mode acceptance run).
-  knownKeys(root, 'timings', ['voice', 'sentences', 'sampleRate', 'merge'], null)
+  knownKeys(root, 'timings', ['voice', 'sentences', 'sampleRate', 'merge', 'narration'], null)
+  // The single-track contract (2026-11-26): one audio file for the whole
+  // narration, and each sentence a span of it. `audio` per sentence is then a
+  // contradiction, not a redundancy — two clocks for one film.
+  const master = root.narration === undefined || root.narration === null
+    ? null
+    : projectPath(root.narration, message => { throw new StoryboardError(`timings.narration ${message}`) })
 
   const voiceRaw = record(root.voice ?? {}, 'voice')
   const timestamps: 'word' | 'none' = voiceRaw.timestamps === 'none' ? 'none' : 'word'
@@ -737,12 +793,28 @@ export function parseTimings(text: string): Timings {
   ;(root.sentences as unknown[]).forEach((entry, index) => {
     const label = `timings.sentences[${index}]`
     const sentence = record(entry, label)
-    knownKeys(sentence, label, ['id', 'text', 'audio', 'durationMs', 'exitMs', 'words'], null)
+    knownKeys(sentence, label, ['id', 'text', 'audio', 'beginMs', 'durationMs', 'exitMs', 'words'], null)
     const id = requiredString(sentence.id, message => { throw new StoryboardError(`${label}.${message}`) })
     if (seen.has(id)) throw new StoryboardError(`${label}: id "${id}" appears twice`)
     seen.add(id)
 
-    const audio = projectPath(sentence.audio, message => { throw new StoryboardError(`${label}.${message}`) })
+    let audio: string | undefined
+    let beginMs: number | undefined
+    if (master === null) {
+      audio = projectPath(sentence.audio, message => { throw new StoryboardError(`${label}.${message}`) })
+      if (sentence.beginMs !== undefined && sentence.beginMs !== null) {
+        throw new StoryboardError(`${label}.beginMs is for a single-track narration; this timings file has no narration and gives every sentence its own audio`)
+      }
+    } else {
+      if (sentence.audio !== undefined && sentence.audio !== null) {
+        throw new StoryboardError(`${label}.audio and timings.narration cannot both name audio: the master track is the one clock. Drop the per-sentence file, or drop timings.narration`)
+      }
+      const begin = sentence.beginMs
+      if (typeof begin !== 'number' || !Number.isInteger(begin) || begin < 0) {
+        throw new StoryboardError(`${label}.beginMs must be a whole number of milliseconds >= 0: where this sentence starts inside the master narration`)
+      }
+      beginMs = begin
+    }
     const durationMs = sentence.durationMs
     if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) {
       throw new StoryboardError(`${label}.durationMs must be the audio's real duration in milliseconds`)
@@ -783,15 +855,36 @@ export function parseTimings(text: string): Timings {
     sentences.push({
       id,
       text: optionalString(sentence.text, message => { throw new StoryboardError(`${label}.${message}`) }) ?? '',
-      audio,
+      ...(audio === undefined ? {} : { audio }),
+      ...(beginMs === undefined ? {} : { beginMs }),
       durationMs,
       exitMs,
       words,
     })
   })
+  // The spans have to tile the master: span 0 starts at 0 and each next span starts
+  // where the previous one ended. A gap or an overlap is not a detail — the picture
+  // total would stop matching the audio, and every sentence after the edit would drift
+  // against the voice. Caught here rather than at assembly, where the symptom is a
+  // film whose length disagrees with its own timeline (docs/TEACH-VIDEO.md §29.1).
+  if (master !== null) {
+    let expected = 0
+    for (const sentence of sentences) {
+      const begin = sentence.beginMs!
+      if (Math.abs(begin - expected) > 1) {
+        throw new StoryboardError(
+          `timings.sentences "${sentence.id}".beginMs is ${begin} ms but the spans before it end at ${expected} ms: `
+          + 'a single-track narration must tile the master with no gap and no overlap. Re-run video_teach_narrate rather than editing the offsets by hand',
+        )
+      }
+      expected = begin + sentence.durationMs
+    }
+  }
+
   return {
     ...(typeof root.sampleRate === 'number' ? { sampleRate: root.sampleRate } : {}),
     ...(typeof root.merge === 'string' ? { merge: root.merge } : {}),
+    ...(master === null ? {} : { narration: master }),
     voice,
     sentences,
   }
@@ -813,6 +906,7 @@ export function serializeTimings(timings: Timings, provenance: { sampleRate?: nu
   const document = {
     ...(provenance.sampleRate === undefined ? {} : { sampleRate: provenance.sampleRate }),
     ...(provenance.merge === undefined ? {} : { merge: provenance.merge }),
+    ...(timings.narration === undefined ? {} : { narration: timings.narration }),
     voice: timings.voice,
     sentences: timings.sentences,
   }

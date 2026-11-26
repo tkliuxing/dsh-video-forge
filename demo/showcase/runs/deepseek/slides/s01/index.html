@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>页内动效：六种画面语言</title>
+<link rel="stylesheet" href="./reveal.css">
+<link rel="stylesheet" href="./theme.css">
+<style>
+  /*
+   * reveal.js sizes its stage from the viewport, so the page has to actually
+   * have one: without `height: 100%` here, <body> collapses to 0 px tall, the
+   * stage computes a scale near 0.2, and the deck paints white text onto the
+   * white canvas — a screenshot of nothing. This is the fix for the sample's
+   * first 116 s of pure white (TEACH-VIDEO.md §16).
+   */
+  html, body { height: 100%; margin: 0; background: #191919; }
+  .reveal { width: 100%; height: 100%; }
+  /* Readable at 1080p: the theme's sizes assume a 960x700 stage. */
+  :root { --r-main-font: "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
+  .reveal .slides { text-align: left; }
+  .reveal h1 { font-size: 46px; text-transform: none; letter-spacing: 1px; }
+  .reveal .row { font-size: 40px; font-variant-numeric: tabular-nums; margin: 6px 0; }
+  .reveal .row .value { color: #8fb6ff; font-size: 32px; margin-left: 18px; }
+  .reveal .sum { font-size: 34px; color: #ffd479; }
+
+  /*
+   * D0, the motion library (docs/TEACH-MOTION.md §3). One rule of engagement:
+   * change the *duration*, never the *property*.
+   *
+   * reveal.css ships `.reveal .fragment { transition: all .2s }`. A deck that
+   * re-declares `transition` with only `opacity` gets the same specificity but
+   * loads later, wins, and turns every built-in variant's transform into an
+   * instant jump — `fade-up` and `grow` stop working and nothing says why
+   * (§1.3). `transition-duration` leaves `transition-property` alone, so the
+   * built-in variants keep their motion.
+   *
+   * 480 ms is measured, not felt: the screencast samples a 400 ms transition as
+   * ~32 frames and a 200 ms one as ~16, and anything under 300 ms still reads as
+   * a flash (§1.1). A page that wants a different pace sets its own
+   * `--teach-dur` on the section element; that is the intended override.
+   * (Written without angle brackets on purpose: a deck's own CSS comments are
+   * scanned for page markers by an older count that does not strip style
+   * bodies, and one literal section tag there counts a page that is not one.)
+   */
+  :root { --teach-dur: 480ms; --teach-ease: cubic-bezier(.2, .7, .3, 1); }
+  .reveal .slides .fragment {
+    transition-duration: var(--teach-dur);
+    transition-timing-function: var(--teach-ease);
+  }
+
+  /*
+   * `dim`: the page is complete at t=0 and a beat brightens the part being
+   * talked about (.42 → 1). This is the opposite picture language from the
+   * default `fade`: use it when the whole layout should be readable from the
+   * first frame, and `fade-up` when items should arrive one by one. Mixing both
+   * on one page reads as a mistake (§3.2).
+   */
+  .reveal .slides .fragment.dim {
+    opacity: .42;
+    visibility: inherit;
+    transition: opacity var(--teach-dur) var(--teach-ease);
+  }
+  .reveal .slides .fragment.dim.visible { opacity: 1 }
+
+  /*
+   * `draw`: an SVG path draws itself once when the beat lands. `--teach-len`
+   * must be at least the path's own length: a shorter value leaves the tail
+   * permanently hidden, a longer one is harmless. `custom` keeps the path
+   * visible (undrawn) from t=0.
+   */
+  .reveal .slides .draw :is(path, line, polyline, polygon, circle, ellipse) {
+    stroke-dasharray: var(--teach-len, 1400);
+    stroke-dashoffset: var(--teach-len, 1400);
+  }
+  .reveal .slides .draw.visible :is(path, line, polyline, polygon, circle, ellipse) {
+    animation: teach-draw 900ms var(--teach-ease) forwards;
+  }
+  @keyframes teach-draw { to { stroke-dashoffset: 0 } }
+
+  /*
+   * `count`: a number rolls to its target when the beat lands, with no
+   * JavaScript — a registered custom property interpolates and a CSS counter
+   * prints it. The target goes on the element itself:
+   *
+   *   <span class="fragment count" style="--teach-to: 95"></span>
+   *
+   * Add `custom` to keep the 0 on screen before the beat instead of having the
+   * number appear already rolling.
+   */
+  @property --teach-num { syntax: '<integer>'; inherits: false; initial-value: 0 }
+  .reveal .slides .count {
+    counter-reset: teach-num var(--teach-num);
+    transition: --teach-num 900ms var(--teach-ease);
+  }
+  .reveal .slides .count::after { content: counter(teach-num) }
+  .reveal .slides .count.visible { --teach-num: var(--teach-to, 0) }
+
+  /*
+   * `bar`: a bar grows out of its left edge. The width still comes from CSS; the
+   * transform is what animates, so the growth stays on the compositor and the
+   * capture keeps its frame rate (§2 rule 2).
+   */
+  .reveal .slides .bar {
+    transform-origin: left center;
+    transform: scaleX(0);
+    transition: transform var(--teach-dur) var(--teach-ease);
+  }
+  .reveal .slides .bar.visible { transform: scaleX(1) }
+
+  /*
+   * D1, "current item is highlighted, the rest is dimmed" (§4.3). `custom`
+   * fragments are neither hidden nor faded by reveal, so the deck owns the
+   * styling: one rule pair is the whole effect, and it can move, recolour and
+   * re-weight at the same time — which `highlight-*` cannot.
+   */
+  .reveal .slides .beat {
+    color: #9ca3af;
+    transition: color var(--teach-dur) var(--teach-ease), transform var(--teach-dur) var(--teach-ease);
+  }
+  .reveal .slides .beat.current-fragment { color: #ffd479; transform: translateX(14px) }
+
+  /*
+   * D1, "the same element keeps reshaping" (§4.2). Mark a wrapper with
+   * `data-teach-stage`; `teachCue` keeps its `data-step` equal to the beat, so
+   * the shapes stay in CSS:
+   *
+   *   <div class="r-stack" data-teach-stage data-step="1"><div class="mover"></div></div>
+   *
+   *   .mover { width: 120px; height: 120px; border-radius: 10px; background: #6b7280;
+   *            transition: all 600ms var(--teach-ease) }
+   *   [data-teach-stage][data-step="2"] .mover { width: 260px; height: 140px; background: #22d3ee }
+   *   [data-teach-stage][data-step="3"] .mover { width: 300px; height: 300px; background: #e879f9; border-radius: 50% }
+   *
+   * Step 1 is the state before the first beat and `data-step="1"` is what the
+   * markup declares; the first beat moves it to 2. No rule for `.mover` ships
+   * here on purpose — the shapes are content, the mechanism is the attribute.
+   */
+
+  .reveal .slides .count { font-size: 46px; color: #ffd479; font-variant-numeric: tabular-nums }
+  .reveal .slides .barrow { display: flex; align-items: center; gap: 26px; margin: 26px 0 }
+  .reveal .slides .barrow .lab { width: 240px; font-size: 32px; color: #93a0b8 }
+  .reveal .slides .bar { display: block; width: var(--w, 40%); height: 44px; border-radius: 10px;
+                         background: linear-gradient(90deg, #8fb6ff, #ffd479) }
+  .reveal .slides svg { margin-top: 6px }
+  .reveal .slides .lede { color: #93a0b8; font-size: 34px; margin-top: 18px }
+</style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <section>
+      <h2>画面跟不上旁白</h2>
+      <p class="lede">问题不在讲，在排。</p>
+      <p class="fragment fade-up">话已经翻到下一句</p>
+      <p class="fragment fade-up">图上还停在上一行</p>
+    </section>
+
+    <section>
+      <h2>时钟交给旁白</h2>
+      <p class="fragment dim">每一句先合成一段音频</p>
+      <p class="fragment dim">画面再按音频长度排</p>
+    </section>
+
+    <section>
+      <h2>一句＝一个录制单元</h2>
+      <p class="fragment custom beat">改一句，只重录一句</p>
+      <p class="fragment custom beat">断点锁在这一句上</p>
+    </section>
+
+    <section>
+      <h2>节拍按变化次数铺开</h2>
+      <p class="lede">曲线沿着路径自己长出来，中间没有跳帧</p>
+      <svg viewBox="0 0 900 320" width="900" height="320">
+        <line class="fragment draw" style="--teach-len: 820" x1="40" y1="280" x2="860" y2="280"
+              stroke="#8fb6ff" stroke-width="3" />
+        <path class="fragment draw" style="--teach-len: 1500"
+              d="M40 270 C 240 262 420 180 620 110 S 800 66 860 58"
+              fill="none" stroke="#ffd479" stroke-width="4" />
+      </svg>
+    </section>
+
+    <section>
+      <h2>数字滚动</h2>
+      <p class="row">页内一拍 <span class="fragment custom count" style="--teach-to: 480"></span> 毫秒</p>
+      <p class="row">跨页转场 <span class="fragment custom count" style="--teach-to: 520"></span> 毫秒</p>
+    </section>
+
+    <section>
+      <h2>条形生长</h2>
+      <div class="barrow"><span class="lab">只改一句</span><i class="fragment bar" style="--w: 24%"></i></div>
+      <div class="barrow"><span class="lab">改了六句</span><i class="fragment bar" style="--w: 96%"></i></div>
+    </section>
+
+  </div>
+</div>
+<script src="./reveal.js"></script>
+<script>
+// The contract the recorder drives (src/teach/slides.ts): `teachCue(n)` shows cue
+// step n, `teachPage(n)` shows page n (page mode), `teachReady` says the deck has
+// finished laying out. A deck can be any reveal.js document as long as it defines
+// these three. Two more globals are optional and say how long the motion takes —
+// see below.
+//
+// reveal.js 6 exports a singleton: `Reveal`'s UMD build has no usable
+// constructor, and `new Reveal(config)` leaves the singleton uninitialised, so
+// the stage never lays out. Initialising the singleton is the documented path.
+Reveal.initialize({
+  hash: false, controls: false, progress: false, history: false,
+  keyboard: false, overview: false, touch: false, embedded: true,
+  transition: 'fade', transitionSpeed: 'fast', fragments: true,
+}).then(() => { window.teachReady = true })
+
+// How long a page switch takes, in ms (D2, docs/TEACH-MOTION.md §5). The recorder
+// waits this long after `teachPage` before it starts capturing, so declaring it
+// means t=0 of every sentence is the settled page. reveal's `fade` is a fixed
+// 0.5 s in reveal.css — `transitionSpeed` does not shorten it — so the recorder's
+// 300 ms default would catch the transition still running. A deck with a faster
+// or slower page transition declares its own number; omitting it keeps 300 ms.
+window.teachPageTransition = 500
+
+// How long one in-page beat takes, in ms: the `--teach-dur` below. The recorder
+// never reads this — it fires the beat and the CSS plays — but `video_teach_plan`
+// does, and warns when a beat has less room before the next beat or the cut than
+// its own motion needs. A page using `count` or `draw` (900 ms) should declare 900.
+window.teachTransition = 900
+
+/**
+ * Show every fragment up to `index` on the current slide. Reveal exposes
+ * `nextFragment()`, not "go to fragment n", so the loop is the honest way to
+ * land on an absolute step — and it is idempotent: asking for a step that is
+ * already shown does nothing.
+ *
+ * The count is per slide, because reveal.js numbers fragments per slide: a
+ * page-mode deck numbers each page's beats from 1 again. `index` is therefore
+ * clamped to this slide's own fragment count — a cue must never change the
+ * slide, so a number that runs past the page shows the page's last beat instead
+ * of walking off it (a global numbering across pages is caught by
+ * `video_teach_plan` instead).
+ */
+window.teachCue = function teachCue(index) {
+  const available = Reveal.getCurrentSlide()?.querySelectorAll('.fragment').length ?? 0
+  const target = Math.min(Math.max(0, Number(index) || 0), available)
+  for (let guard = 0; guard < 256; guard += 1) {
+    // `getIndices().f` is the zero-based index of the last *shown* fragment, so
+    // the number of visible fragments is f + 1. Comparing it to the target
+    // directly revealed one extra row and made the last two cues identical
+    // (measured 2026-11-20 on the sample deck).
+    const shown = (Reveal.getIndices().f ?? -1) + 1
+    if (shown >= target) break
+    Reveal.nextFragment()
+  }
+  // D1 (docs/TEACH-MOTION.md §4.2): every wrapper marked `data-teach-stage` gets
+  // its `data-step` set to the beat, so "the same element keeps reshaping" is CSS
+  // the deck owns and the recorder never needs to know about shapes.
+  //
+  // `target + 1`, not `target`: the page opens with every beat dark and the
+  // markup declares `data-step="1"`, so step 1 has to mean "before the first
+  // beat". Feeding `target` itself would land the first beat on step 1 as well
+  // and the stage would sit still until the second one (found 2026-11-25 while
+  // implementing D1: the documented `Math.max(1, target)` collapses that beat).
+  for (const stage of document.querySelectorAll('[data-teach-stage]')) {
+    stage.dataset.step = String(target + 1)
+  }
+}
+
+/**
+ * Page mode: show page `index` (0-based, horizontal) with **none of its beats
+ * lit**, and stay there.
+ *
+ * This is the drive mode for a voice provider that reports no word timings
+ * (DeepSeek). The recorder calls this at the start of a sentence and holds the
+ * page for the sentence's measured length; the sentence's `at_progress` beats
+ * then arrive through `teachCue`. Because page mode times its beats by measured
+ * length after all, a page-mode deck DOES use `teachCue`.
+ *
+ * The third argument is the fragment to land on, and `-1` means "before the
+ * first". Passing `0` here lit the page's first beat the moment the page
+ * switched, so the manuscript's first cue (fragment 1) found that beat already
+ * shown and did nothing — every page opened one beat too bright, and a shared
+ * page with `enter: 0` opened bright when the manuscript said it starts dark
+ * (found 2026-11-25 while implementing shared pages, docs/TEACH-VIDEO.md §25).
+ *
+ * The recorder calls this once per sentence, then replays the shared page's
+ * `enter` state through `teachCue` before the capture starts. So this function
+ * has to be idempotent and must not remember anything: every sentence is a fresh
+ * page load.
+ *
+ * A deck for this mode has one section element per page. By default a page
+ * belongs to one sentence, in manuscript order; a manuscript that declares
+ * `page` shares one page across several sentences.
+ */
+window.teachPage = function teachPage(index) {
+  Reveal.slide(Math.max(0, Number(index) || 0), 0, -1)
+}
+</script>
+</body>
+</html>

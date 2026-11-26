@@ -115,6 +115,11 @@ export function buildSrt(timings: Timings, maxChars = 18): string {
   const cues: { start: number, end: number, text: string }[] = []
   let offset = 0
   for (const sentence of timings.sentences) {
+    // Two clocks, one code path: the per-sentence contract counts offsets forward
+    // (each sentence's file follows the last one plus its tail transition), while a
+    // single master track says where every sentence starts outright
+    // (docs/TEACH-VIDEO.md §29).
+    if (sentence.beginMs !== undefined) offset = sentence.beginMs
     let current: { start: number, end: number, text: string } | null = null
     for (const word of sentence.words) {
       if (current === null) {

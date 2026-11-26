@@ -5,7 +5,7 @@
  * call which should be refused never reaches that half.
  */
 
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -365,5 +365,51 @@ describe('srt building', () => {
     expect(srt).toContain('00:00:02,000 --> 00:00:02,500')
     expect(srt).toContain('其实')
     expect(srt.trim().split('\n\n')).toHaveLength(3)
+  })
+})
+
+describe('the exported deck directory', () => {
+  // The defect this pins (found 2026-11-26 by opening an exported deck in
+  // headless Chromium): the deck file was copied to `deck/<segment>` with no
+  // extension and without the runtime it links to, so the "interactive deck"
+  // product opened as source text. It now becomes `deck/<segment>/index.html`
+  // with its same-directory assets beside it.
+  it('writes a runnable deck directory, runtime included', async () => {
+    definitions.clear()
+    const { cwd, exec } = await harness({
+      files: {
+        'storyboard.yaml': PAGE_MANUSCRIPT,
+        'slides/s01/index.html': '<link rel="stylesheet" href="./reveal.css"><script src="./reveal.js"></script>' + PAGE_DECK,
+        'slides/s01/reveal.css': '.reveal{}',
+        'slides/s01/reveal.js': 'window.Reveal = {}',
+        'timings.json': JSON.stringify({
+          voice: { provider: 'deepseek', speaker: 'stella', speedRatio: null, timestamps: 'none' },
+          sentences: [{ id: 's01-1', text: '页模式下每句一页，句内按比例分步。', audio: 'audio/s01-1.wav', durationMs: 3000, exitMs: 0, words: [] }],
+        }),
+      },
+    })
+    // A finished film has to exist: the export numbers itself after it.
+    await mkdir(join(cwd, 'renders', 'shot'), { recursive: true })
+    await writeFile(join(cwd, 'renders', 'shot', 'v001.mp4'), 'film', 'utf8')
+
+    const result = await tool('video_teach_export').execute({ shot: 'shot' }, exec) as { decks: string[] }
+    expect(result.decks).toEqual(['deck/s01/index.html'])
+    expect(await readFile(join(cwd, 'deck', 's01', 'index.html'), 'utf8')).toContain('teachReady')
+    expect(await readFile(join(cwd, 'deck', 's01', 'reveal.js'), 'utf8')).toContain('window.Reveal')
+    expect(await readFile(join(cwd, 'deck', 's01', 'reveal.css'), 'utf8')).toContain('.reveal')
+  })
+})
+
+describe('the same-directory asset list', () => {
+  it('keeps ./name references and drops everything that lives elsewhere', async () => {
+    const { localDeckAssets } = await import('../src/teach/tools.ts')
+    const html = [
+      '<link rel="stylesheet" href="./reveal.css">',
+      '<script src="./reveal.js"></script>',
+      '<img src="../../materials/images/a.png">',
+      '<script src="https://cdn.example.com/x.js"></script>',
+      '<a href="#/">skip</a>',
+    ].join('\n')
+    expect(localDeckAssets(html)).toEqual(['reveal.css', 'reveal.js'])
   })
 })

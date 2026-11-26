@@ -143,3 +143,49 @@
 - **cue 模式允许 `meta.transition`**：仍拒绝。落点由节拍推出、`exitSlots` 在稿件层算不出目标状态，这一版不开放。
 - `video-guide.md` 关于 Homebrew ffmpeg 不带 libass 的环境断言、`video-project.md` 示例里的模型 id：复核指出未核实，**没动**（前者随机器变，后者要另核 presets）。
 - `test/client-video-panel.test.tsx` 的一次偶发失败：既有 flake，与本次无关，没动。
+
+## 九、第二轮审计：两条契约落地后的四路复核（2026-11-26 晚）
+
+§八 之后又改了一轮大的：教学路线分出「逐句契约（`deepseek`）」与「母带契约（`volcengine`：一条母带 + 一个 slides 段一次连续录制）」，5 份教学 skill 跟着重写。用户要求确认这次改完有没有冲突，于是派了四个只读子 agent 分头审，**每条结论我都回代码逐条复核过**（子 agent 只读、不改文件；它们报的"冲突"里有一条是我上一轮自己写错的）。
+
+### 分工
+
+| 审计员 | 范围 | 对照物 |
+|---|---|---|
+| A | `video-teach-storyboard.md` | `storyboard.ts`（解析/拒绝）、`rules.ts`（warning 文案）、`pipeline.ts`（契约分流）、`tools.ts`（plan 输出） |
+| B | `video-teach-iterate.md` | narrate 收窄、`renderSegments` 扩段与重录、`writeExitLedger`、`assembleVideo`、`buildSrt`、`planSegments` |
+| C | `video-teach-slides.md` + `video-teach-manim.md` + `video-guide.md` | `slides.ts` 两个录制器、`beats.ts`、`rules.ts` 的 deck 审计、`tools.ts` 导出、`manim.ts`、`probe.ts`、模板 deck 与 `reveal.css` |
+| D | 九份正文之间的互相矛盾（不查代码） | 按 10 条口径逐条 grep 并排比对 |
+
+### 代码侧：审计抓到 4 个真问题（都修了）
+
+审计最有价值的部分不是文案，是**代码在输出侧撒谎**：
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| `seamLine` 早返回 | 母带契约没写 `meta.transition` 时，plan 说「每句之间是硬切」——而这个契约没有切点，作者会去加一个不生效的配置 | 契约判断提到 `spec === null` 之前；母带下输出「无接缝」 |
+| 接缝类 finding 照旧产生 | `seam_findings` 报"某句仍带着 520 ms 尾转场"，而该契约 `exitMs` 恒 0；`auditDecks` 还报"页切换只录到一半" | `DeckAuditOptions` / `seamLedger` 收 `continuous`，母带下跳过接缝类 finding |
+| `picture:` 行分不出契约 | 同一 provider 的两条契约输出逐字相同，作者据此选错返工单位 | 追加 `narration: single master track … / per-sentence …` |
+| manim 超长被吞 + 第三类 finding 未写 | `manimSegment` 算出 `overrunMs` 却丢弃，skill 却承诺"会报超长量"；"末帧自检没跑起来"（没检查）被当成检查不过 | `RenderedSegment` 加 `overrunMs` 并在 `motionFindings` 点名；skill 补这类语义 |
+
+另修：`video_teach_render` 的 `sentences` 参数描述写「默认只录还没有段的那几句」，实际是**不传就全量重录**——模型会照它做错决定。
+
+### 文本侧：约 50 处（分类，不逐条抄）
+
+- **内部自相矛盾**：iterate 标题「改一句只重录一句」vs 正文"母带契约是段"；「契约由 provider 决定，没有单独开关」vs 下一段给出的 `merge: none` 开关；「`merge: none`…其余行为不变」vs 它换掉的是整条契约；slides「跨页 auto-animate 拍不到」vs「用跨页 Auto-Animate 做转场」；guide 一处"合成一次"、一处"480 字分块"。
+- **跨文件矛盾**：母带契约有没有 `audio/<id>.mp3` 可补静音（只有 `merge: none` 有）；`at_progress` 是否 deepseek 专用（代码两个 provider 都认，是我上一轮写错）；页尾停留被 slides 检查清单写成通用步骤；`page`/`enter` 被 slides 写成"只与 engine 有关"（实际是页模式专属）；manim「重录代价锁在那一句」（台词在母带契约下要重合成整条母带）；「逐句分段拼成整片」。
+- **与代码对不上**：`transitionSpeed: fast` 写成 0.2 s（`reveal.css` 实际 fast 0.4 / default 0.8 / slow 1.2，fade 固定 0.5）；依赖写成"三档"（代码是四档，字幕那档不阻塞）；「报超长」无实现；「`enter` 超出该页 fragment 数」的 warning 未写；「错误会指行号与键」（只有解析错误有行号）；`beginMs` 我上一轮写成"拒绝不**铺满**母带的区间"，代码只校验**首尾相接**；「音色改了 + 收窄重录会报 stale」（`reconcileTimings` 只比 `speaker`，而收窄的 narrate 会把 `voice` 改写成新音色，plan 看不出来）。
+
+### 明确没做
+
+- **不合并两个录制器**（`recordDeckSegment` 与 `recordDeckRun`）：用户明确要求保留。理由也写在代码注释里——page 模式与逐句 cue 契约各有自己的生命周期，不能被连续契约带回归。
+- **不校验末段是否到达母带末尾**：需要探测母带真实长度（ffprobe），`parseTimings` 拿不到；只校验首尾相接，并在 skill 里写明这个边界。
+- **`reconcileTimings` 仍只比 `speaker`**：要发现"混了两个音色"得逐句记 provider/speaker，属于结构改动，记在 `TODO.md`。
+
+### 验证
+
+- `pnpm run build` 通过；`pnpm test` **794 passed / 8 skipped**（含本轮新增：区间不铺满母带被拒、连续录制的边界换页、母带 schema 往返）。
+- `test/guide-consistency.test.ts`：skill 里只出现真实工具名、不出现已移除的表面。
+- 样片：`demo/showcase/`，火山版 `renders/showcase-ark/v013.mp4`（工具产物，91.99 s，段内接缝 0.01–2.93%、段间 4.03–6.76%），DeepSeek 版 `renders/showcase-deepseek/v003.mp4`。
+- **未在活宿主验证的部分**：本轮代码修复在 `lib/` 里，而审计所用的宿主进程早于这次构建启动；`transitions:` / `picture:` / `overrun` 三处输出变更要下次重启后才在工具返回里看得到。
+

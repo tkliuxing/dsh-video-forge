@@ -59,7 +59,7 @@
 **四个工具，按顺序**：
 
 1. `video_teach_plan`：校验 `storyboard.yaml`，估时，检查内容与时间线的配合（哪句没有画面变化、fragment 超没超、场景有没有被复用），读 deck HTML 核对录制器要用的三个全局（`teachReady` / `teachCue` / `teachPage`，页模式与多页的 cue 模式都要它）与页数，并报告本机缺哪个外部程序。**免费、不联网**，先跑它：它拦下的错误都出现在花钱之前。
-2. `video_teach_narrate`：逐句合成旁白，写 `timings.json`。这一步**按字符计费**，`sentences` 可以只重录指定句。两个 provider 的 key 都在设置的「教学视频」里配（每个 provider 一行，折叠时标题也会显示是否已配置）。
+2. `video_teach_narrate`：合成旁白，写 `timings.json`。这一步**按字符计费**。`deepseek` 逐句合成（`sentences` 可只重录指定句）；`volcengine` 把整份稿子合成**一条母带**（`audio/narration.mp3`，按约 480 字分块请求后拼接），此时 `sentences` 不能只重录一句。两个 provider 的 key 都在设置的「教学视频」里配（每个 provider 一行，折叠时标题也会显示是否已配置）。
    语音有两个 provider，按需要选：
 
    | | `deepseek`（默认） | `volcengine` |
@@ -68,27 +68,31 @@
    | 音色 | `stella` / `tide` | 一堆 `*_bigtts` 音色 |
    | 调语速 | 不支持 | 整数语速 |
    | 词级时间戳 | **没有** | 有 |
-   | 画面驱动 | 一句一页（稿件的 `page` 可让连续几句共页）+ 页内 `at_progress` 节拍 | 可按词（`at_word`）触发 fragment |
-   | 合成方式 | 逐句请求 | 相邻句合并成一次请求 |
-   | 停顿 | 保留语音自带的气口 | 按标点补齐、只补不裁 |
-   | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 逐句合成时语气会漂 |
+   | 画面驱动 | 一句一页（稿件的 `page` 可让连续几句共页）+ 页内 `at_progress` 节拍 | 可按词（`at_word`）触发 fragment；也认 `at_progress`（按段内比例落，不对词） |
+   | 合成方式 | 逐句请求，逐句音频文件 | **整份稿子一次请求**（超约 480 字自动分块），一条母带 + 每句 `beginMs` |
+   | 停顿 | 保留语音自带的气口 | 母带自身的气口（不再逐句补） |
+   | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 一条母带、句间语气连续（实测逐句中位基频离散 5.0%，同一 provider 逐句请求是 9.9%） |
 
    默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**需要"讲到某个词、画面动一下"，或要让旁白快慢可调时才换 volcengine**：词级时间戳与整数语速都只有它给得出。
-3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页（稿件的 `page` 可让连续几句共页）、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
-4. `video_teach_export`：写 SRT、`timeline.json`，把 deck 导出到 `deck/`，并按 `meta.cover` 那一页截 16:9 与 4:3 两张封面。
+
+   稿件里只写三个字段：`meta.voice.provider` / `speaker` / `speed_ratio`（整数，0 会被拒）。`speaker` 在 `deepseek` 下有默认 `stella`，`volcengine` **没有默认、必须写**。`speed_ratio` 只有 `volcengine` 用，`deepseek` 下会被静默忽略。
+
+   `video_teach_narrate` 还有个 `merge` 参数（只对 `volcengine` 有意义）：`merge: auto`（默认）= 整份稿子一次请求、一条母带；`merge: none` = 逐句请求、逐句文件，可以只重做一句、可以补页尾停留、可以用 `meta.transition`，代价是跨句语气会漂。换契约要重新 narrate。
+3. `video_teach_render`：渲画面并拼成成片，录音时长是时间轴。`volcengine` 下**一个 slides 段一次连续录制**（跨句不重载 deck，页在句首翻），节拍跟着词走，`sentences` 会扩到整段；`deepseek` 下逐句录，每句一页（稿件的 `page` 可让连续几句共页）、页内节拍按 `at_progress` 落，`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
+4. `video_teach_export`：写 SRT、`timeline.json`，把 deck 导出成 `deck/<段 id>/index.html`（同目录带上它引用的 `reveal.js` / `reveal.css` / `theme.css`），并按 `meta.cover` 那一页截 16:9 与 4:3 两张封面。
 
 **两条出片经验**（细节见 `video-teach-storyboard` / `video-teach-iterate`）：
 
 - **句内节拍按"这页有几次变化"算**：一页 n 个 fragment → n+1 次画面变化（换页算第一次），第 k 个 fragment 落在说话时长的 k/(n+1)。所有动作在念完之前播完，不要手写固定比例。
-- **页尾停留约 1 秒**：画面长度等于音频长度，DeepSeek 不补停顿；要让最后一屏停住，得给每句音频尾部补静默再重渲染（插件没有这个参数），并同步重算 cues。
+- **页尾停留约 1 秒（只对逐句契约：`deepseek`，或 `volcengine` + `merge: none`）**：画面长度等于音频长度，DeepSeek 不补停顿；要让最后一屏停住，得给每句音频尾部补静默再重渲染（插件没有这个参数），并同步重算 cues。`volcengine` 的母带契约没有这一步，句间停顿由母带自己决定。
 
-**外部依赖分三档，只有用到的才装**（在线生成路线一样都不需要）：
+**外部依赖分四档，只有用到的才装**（在线生成路线一样都不需要；字幕那档缺了不阻塞、只是不烧）：
 
 - **任何工程都要**：`ffmpeg`、`ffprobe`。**烧字幕需要带 libass 的构建**：Homebrew 现在的 `ffmpeg` 公式没有 libass（连 `drawtext` 都没有），要用 `brew install ffmpeg-full` 并把设置里的 ffmpeg 目录指到 `/opt/homebrew/opt/ffmpeg-full/bin`（或 `TEACH_FFMPEG_BIN`）。不指也不出错，只是片子不带字幕、结果里写明原因。
 - **只画幻灯片才要**：Chromium。`playwright-core` 随插件装，浏览器本身可用 `TEACH_CHROMIUM` 指定，或用 Playwright 自己的缓存。
 - **只有 `engine: manim` 的句子才要**：装 Manim 的 Python（`pip install manim`，用 `TEACH_PYTHON` 指过去）、TeX（推荐 TinyTeX）、以及 `dvisvgm`。**BasicTeX 有 `latex` 但没有 `dvisvgm`**，只装它会报 `latex error converting to dvi`；把 `TEACH_TEXBIN` 指到含两者的 bin 目录。
 
-**Manim 是可选的**。整份稿件用 `engine: slides` 是合法路线，上面第三档一样都不用装。要公式又不想装 TeX 时，把公式做成图片或纯 HTML（插件没有内置 MathJax/KaTeX）。`video_teach_plan` 会按这三档分组报告，缺 Manim 依赖时**在花钱前拒绝**并给出安装命令与「改用 slides」两条出路。
+**Manim 是可选的**。整份稿件用 `engine: slides` 是合法路线，Manim 那一档一样都不用装。要公式又不想装 TeX 时，把公式做成图片或纯 HTML（插件没有内置 MathJax/KaTeX）。`video_teach_plan` 会按这四档分组报告（`required` / `slides` / `subtitles` / `manim`），缺 Manim 依赖时**在花钱前拒绝**并给出安装命令与「改用 slides」两条出路；`subtitles` 那档缺失不阻塞，只是不烧字幕。
 
 **成本**：渲染免费（本机 CPU/GPU），唯一的钱是 TTS 按字符计。三分钟中文旁白约八百多字，按 5 元/万字符算约四毛，实际以账单为准。
 
@@ -99,7 +103,7 @@
 ## 做不到的事
 
 - 不能按分镜批量生成——一次一个镜头、一次一条视频。
-- 不能把多段拼接成片——这一条只针对在线生成路线：教学路线（`video_teach_render`）会把逐句分段拼成一条完整成片。
+- 不能把多段拼接成片——这一条只针对在线生成路线：教学路线（`video_teach_render`）会把分段拼成一条完整成片——逐句契约是逐句段，母带契约是"每段一个连续录制段 + 每个 Manim 句一段"。
 - 不能用 `from` 续拍 MiniMax 或中转站的成片——只有方舟 Seedance 返回尾帧，改用 `first_frame` 传图。
 
 ## 相关要点（该提时再提）

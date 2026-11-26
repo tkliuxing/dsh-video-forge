@@ -22,7 +22,7 @@ import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/prom
 import { dirname, join } from 'node:path'
 import { concatAudio, concatSegments, cutAudioSegment, encodeCfrSegment, muxNarration, probe, type MediaTools } from './ffmpeg.ts'
 import type { ManimTools } from './manim.ts'
-import { CHARS_PER_SECOND } from './rules.ts'
+import { CHARS_PER_SECOND, deckPageFragments } from './rules.ts'
 import { DEFAULT_SUBTITLE_STYLE, forceStyle, type SubtitleStyle } from './subtitles.ts'
 import { DEFAULT_VOICE as DEFAULT_VOICE_PRIVATE } from './storyboard.ts'
 import { lateBeats, recordDeckSegment, type BeatTiming, type CueAt, type SettleCheck } from './slides.ts'
@@ -38,6 +38,7 @@ import {
   timelineDurationMs,
   totalDurationMs,
   type Cue,
+  type Sentence,
   type Storyboard,
   type TimedSentence,
   type TimedWord,
@@ -236,6 +237,26 @@ export interface SegmentTiming {
  * punctuation deserves, the slice is padded up to it; when it is longer, it is
  * kept as is. Padding never trims.
  */
+/**
+ * Move one sentence's word timings onto its own audio's clock.
+ *
+ * A merged request's words are timed against the whole utterance — that is what
+ * the service reports — while each sentence's file is a slice of it starting at
+ * `segmentTiming().startMs`. Storing the raw offsets made every `at_word` cue
+ * fire late by the length of everything before it, and the "words end past the
+ * audio" guard in `parseTimings` rejected the file on the next render
+ * (`words ends at 12715 ms, past the audio's 7464 ms`, measured 2026-11-26).
+ */
+export function rebaseWords(words: readonly TimedWord[], startMs: number): TimedWord[] {
+  if (startMs <= 0) return [...words]
+  return words.map(word => {
+    const begin = Math.max(0, word.b - startMs)
+    // A word that began before the slice would otherwise clamp to a zero-length
+    // span; `e > b` is what the parser requires.
+    return { t: word.t, b: begin, e: Math.max(begin + 1, word.e - startMs) }
+  })
+}
+
 export function segmentTiming(options: {
   audioDurationMs: number
   words: readonly TimedWord[]
@@ -263,6 +284,26 @@ export function segmentTiming(options: {
 }
 
 /**
+ * Fragments per page for every slides deck the manuscript names.
+ *
+ * Only cue mode needs this: a tail transition there lands on the state the next
+ * sentence opens in, and that state is a beat number resolved against the deck's
+ * pages. A deck that cannot be split into pages is left out, and `exitSlots` then
+ * drops the transition with `cue-mode` rather than guessing a page.
+ */
+export async function deckPageCounts(board: Storyboard, root: string): Promise<Map<string, number[]>> {
+  const counts = new Map<string, number[]>()
+  for (const segment of board.segments) {
+    if (segment.engine !== 'slides' || segment.deck === null) continue
+    const html = await readFile(join(root, ...segment.deck.split('/')), 'utf8').catch(() => null)
+    if (html === null) continue
+    const pages = deckPageFragments(html)
+    if (pages !== null && pages.length > 0) counts.set(segment.id, pages)
+  }
+  return counts
+}
+
+/**
  * Synthesize the narration and write `timings.json`.
  *
  * Every sentence is one file (`audio/<id>.mp3`) and one entry in the timeline,
@@ -272,6 +313,133 @@ export function segmentTiming(options: {
  * to the punctuation's nominal pause when the voice was terse), which is what
  * makes a sentence break audible.
  */
+/**
+ * Synthesise the whole narration as **one master track** and record each sentence as
+ * a span of it (`beginMs` + `durationMs`), with words kept relative to the span.
+ *
+ * This is the continuous contract (docs/TEACH-VIDEO.md §29). Two things follow from
+ * it, and both are the point:
+ *
+ * 1. **The audio is never cut.** A per-sentence file exists because the picture is
+ *    recorded per sentence; the cut itself is a guess at where one sentence's sound
+ *    ends, and both audio defects of 2026-11-26 lived in exactly that guess. With a
+ *    master track the film mixes the whole thing in one go.
+ * 2. **The spans partition the master**, so the picture can cover it exactly: span 0
+ *    starts at 0, span i ends where span i+1 starts, and the last span runs to the
+ *    end of the track. `exitMs` is therefore 0 everywhere — there is no seam for a
+ *    tail transition to sit in.
+ *
+ * A single-track narration cannot re-record a subset: the request is the whole text,
+ * so `sentences: [...]` is refused here rather than paying for a second master that
+ * would move every offset.
+ */
+async function narrateSingleTrack(options: NarrateOptions, list: readonly Sentence[]): Promise<NarrateResult> {
+  const only = options.only !== undefined && options.only.length > 0 ? options.only : undefined
+  if (only !== undefined && only.length < list.length) {
+    throw new Error(
+      'this voice reports word timings, so narration is one master track for the whole text: `sentences` cannot re-record a subset. '
+      + 'Run video_teach_narrate without `sentences`, or narrate with merge: none to get one file per sentence',
+    )
+  }
+  const workDir = join(options.paths.root, options.paths.work)
+  const audioDir = join(options.paths.root, options.paths.audio)
+  await mkdir(workDir, { recursive: true })
+  await mkdir(audioDir, { recursive: true })
+
+  const groups = planUtterances(list, undefined, 'auto')
+  const chunks: string[] = []
+  const absolute = new Map<string, TimedWord[]>()
+  let cursorMs = 0
+
+  for (const group of groups) {
+    const synthesized = await synthesizeUtterance({
+      texts: group.map(index => list[index]!.say),
+      speaker: options.voice.speaker,
+      apiKey: options.apiKey,
+      speedRatio: options.voice.speedRatio,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+    const chunk = join(workDir, `narrate-${list[group[0]!]!.id}.mp3`)
+    await writeFile(chunk, synthesized.audio)
+    const media = await probe(chunk, options.tools ?? {}, options.signal)
+    if (media.durationMs === null) throw new Error(`ffprobe reported no duration for the utterance of "${list[group[0]!]!.id}"; the audio is unusable`)
+
+    for (const [position, index] of group.entries()) {
+      const words = synthesized.words
+        .filter((_, wordIndex) => synthesized.groups[wordIndex] === position)
+        .map(word => ({ t: word.t, b: word.b + cursorMs, e: word.e + cursorMs }))
+      if (words.length === 0) {
+        throw new Error(`sentence "${list[index]!.id}" came back with no words of its own from a merged request; narrate with merge: none to synthesise it alone`)
+      }
+      absolute.set(list[index]!.id, words)
+    }
+    chunks.push(chunk)
+    cursorMs += media.durationMs
+  }
+
+  const relative = `${options.paths.audio}/narration.mp3`
+  const master = join(options.paths.root, relative)
+  if (chunks.length === 1) await copyFile(chunks[0]!, master)
+  else await concatAudio(chunks, master, options.tools ?? {}, options.signal)
+  const masterMedia = await probe(master, options.tools ?? {}, options.signal)
+  if (masterMedia.durationMs === null) throw new Error('ffprobe reported no duration for the master narration')
+
+  // One boundary per gap, taken from the same pause policy the per-sentence cut
+  // used: keep the natural gap, pad it up to the punctuation's nominal pause when
+  // the voice was terse, and never let a boundary land before the last word.
+  const sentences: TimedSentence[] = []
+  let boundary = 0
+  for (const [index, sentence] of list.entries()) {
+    const words = absolute.get(sentence.id)!
+    const begin = boundary
+    const lastEnd = words[words.length - 1]!.e
+    let end: number
+    if (index + 1 < list.length) {
+      const nextFirst = absolute.get(list[index + 1]!.id)![0]!.b
+      const natural = Math.max(0, nextFirst - lastEnd)
+      const pause = Math.max(natural, sentenceEndPauseMs(sentence.say))
+      end = Math.min(Math.max(nextFirst, lastEnd), lastEnd + pause)
+    } else {
+      // The last sentence owns the tail of the track: no picture is cut short by a
+      // fraction of a second, and the film ends where the audio does.
+      end = masterMedia.durationMs
+    }
+    const durationMs = Math.max(1, Math.round(end - begin))
+    sentences.push({
+      id: sentence.id,
+      text: sentence.say,
+      beginMs: Math.round(begin),
+      durationMs,
+      exitMs: 0,
+      words: words.map(word => ({
+        t: word.t,
+        b: Math.max(0, Math.round(word.b - begin)),
+        e: Math.max(1, Math.round(word.e - begin)),
+      })),
+    })
+    boundary = end
+    options.onSentence?.(sentence.id, index, list.length)
+  }
+
+  const timings: Timings = {
+    ...(options.paths.audio === DEFAULT_TEACH_PATHS.audio ? {} : {}),
+    narration: relative,
+    merge: 'single',
+    voice: { provider: options.voice.provider, speaker: options.voice.speaker, speedRatio: options.voice.speedRatio },
+    sentences,
+  }
+  const timingsPath = join(options.paths.root, options.paths.timings)
+  const staging = `${timingsPath}.tmp`
+  await writeFile(staging, serializeTimings(timings, { sampleRate: VOICE_SAMPLE_RATE, merge: 'single' }), 'utf8')
+  await rename(staging, timingsPath)
+  return {
+    timings,
+    narrated: list.map(sentence => sentence.id),
+    durationMs: sentences.reduce((sum, sentence) => sum + sentence.durationMs, 0),
+    requests: groups.length,
+  }
+}
+
 export async function narrateSentences(options: NarrateOptions): Promise<NarrateResult> {
   const audioDir = join(options.paths.root, options.paths.audio)
   await mkdir(audioDir, { recursive: true })
@@ -279,6 +447,14 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
   const list = entries.map(entry => entry.sentence)
   const merge: NarrationMerge = options.merge ?? 'auto'
   const only = options.only !== undefined && options.only.length > 0 ? options.only : undefined
+  // The tail transition is a picture decision, not a voice one, but the timeline is
+  // the one ledger everything reads afterwards (docs/TEACH-MOTION.md §6.4), so it is
+  // seeded here from the manuscript: a project narrated but not yet rendered already
+  // carries the right numbers, and a narrowed re-narration does not zero the
+  // sentences it kept. The drive mode decides *how* the next picture is found:
+  // page mode reads it off the manuscript, cue mode resolves it against the deck.
+  const driveMode = supportsWordTimings(options.voice.provider) ? 'cue' as const : 'page' as const
+  const picture = exitSlots(options.board, driveMode, driveMode === 'cue' ? await deckPageCounts(options.board, options.paths.root) : new Map())
 
   // A narrowed run keeps the sentences it is not re-recording, so their audio and
   // offsets must already exist. Reading them up front makes a missing one a clear
@@ -307,12 +483,6 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
       // must not land here with a padding rule it never agreed to.
       throw new Error(`provider "${options.voice.provider}" reports no word timings but asks for punctuation padding; the two decisions are inconsistent`)
     }
-    // The tail transition is a picture decision, not a voice one, but the timeline
-    // is the one ledger everything reads afterwards (docs/TEACH-MOTION.md §6.4), so
-    // it is seeded here from the manuscript: a project that was narrated and not
-    // yet rendered already carries the right numbers, and a narrowed re-narration
-    // does not zero the sentences it kept.
-    const picture = exitSlots(options.board, 'page')
     for (const entry of entries) {
       if (only !== undefined && !only.includes(entry.sentence.id)) {
         const kept = previous?.sentences.find(item => item.id === entry.sentence.id)
@@ -353,6 +523,19 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
     await writeFile(staging, serializeTimings(deepseekTimings, { sampleRate: VOICE_SAMPLE_RATE }), 'utf8')
     await rename(staging, target)
     return { timings: deepseekTimings, narrated, durationMs: totalDurationMs(deepseekTimings), requests: narrated.length }
+  }
+
+  // Two contracts behind one command (docs/TEACH-VIDEO.md §29):
+  //
+  // - `merge: auto` with a voice that reports word timings → **one master track**.
+  //   One request for the whole text keeps the prosody continuous, and *not*
+  //   cutting it into per-sentence files removes the step that produced two silent
+  //   audio defects (§28.4, §28.5): a cut boundary is only as good as the word
+  //   timings that produce it, and no cut is exactly right.
+  // - `merge: none` → one request and one file per sentence, the isolation path.
+  //   Also the only shape a provider without word timings can produce.
+  if (supportsWordTimings(options.voice.provider) && merge !== 'none') {
+    return narrateSingleTrack(options, list)
   }
 
   const groups = planUtterances(list, only, merge)
@@ -409,13 +592,12 @@ export async function narrateSentences(options: NarrateOptions): Promise<Narrate
         text: sentence.say,
         audio: relative,
         durationMs: media.durationMs ?? Math.round(timing.targetMs),
-        // Cue mode works a sentence's page out while recording it (its own beats
-        // plus the deck's live fragment counts), so there is no manuscript-level
-        // "next page state" for a transition to land on: every seam here is a hard
-        // cut, and the plan refuses a declared transition for that reason
-        // (docs/TEACH-MOTION.md §7 rule 2).
-        exitMs: 0,
-        words,
+        // In cue mode the next sentence's opening page is derived from its own beats
+        // and the deck's fragments per page; `exitSlots` did that work above with the
+        // same numbers the recorder will see (docs/TEACH-MOTION.md §7 rule 2 was
+        // lifted 2026-11-26: the landing is knowable, so the seam can turn).
+        exitMs: picture.get(sentence.id)?.exitMs ?? 0,
+        words: rebaseWords(words, timing.startMs),
       })
       narrated.push(sentence.id)
       options.onSentence?.(sentence.id, index, list.length)
@@ -486,6 +668,12 @@ export interface RenderedSegment {
    * asking the author to notice (docs/TEACH-MOTION.md §15).
    */
   retried: boolean
+  /**
+   * Manim only: how far the scene ran past the sentence's narration, in ms. The picture
+   * is cut at the narration's end, so a positive number means the animation was still
+   * going (`overrunMs`, reported by `video_teach_render`).
+   */
+  overrunMs?: number
 }
 
 /**
@@ -516,14 +704,92 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
   const board = options.board
   const byId = new Map(options.timings.sentences.map(sentence => [sentence.id, sentence]))
   const rendered: RenderedSegment[] = []
-  const exits = exitSlots(board, deckDriveMode(options.timings))
+  const driveMode = deckDriveMode(options.timings)
+  // A single master track has no seams: the picture is one continuous recording per
+  // segment, so a tail transition has nowhere to sit and `exitMs` is 0 by
+  // construction (docs/TEACH-VIDEO.md §29). Zeroing here rather than in `exitSlots`
+  // keeps the manuscript check honest: the plan still says the manuscript declared
+  // transitions, and the render says it did not record any.
+  const exits = options.timings.narration === undefined
+    ? exitSlots(board, driveMode, driveMode === 'cue' ? await deckPageCounts(board, options.paths.root) : new Map())
+    : new Map([...exitSlots(board, 'page').keys()].map(id => [id, { id, exitMs: 0, target: null, dropped: 'continuous' as const }]))
+
+  // The continuous contract records a whole slides segment in one session, so the
+  // per-sentence loop below cannot do the work: build every run first, then hand the
+  // sentences their segments out of it (docs/TEACH-VIDEO.md §29.3).
+  const continuous = options.timings.narration !== undefined
+  const runOutputs = new Map<string, RenderedSegment>()
+  const widened: string[] = []
+  if (continuous) {
+    const { recordDeckRun } = await import('./slides.ts')
+    for (const segment of board.segments) {
+      if (segment.engine !== 'slides' || segment.deck === null) continue
+      const wanted = options.only === undefined
+        ? segment.sentences
+        : segment.sentences.filter(sentence => options.only!.includes(sentence.id))
+      if (wanted.length === 0) continue
+      // `sentences: [...]` narrows a re-record, not a recording session: half a run
+      // would start mid-story on a fresh deck. The whole segment is re-recorded and
+      // the extra ids are reported through the ordinary `fresh` list.
+      const picked = wanted.length === segment.sentences.length ? wanted : segment.sentences
+      if (picked !== wanted) widened.push(...segment.sentences.filter(sentence => !wanted.some(entry => entry.id === sentence.id)).map(sentence => sentence.id))
+      const run = picked.map(sentence => {
+        const timed = byId.get(sentence.id)
+        if (timed === undefined) throw new Error(`sentence "${sentence.id}" has no narration; run narrate first`)
+        return { id: sentence.id, durationMs: timed.durationMs, cues: cuesFor(timed, sentence.cues) }
+      })
+      const deckPath = join(options.paths.root, segment.deck)
+      const workDirFor = (id: string): string => join(options.paths.root, options.paths.work, id)
+      const args = {
+        deckPath,
+        sentences: run,
+        width: board.video.width,
+        height: board.video.height,
+        fps: board.video.fps,
+        workDirFor,
+        ...(options.chromiumPath === undefined ? {} : { chromiumPath: options.chromiumPath }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }
+      let recorded = await recordDeckRun(args, options.tools ?? {})
+      // A late beat is the host hesitating, not a manuscript mistake — but inside a
+      // run there is no clean way to redo one sentence (a fresh page sits a few
+      // pixels off the frame the previous sentence left), so the whole segment is
+      // recorded again. That is the price of the continuous contract.
+      const late = recorded.some(segmentOut => lateBeats(segmentOut.beats).length > 0)
+      const retried = late
+      if (late) recorded = await recordDeckRun(args, options.tools ?? {})
+      for (const [index, sentence] of picked.entries()) {
+        const timedSentence = byId.get(sentence.id)!
+        const out = recorded[index]!
+        const stillLate = lateBeats(out.beats)
+        runOutputs.set(sentence.id, {
+          id: sentence.id,
+          path: out.path,
+          durationMs: timedSentence.durationMs,
+          exitMs: 0,
+          exitTarget: null,
+          frames: out.frames,
+          beats: out.beats,
+          settle: out.settle,
+          retried,
+          ...(stillLate.length === 0 ? {} : { lateBeats: stillLate }),
+        })
+        options.onSegment?.(sentence.id, out.path)
+      }
+    }
+  }
 
   for (const { segment, sentence } of allSentences(board)) {
     if (sentence.id === undefined) continue
-    if (options.only !== undefined && !options.only.includes(sentence.id)) continue
+    if (options.only !== undefined && !options.only.includes(sentence.id) && !widened.includes(sentence.id)) continue
     const timed = byId.get(sentence.id)
     if (timed === undefined) throw new Error(`sentence "${sentence.id}" has no narration; run narrate first`)
     const workDir = join(options.paths.root, options.paths.work, sentence.id)
+    if (continuous && segment.engine === 'slides') {
+      const out = runOutputs.get(sentence.id)
+      if (out !== undefined) rendered.push(out)
+      continue
+    }
 
     if (segment.engine === 'manim') {
       if (segment.scene === null) throw new Error(`segment "${segment.id}" has no scene`)
@@ -538,7 +804,21 @@ export async function renderSegments(options: RenderOptions): Promise<RenderedSe
       })
       // Manim has no beats to be late or a deck state to compare: its scene is a
       // single timeline, and running short of it is the scene's own `run_time`.
-      rendered.push({ id: sentence.id, path: result.path, durationMs: timed.durationMs, exitMs: 0, exitTarget: null, frames: null, beats: [], settle: null, retried: false })
+      rendered.push({
+        id: sentence.id,
+        path: result.path,
+        durationMs: timed.durationMs,
+        exitMs: 0,
+        exitTarget: null,
+        frames: null,
+        beats: [],
+        settle: null,
+        retried: false,
+        // The scene ran past the narration and was cut at the sentence's end. It is
+        // measured by `manimSegment` and used to be dropped on the floor, while the
+        // skill promised the overrun would be reported (2026-11-26 audit).
+        ...(result.overrunMs > 0 ? { overrunMs: result.overrunMs } : {}),
+      })
       options.onSegment?.(sentence.id, result.path)
       continue
     }
@@ -660,6 +940,9 @@ export function motionFindings(rendered: readonly RenderedSegment[]): string[] {
     } else if (segment.settle?.status === 'skipped' && segment.beats.length > 0) {
       findings.push(`sentence "${segment.id}": the finished-layout check did not run (${segment.settle.reason})`)
     }
+    if (segment.overrunMs !== undefined && segment.overrunMs > 0) {
+      findings.push(`sentence "${segment.id}": the scene runs ${segment.overrunMs} ms past the narration and is cut at the sentence's end. Shorten the scene's run_time, or lengthen the line`)
+    }
   }
   return findings
 }
@@ -734,7 +1017,7 @@ export async function planSegments(
   for (const sentence of timings.sentences) {
     const done = fresh.get(sentence.id)
     if (done !== undefined) {
-      segments.push({ id: sentence.id, path: done.path, durationMs: sentence.durationMs, exitMs: done.exitMs, audio: sentence.audio })
+      segments.push({ id: sentence.id, path: done.path, durationMs: sentence.durationMs, exitMs: done.exitMs, audio: sentence.audio ?? null })
       freshIds.push(sentence.id)
       continue
     }
@@ -755,7 +1038,7 @@ export async function planSegments(
     if (measured !== null && Math.abs(measured - expected) > STALE_SEGMENT_MS) {
       stale.push(`sentence "${sentence.id}": the segment on disk is ${measured} ms but the timeline says ${expected} ms (${sentence.durationMs} + ${sentence.exitMs} of tail transition) — it was recorded before the manuscript changed. Re-record it: video_teach_render sentences: ["${sentence.id}"]`)
     }
-    segments.push({ id: sentence.id, path, durationMs: sentence.durationMs, exitMs: sentence.exitMs, audio: sentence.audio })
+    segments.push({ id: sentence.id, path, durationMs: sentence.durationMs, exitMs: sentence.exitMs, audio: sentence.audio ?? null })
     reusedIds.push(sentence.id)
   }
   if (requireAll && missing.length > 0) {
@@ -765,6 +1048,12 @@ export async function planSegments(
 }
 
 export interface AssembleOptions {
+  /**
+   * Workspace-relative path of the master narration, when the project uses the
+   * single-track contract. Absent means the per-sentence files are concatenated
+   * (DeepSeek's contract, and every project narrated before 2026-11-26).
+   */
+  narration?: string | null
   paths: TeachPaths
   /** Every sentence's segment, in timeline order (see {@link planSegments}). */
   segments: readonly SegmentRef[]
@@ -810,14 +1099,23 @@ export interface Assembled {
  */
 export async function assembleVideo(options: AssembleOptions): Promise<Assembled> {
   const silent = join(options.paths.root, options.paths.work, 'picture.mp4')
-  const narration = join(options.paths.root, options.paths.work, 'narration.wav')
   await mkdir(dirname(silent), { recursive: true })
   await concatSegments(options.segments.map(segment => segment.path), silent, options.tools ?? {}, options.signal)
-  const audioFiles = options.segments.map(segment => join(options.paths.root, segment.audio ?? audioRelativeFor(options.paths, segment.id)))
-  // The silence that goes with each tail transition: the picture segment is
-  // `durationMs + exitMs` long, so the track that runs underneath it must be too
-  // (docs/TEACH-MOTION.md §6.3).
-  await concatAudio(audioFiles, narration, options.tools ?? {}, options.signal, options.segments.map(segment => segment.exitMs))
+  let narration: string
+  if (options.narration !== undefined && options.narration !== null) {
+    // The single-track contract (docs/TEACH-VIDEO.md §29): one file carries the whole
+    // narration and the spans partition it, so the picture already covers it exactly.
+    // There is nothing to concatenate and no tail-transition silence to insert —
+    // `exitMs` is 0 throughout, which is what "no seam" means on the audio side.
+    narration = join(options.paths.root, ...options.narration.split('/'))
+  } else {
+    const audioFiles = options.segments.map(segment => join(options.paths.root, segment.audio ?? audioRelativeFor(options.paths, segment.id)))
+    narration = join(options.paths.root, options.paths.work, 'narration.wav')
+    // The silence that goes with each tail transition: the picture segment is
+    // `durationMs + exitMs` long, so the track that runs underneath it must be too
+    // (docs/TEACH-MOTION.md §6.3).
+    await concatAudio(audioFiles, narration, options.tools ?? {}, options.signal, options.segments.map(segment => segment.exitMs))
+  }
   // The SRT is written next to the intermediate picture, not next to the
   // finished mp4: at this point the mp4 is still a staging file in the renders
   // folder, and `video_teach_export` owns the published `.srt`. Both are built by
