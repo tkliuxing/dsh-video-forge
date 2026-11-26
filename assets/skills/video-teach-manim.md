@@ -14,7 +14,7 @@
 
 下面这些**用 slides 就够**，不要为了它们装 Manim：要点分步出现、结论对比、图片与截图讲解、数据图表（静态图或 SVG 即可）、纯文字排版。
 
-公式排版目前只有两条路：Manim 的 `MathTex`（需要 TeX），或者幻灯片里用 HTML/CSS 和图片。**插件没有内置 MathJax/KaTeX**，所以没装 Manim 时公式请做成图片或纯 HTML。
+公式排版目前只有两条路：Manim 的 `MathTex`（需要 TeX），或者幻灯片里用 HTML/CSS 和图片。**插件没有内置 MathJax/KaTeX**，要用就自己 vendored 一份脚本进 deck，不能引 CDN；没装 Manim 时公式请做成图片或纯 HTML。
 
 如果装不动 Manim，把那几句改成 `engine: slides` 并从段落里删掉 `scene` 即可，路线照样能出片。
 

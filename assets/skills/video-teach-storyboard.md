@@ -54,11 +54,11 @@ segments:
 1. **一句 = 一个录制单元 = 一个重试单元**。句子 id 同时也是音频文件名（`audio/<id>.wav`，默认 provider；`volcengine` 合并合成时是 `audio/<id>.mp3`）与时间轴的键，**全文唯一**。想改一句话就只改那一句，重跑 `sentences: [<id>]`；**已补过页尾停留的项目是例外**：改台词要全量重录，见 `video-teach-iterate`。
 2. **`say` 是念出来的字**，不是标注、不是提示词。中文按字计费，一句控制在 15–40 字；超过 120 字会被警告，超过 300 字直接拒绝。
 3. **cue 有两种时间写法，取决于 provider**：
-   - `at_progress`（0–1，句子实测时长的比例）：**两个 provider 都可用**，是默认 provider `deepseek` 下唯一能用的写法。**分母包含句尾停留的静音**。数值不是随手写的，要按「页内节拍：按变化次数算」的公式得出：一页 n 个 fragment 就有 n+1 次画面变化，第 k 次落在说话时长的 k/(n+1)。它不与发音逐字对齐，属于按语义给的节拍，不要据此承诺"讲到哪个字画面动到哪"。
+   - `at_progress`（0–1，句子实测时长的比例）：**两个 provider 都可用**，是默认 provider `deepseek` 下唯一能用的写法。**分母包含句尾停留的静音**。数值不是随手写的，要按「页内节拍：按变化次数算」的公式得出：一页 n 个 fragment 就有 n+1 次画面变化，第 k 个 fragment 落在说话时长的 k/(n+1)。它不与发音逐字对齐，属于按语义给的节拍，不要据此承诺"讲到哪个字画面动到哪"。
    - `at_word`（稿子里看得见的词）：**只有 `volcengine` 能用**，因为它返回字级时间戳。deepseek 下写 `at_word` 会在校验阶段被拒绝，并提示改用 `at_progress`。
    - 一条 cue 只能写其中一个；都不写表示这句一开始就切。
-4. **`fragment` 从 1 开始、在所在页内递增**。它是 reveal.js 的 fragment 序号，不是自由标签。页模式下编号**按页重来**：第 2 页的第一个节拍又是 1（因为 deck 的 `teachCue` 数的是当前页的 fragment）；只有纯 cue 模式（`volcengine`、全片一页）才是全片一路递增。
-5. **默认一句一页，句内可分步，动作要在念完之前播完**。无词时间戳时，画面契约是"每句一页 + 页内按 `at_progress` 分步"：句子开页，节拍依次显现。要让几句共用一个版面，按「一页承载多句」写 `page` / `enter`。**换页本身算第一次画面变化**，一页 n 个 fragment → n+1 次变化；第 k 次落在说话时长的 k/(n+1) 处，所以最后一拍也在句内结束，最后一段句长加尾停留才是"完整一屏"的停留。一句里放 2–3 个节拍最舒服；超过 3 个通常说明这句话讲了两件事，应当拆句——`video_teach_plan` 会报出来。
+4. **`fragment` 从 1 开始、在所在页内递增**。它是 reveal.js 的 fragment 序号，不是自由标签。页模式下编号**按页重来**：第 2 页的第一个节拍又是 1（因为 deck 的 `teachCue` 数的是当前页的 fragment）；纯 cue 模式（`volcengine`）不分页重来，全片一路递增，多页 deck 由录制器按这个号翻页。
+5. **默认一句一页，句内可分步，动作要在念完之前播完**。无词时间戳时，画面契约是"每句一页 + 页内按 `at_progress` 分步"：句子开页，节拍依次显现。要让几句共用一个版面，按「一页承载多句」写 `page` / `enter`。**换页本身算第一次画面变化**，一页 n 个 fragment → n+1 次变化；第 k 个 fragment 落在说话时长的 k/(n+1) 处，所以最后一拍也在句内结束，最后一段句长加尾停留才是"完整一屏"的停留。一句里放 2–3 个节拍最舒服；超过 3 个通常说明这句话讲了两件事，应当拆句——`video_teach_plan` 会报出来。
 6. **每句以句末标点收尾**。`volcengine` 会把相邻几句合并成**一次**请求（默认行为），句子之间由插件补 `。` 再发出去；上一句若以逗号结尾，换来的只是逗号级换气，边界会糊。`deepseek` 逐句请求、不合并，标点仍决定它自己的停顿长短。问句用 `？`、感叹用 `！`，停顿更长。
 7. **停顿策略随 provider 不同，这是实测结论**：
    - `deepseek`（默认）：**不补停顿**。它的气口本来就自然，补过反而显得赶；听感测试里原样拼接最像同一个人。
@@ -70,7 +70,7 @@ segments:
 默认 provider（`deepseek`）没有词时间戳，页内节拍由作者给比例。**该给多少不是审美问题，是算出来的**：一页有几个动作，动作就该均匀落在这一句的相应位置上。
 
 - **一页有 n 个 fragment，就有 n+1 次画面变化**：换页是第 1 次（t = 0），第 k 个 fragment 是第 k+1 次。
-- **第 k 次变化落在这一句"说话时长"的 k/(n+1) 处**。说话时长 = `durationMs` − 尾停留静音（没加过停留就是 `durationMs` 本身）。**尾停留不是 `storyboard.yaml` 的字段**，它是对音频的后期处理（见 `video-teach-iterate` 的「页尾停留」）。
+- **第 k 个 fragment 的这一次变化落在这一句"说话时长"的 k/(n+1) 处**。说话时长 = `durationMs` − 尾停留静音（没加过停留就是 `durationMs` 本身）。**尾停留不是 `storyboard.yaml` 的字段**，它是对音频的后期处理（见 `video-teach-iterate` 的「页尾停留」）。
 - **换算成 `at_progress` 时，分母是含尾停留的 `durationMs`**：
 
   ```
@@ -115,28 +115,51 @@ sentences:
 5. **同一页内 fragment 没有递增**，也就是上面那条编号规则被违反。
 6. **`enter` 没写 `page`**。解析期就拒绝并给出行号：只写 `enter` 说不清是进哪一页。
 
-以下两条由 deck 侧核对：**挪去的页必须真实存在**（`max(page) + 1` 超过 deck 的页数会被拒绝，那一页根本不存在；deck 有多出来的页不会被录到时只给 warning），以及**页数数不出来时**（deck 没有 `<section>`，页在 JS 里生成）明说一句「页号没有核对过」而不是静默跳过。细节见 `video-teach-slides`。
+以下几件由 deck 侧核对：**挪去的页必须真实存在**（`max(page) + 1` 超过 deck 的页数会被拒绝，那一页根本不存在；deck 有多出来的页不会被录到时只给 warning），以及**页数数不出来时**（deck 没有 `<section>`，页在 JS 里生成）明说一句「页号没有核对过」而不是静默跳过。细节见 `video-teach-slides`。
 
 在 `volcengine`（词级时间戳、纯 cue 模式）下这两个键不生效，`video_teach_plan` 会提示一句，不要以为画面会跟着变。Manim 段也不看这两个键。
 
 **共享页改变了「这句没有 cue 也不算缺陷」的前提**。单独一页时，没有 cue 的句子里画面仍然变了（换页就是那次变化）；共享页上，若这一句既不开新页、也不写更大的 `enter`，那么它整句期间画面一动不动——这条现在会被 `video_teach_plan` 记为 silent 并点名。要么给它一个节拍（编号接着上一句继续数），要么让它独享一页。
 
-**它换不来什么**：跨句仍然是硬切。每句独立录制、单独编码、最后拼接，句与句之间的过渡动画拍不到；观众感到「连续」只能靠版面、页码、几何三者一致。重录仍只花一句的钱，页模式仍没有词时间戳。
+**它换不来什么**：共享页内没有转场——两句在同一页上，没有页码可翻，硬录只会让下一句的 `enter` 状态提前闪进画面（`video_teach_plan` 会把这条当成降级说出来）。跨句转场本身现在有了，但要显式声明，见下一节。重录仍只花一句的钱，页模式仍没有词时间戳。
 
-**每页 5 个 fragment 的上限仍然成立**，而且共享页更快撞到：三句各两拍就是 6，超了说明这几句本来就不该挤在一页。
+**每页 6 个 fragment 的上限仍然成立**（约定，不由代码强制），共享页更快撞到：三句各两拍正好到顶，再多就说明这几句不该挤在一页。
+
+## 跨句转场：`meta.transition`
+
+句子之间默认是硬切。要让翻页发生在画面里（含 reveal 的 Auto-Animate 跨页形变），在 `meta` 里声明一次：
+
+```yaml
+meta:
+  transition:
+    mode: deck          # deck | none；none 等于不声明
+    durationMs: 520     # 100–1200，必填，不写就拒绝（不给默认值）
+sentences:
+  - id: a00-4
+    say: 这句念完之后画面才会翻页。
+    transition: none    # 可选：这一句的尾部回硬切
+```
+
+三条要记牢：
+
+1. **时长归稿件，形态归 deck**。稿件只写"多长"，是淡入、滑动、缩放还是跨页形变，都在 deck 里（`data-transition`、`data-auto-animate`）。逐句只允许写 `transition: none`，写别的形态会被拒绝。**`durationMs` 要不短于 deck 声明的 `window.teachPageTransition`**，否则转场只录到一半就被切（`video_teach_plan` 会给 warning）；跨页 Auto-Animate 还要对齐 deck 的 `autoAnimateDuration`。
+2. **只有"同段、同 engine、下一页 ≠ 本页"才有转场**。共享同一页的两句之间没有转场（没有页码可翻）；段与段之间、幕与幕之间一律硬切（另一个 deck / 另一份项目，拿不到下一页初态）；纯 cue 模式（`volcengine`）声明了会被**拒绝**：那句的页由它自己的节拍推出来，转场要落到的初态在稿件里不唯一。
+3. **它让每一句长了一点**。时间轴里每句多出 `exitMs`，成片时长、SRT 起点、逐幕验收都按 `durationMs + exitMs` 算。作者只需要知道一件事：**改了某一句的版面，它前一句的尾转场还停在旧版面上**，重新录前一句（`video_teach_render sentences: ["<前一句 id>"]`）。渲染结果的 `seam_findings` 会点名这件事，但不会自动替你重录。
+
+`video_teach_plan` 在此之前就会把账算清：`transitions:` 一行写"多少句有转场、多出多少毫秒、哪些被降级以及为什么"（共享同页 / 段末 / manim 段）。**转场录在前一句的尾部，不在后一句的开头**，所以句首永远是完整构图，句尾的"最后一屏停留"也仍然完整。
 
 ## 写完先做什么
 
 ```
 video_teach_plan        # 校验 + 估时 + 报告本机缺哪个可执行
-video_teach_narrate     # 合成旁白（相邻句合并成一次请求），写 timings.json（付费、联网）
+video_teach_narrate     # 合成旁白，写 timings.json（付费、联网）；deepseek 逐句，volcengine 相邻句合并
 # 需要页尾停留：给每句音频尾部补静默并改写 durationMs（见 video-teach-iterate）
 # 尾停留定了之后：按每页变化次数重算 cues（见上文「页内节拍」）
 video_teach_render      # 逐句渲染、拼成 renders/<shot>/vNNN.mp4，并把旁白烧进画面
-video_teach_export      # SRT、timeline.json、deck/，以及两张封面
+video_teach_export      # SRT、timeline.json、deck/，以及两张封面（写了 meta.cover 才有）
 ```
 
-`video_teach_plan` 不花钱，报错会指出**行号与具体键**；它还会读 deck HTML，检查录制器要用的三个全局（`teachReady`、`teachCue`、页模式下的 `teachPage`）与页数是否够用。先跑它，再花钱。cues 的数值依赖 `durationMs`，所以顺序是**先定尾停留、再算 cues、最后渲染**。
+`video_teach_plan` 不花钱，报错会指出**行号与具体键**；它还会读 deck HTML，检查录制器要用的三个全局（`teachReady`、`teachCue`、`teachPage`——页模式与多页的 cue 模式都要它）与页数是否够用。先跑它，再花钱。cues 的数值依赖 `durationMs`，所以顺序是**先定尾停留、再算 cues、最后渲染**。
 
 ## 封面：单独一页 HTML，两种画幅
 
@@ -169,7 +192,7 @@ video_teach_export      # SRT、timeline.json、deck/，以及两张封面
 - **共享页上忘了让编号跨句递增** —— 同页第二句又从 1 编号，第一拍画面不动；`video_teach_plan` 会拒绝这种写法。
 - **`enter` 写成等于或大于本句第一个 cue 的 `fragment`** —— 那一拍在开录前就亮过了，cue 到的时候不会有变化，同样会被拒绝。
 - **以为共享页能拍出句间过渡** —— 每句仍是独立录制再拼接，跨句必然硬切；要连续只能让版面、页码、几何在两句之间保持一致。
-- **改了台词只跑 `video_teach_export`** —— 烧进画面的字幕是 `video_teach_render` 拼片时生成的，export 只写外部 SRT。不重跑 `narrate → render` 就会出现「画面里旧字幕、文件里新字幕」。
+- **改了台词只跑 `video_teach_export`** —— 烧进画面的字幕与外部 SRT 同源于 `timings.json`，export 不动画面。会分叉的时机是「重新 narrate 了却没重渲」：文件里新、画面里旧。改台词走 `narrate → render → export`。
 - **把封面画成 16:9 固定宽度的版面** —— 4:3 那张会被裁掉两边；用 media query 或流式宽度，别写死 `width: 1920px`。
 - 段落误当句子塞进一条 `say` —— 会触发字数上限，也会让那一段的重录代价变成整段。
 - **一句里塞两个句号** —— 合成时会被切成两句，但时间轴只认这一条的 id，句间停顿与词时间戳就对不上。一句话只写一个句末标点。
@@ -187,7 +210,7 @@ video_teach_export      # SRT、timeline.json、deck/，以及两张封面
 
 **4. Manim 段一句一场景文件、一句一类**。同一个场景被多句复用，就是同一段动画重复播；校验会列出所有共用该场景的句子 id。要么拆场景，要么把句子并成一句。
 
-**5. 节奏密度**：全片平均每 4–8 秒一次画面变化。平均间隔超过 8 秒会 warning；连续两句都没有变化会额外点名这一对。
+**5. 节奏密度**：全片平均每 4–8 秒一次画面变化。平均间隔超过 8 秒会 warning；`volcengine` 下连续两句都没有变化会额外点名这一对。
 
 **6. 时长与画面互相配平**：Manim 场景自身的时长应落在该句旁白时长的 70%–100%。短了尾部会冻结，长了会被截断——渲染时这两种都会被兜住，但观感是断的，所以写场景时就按这个比例配 `run_time`。
 
@@ -229,7 +252,7 @@ video_teach_render  storyboard: runs/a05/storyboard.yaml   shot: a05
 3. **钉解释器**：`runs/<幕>/.python-version` 写 3.11.x。系统 python 常常没有 PyYAML，节拍脚本会崩在 import。
 4. **记基线**：主项目稿本与 `timings.json` 的 sha256，回收时用它证明没被碰过。
 
-插件的 `assets/teach/runs.py` 用 `prepare --act <幕>` 把这四件一次做掉（拷进项目 `script/runs.py` 再用）。
+插件的 `assets/teach/runs.py` 用 `prepare --act <幕>` 把这些一次做掉，顺带把本幕稿本切进 `runs/<幕>/storyboard.yaml`（拷进项目 `script/runs.py` 再用）。
 
 ### 三件事不要委托给子任务
 

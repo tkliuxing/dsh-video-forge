@@ -58,7 +58,7 @@
 
 **四个工具，按顺序**：
 
-1. `video_teach_plan`：校验 `storyboard.yaml`，估时，检查内容与时间线的配合（哪句没有画面变化、fragment 超没超、场景有没有被复用），读 deck HTML 核对录制器要用的三个全局（`teachReady` / `teachCue` / 页模式下的 `teachPage`）与页数，并报告本机缺哪个外部程序。**免费、不联网**，先跑它：它拦下的错误都出现在花钱之前。
+1. `video_teach_plan`：校验 `storyboard.yaml`，估时，检查内容与时间线的配合（哪句没有画面变化、fragment 超没超、场景有没有被复用），读 deck HTML 核对录制器要用的三个全局（`teachReady` / `teachCue` / `teachPage`，页模式与多页的 cue 模式都要它）与页数，并报告本机缺哪个外部程序。**免费、不联网**，先跑它：它拦下的错误都出现在花钱之前。
 2. `video_teach_narrate`：逐句合成旁白，写 `timings.json`。这一步**按字符计费**，`sentences` 可以只重录指定句。两个 provider 的 key 都在设置的「教学视频」里配（每个 provider 一行，折叠时标题也会显示是否已配置）。
    语音有两个 provider，按需要选：
 
@@ -73,13 +73,13 @@
    | 停顿 | 保留语音自带的气口 | 按标点补齐、只补不裁 |
    | 听感 | 跨句更像同一个人，语速偏慢适合讲解 | 逐句合成时语气会漂 |
 
-   默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**只有需要"讲到某个词、画面动一下"时才换 volcengine** —— 那是它唯一不可替代的能力。
+   默认用 DeepSeek，是因为盲听对比里它跨句最一致、原样拼接也自然。**需要"讲到某个词、画面动一下"，或要让旁白快慢可调时才换 volcengine**：词级时间戳与整数语速都只有它给得出。
 3. `video_teach_render`：逐句渲染画面并拼成成片，录音时长是时间轴——`volcengine` 下画面跟着词走，`deepseek` 下每句一页（稿件的 `page` 可让连续几句共页）、页内节拍按 `at_progress` 落；`sentences` 可以只重录指定句。拼片时把旁白**烧进画面**（需要带 libass 的 ffmpeg，缺它时片子照出、结果里写明没烧）；渲染完会抽样帧颜色，把"看着像静帧"的段点名。
 4. `video_teach_export`：写 SRT、`timeline.json`，把 deck 导出到 `deck/`，并按 `meta.cover` 那一页截 16:9 与 4:3 两张封面。
 
 **两条出片经验**（细节见 `video-teach-storyboard` / `video-teach-iterate`）：
 
-- **句内节拍按"这页有几次变化"算**：一页 n 个 fragment → n+1 次画面变化（换页算第一次），第 k 次落在说话时长的 k/(n+1)。所有动作在念完之前播完，不要手写固定比例。
+- **句内节拍按"这页有几次变化"算**：一页 n 个 fragment → n+1 次画面变化（换页算第一次），第 k 个 fragment 落在说话时长的 k/(n+1)。所有动作在念完之前播完，不要手写固定比例。
 - **页尾停留约 1 秒**：画面长度等于音频长度，DeepSeek 不补停顿；要让最后一屏停住，得给每句音频尾部补静默再重渲染（插件没有这个参数），并同步重算 cues。
 
 **外部依赖分三档，只有用到的才装**（在线生成路线一样都不需要）：
@@ -92,7 +92,7 @@
 
 **成本**：渲染免费（本机 CPU/GPU），唯一的钱是 TTS 按字符计。三分钟中文旁白约八百多字，按 5 元/万字符算约四毛，实际以账单为准。
 
-**成片与产物**：动态画面在 `renders/<镜头>/vNNN.mp4`（旁白已烧进画面，可以直接发平台），旁边的 `vNNN.json` 记录它由哪份稿件、哪几句构成；同一目录还有 `.srt`、`.timeline.json`、`.cover-16x9.png`、`.cover-4x3.png`；中间产物在项目根下（`audio/`、`timings.json`、`scenes/`、`slides/`、`.dsh-video/`），哪些该进版本库见 `video-teach-iterate`。
+**成片与产物**：动态画面在 `renders/<镜头>/vNNN.mp4`（旁白已烧进画面，可以直接发平台），旁边的 `vNNN.json` 记录它由哪份稿件、哪几句构成；同一目录还有 `.srt`、`.timeline.json`、`.cover-16x9.png`、`.cover-4x3.png`；插件产物在项目根下（`audio/`、`timings.json`、`.dsh-video/`），手写稿在 `scenes/`、`slides/`，哪些该进版本库见 `video-teach-iterate`。
 
 **什么场景不该用这条路**：真人出镜、实拍质感的镜头、复杂场景调度与光影变化。这些是在线模型擅长的，教学路线做不了，硬做只会得到生硬的矢量画面。
 
@@ -109,7 +109,7 @@
 - 价格表默认从公网价格源（LiteLLM 的公开价目文件 ×7.0 汇率）自动获取，按分辨率分档。拿不到时依次退回上次缓存、内置快照；结果里的 `price_source` 会说是哪一层（`remote` / `cache` / `bundled` / `none`）、多少天前、以及 `last_error`。看到 `cache` / `bundled` 或 `last_error`，就要据实说明"这个数是按旧价估的"，不要当成今天的价报给用户。没有价格行的模型只报"无法估算"，不要用别的模型的单价顶替。
 - 超时或重启后查 `video_status`，**绝不要重复提交**——已发出的任务可能正在跑、正在计费，重复提交会被拦截。
 - 成片在 `renders/<镜头>/`，旁边 `vNNN.json` 记录它是怎么做的。
-- 项目级设置（默认模型 / 分辨率 / 风格 / 角色）在 `video-project.yaml`，不在插件设置里。
+- 项目级设置（分辨率 / 风格 / 角色）在 `video-project.yaml`。供应商与模型在清单 `defaults` 里也有一层，插件设置是最后一层兜底。
 
 ## 工具调用失败时
 

@@ -243,8 +243,8 @@ and a changed one is let through.
 
 ## Bundled skills
 
-Five skills ship with the plugin (loaded by the model with the `skill` tool, or
-four of them as `/name` commands). They guide the workflow; the tools stay
+Nine skills ship with the plugin (loaded by the model with the `skill` tool, or
+five of them as `/name` commands). They guide the workflow; the tools stay
 self-contained and never depend on a skill having been loaded.
 
 | Skill | What it covers |
@@ -254,6 +254,10 @@ self-contained and never depend on a skill having been loaded.
 | `video-storyboard` (`/video-storyboard`) | Breaking a script into `storyboard/shots.yaml` and generating it one shot at a time |
 | `video-iterate` | Redo vs continue (`from`), character consistency, and a last-frame self-check before delivery |
 | `video-guide` (`/video-guide`) | End-to-end usage: setup, what it can and cannot do, cost, where videos land |
+| `video-teach-storyboard` (`/video-teach-storyboard`) | Writing a teaching manuscript: `storyboard.yaml`, one recorded unit per sentence, page beats (a page change counts as one), several sentences on one page (`page` / `enter`), cross-sentence transitions, tail holds, the cover page |
+| `video-teach-slides` | The reveal.js half: the `teachReady` / `teachCue` / `teachPage` contract, fragment layout, which motion to pick and which to avoid, static assets, type sizes |
+| `video-teach-manim` | The Manim half: one scene file per sentence, `run_time` balance, the LaTeX and dvisvgm it needs |
+| `video-teach-iterate` | Re-recording a teaching film: what each change (line, cues, layout, voice, cover, tail hold) makes you re-run, why one sentence alone can be re-recorded, merging parallel acts |
 
 ## The workspace as a project
 

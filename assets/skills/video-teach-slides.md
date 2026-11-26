@@ -4,7 +4,7 @@
 
 ## 最小骨架
 
-教学工具认的 deck 契约是三个全局，两个驱动模式都会用到其中至少两个（页模式 + 共享页时三个全用）：
+教学工具认的 deck 契约是三个全局，两个驱动模式都会用到其中至少两个（页模式 + 共享页时三个全用；cue 模式的多页 deck 也要 `teachPage`）：
 
 ```html
 <script>
@@ -21,11 +21,13 @@
 两种驱动模式对应两种 provider：
 
 - **页模式 + 页内节拍（默认，`deepseek`）**：一句一页（稿件声明 `page` 时连续几句共用一页，见下文「一页承载多句」），句子开始切到该页，页内按 `at_progress` 依次显现。录制器先调 `teachPage(该句的页)`，再按时长比例调 `teachCue(fragment)`，共享页还会在开录前调一次 `teachCue(enter)`。一页 n 个 fragment → n+1 次画面变化（换页算第一次），节拍比例由这个数算出（见 `video-teach-storyboard` 的「页内节拍」）。
-- **纯 cue 模式（`volcengine`）**：全片一个或少数几页，`teachCue` 按词触发（`at_word`）。
+- **纯 cue 模式（`volcengine`）**：一页或多页都行，`teachCue` 按词触发（`at_word`）。节拍编号全片递增，跨页时由录制器在那一拍翻页（翻页动画从那一拍开始播，所以别把跨页拍放在句尾）。每句都是一次新的页面加载，所以开录前录制器会先把这一句第一个 cue 之前的拍点亮——不要把"上手状态"交给 deck 自己记。
 
 页模式下 deck 的结构默认是"一个 `<section>` 对应一句"，顺序必须与稿件一致，页数不能少于该段的句数（少了后面几句会停在最后一页，`video_teach_plan` 会点名）。稿件写 `page` 时几句共用一个 `<section>`，此时页数以稿件声明的为准，见下文「一页承载多句」。
 
-**fragment 编号按页算**，因为 reveal.js 的 fragment 是页内概念，模板的 `teachCue(n)` 数的是当前页的 fragment（并在页末夹住，保证一个 cue 永远不会翻页）：第 1 页写 1、2、3，第 2 页又从 1 开始。稿子里的 `fragment` 因此也是**每页从 1 起**（`video-teach-storyboard` 的编号规则同此）。纯 cue 模式下全片只有一页，编号自然就是全片递增。
+**fragment 编号按页算**，因为 reveal.js 的 fragment 是页内概念，模板的 `teachCue(n)` 数的是当前页的 fragment（并在页末夹住，保证一个 cue 永远不会翻页）：第 1 页写 1、2、3，第 2 页又从 1 开始。稿子里的 `fragment` 因此也是**每页从 1 起**（`video-teach-storyboard` 的编号规则同此）。纯 cue 模式下编号不分页重来，全片一路递增；多页 deck 照这个号跨页走，录制器负责翻到那一页。
+
+页号有两份计数：plan 按 HTML 切 `<section>`，录制器数 `.slides > section`。纵向栈（`<section>` 套 `<section>`）让两者对不上，`video_teach_plan` 会警告；**多页的 cue 模式 deck 不要用纵向栈**。
 
 reveal.js 版的实现（`Reveal` 没有"跳到第 n 个 fragment"的 API，循环是幂等的做法；`Reveal` 是单例，用 `Reveal.initialize` 而不是 `new Reveal`）：
 
@@ -45,7 +47,7 @@ window.teachCue = function teachCue(n) {
 
 ### 动效时长也可以声明：`teachPageTransition` 与 `teachTransition`
 
-三个全局是必需项；再有两个**可选**的，各写一个毫秒数。它们说的是"我的动画有多长"，只有 deck 知道：
+三个全局按需要都是必需项：`teachReady` 永远要，`teachCue` 只要有节拍、或这一页有 `enter > 0` 就要，`teachPage` 页模式与多页的 cue 模式都要。再有两个**可选**的，各写一个毫秒数。它们说的是"我的动画有多长"，只有 deck 知道：
 
 ```js
 window.teachPageTransition = 500   // 切页动画播完要多久
@@ -53,15 +55,15 @@ window.teachTransition = 480       // 页内一拍动画播完要多久
 ```
 
 - **`teachPageTransition`**：录制器在 `teachPage(n)` 之后等这么久才开始录。不写就是默认的 300 ms。**用 reveal 的 `fade` 就要写 500** —— reveal.css 里它是固定的 0.5 s，`transitionSpeed` 改不了它，按 300 ms 等会从转场中间开录（观众看不出错，只看到每句开头有一帧在动）。其它转场听 `transitionSpeed`：`fast` 0.2 s、`default` 0.4 s、**`slow` 1.2 s**，所以要声明的是那一档的数（用 `slow` 写了 900 就不够，这一点是照着实测发现的：样本片按 900 声明时，两页首帧与稳态差 2.2，改成 1300 后六句全部 ≤ 0.04）。写长了只是每句多等一会儿，不多录、不错位，因为 t=0 取的是等待之后的第一帧。
-- **`teachTransition`**：录制器**不读**它（录屏只负责按拍触发，动画由 CSS 自己播），`video_teach_plan` 读——某拍之后到下一拍（或到句末）的余量比它短时给一条 warning，说清是"会和下一拍重叠"还是"句尾会被切"。不写就不校验。模板的值是 `--teach-dur` 的 480 ms；页里用了 `count` 或 `draw`（这两个是 900 ms）就把这行写成 900。
+- **`teachTransition`**：它不决定节拍的时刻（录屏按拍触发，动画由 CSS 自己播），两处会读它：录制器录完后用它决定等多久再截末帧做自检，`video_teach_plan` 用它校验余量——某拍之后到下一拍（或到句末）的余量比它短时给一条 warning，说清是"会和下一拍重叠"还是"句尾会被切"。不写就不校验。声明得比实际动效短，末帧自检会在动画中途取样，报"末帧没播完"。模板的值是 `--teach-dur` 的 480 ms；页里用了 `count` 或 `draw`（这两个是 900 ms）就把这行写成 900。
 - 缺这两个全局，契约仍然成立，行为与没有它们时完全一样。
 
 ## 排版约定
 
-- **一页一个主题，一页不超过 5 个 fragment**。fragment 太多，旁白和画面就会互相追。
+- **一页一个主题，一页不超过 6 个 fragment**（排版约定，不由代码强制）。fragment 太多，旁白和画面就会互相追。
 - 字号按 1080p 的观看距离定：标题 44–48px，正文 32–40px，注释不小于 24px。默认 16:9，`reveal` 会把内容缩放填满，字号写小等于看不清。
 - 字体栈带中文：`"PingFang SC", "Noto Sans SC", system-ui`。不指定就会在录制时回落到衬线字体。
-- **公式优先用 HTML/CSS 或 MathJax 独立脚本**，不要把 LaTeX 塞进 reveal 的 Markdown 插件里再由插件去 shell 调用 —— 录屏进程不该有执行外部命令的路径。
+- **公式优先用 HTML/CSS**（插件不带 MathJax/KaTeX；要 MathJax 就自己 vendored 一份脚本进 deck，不能引 CDN），不要把 LaTeX 塞进 reveal 的 Markdown 插件里再由插件去 shell 调用 —— 录屏进程不该有执行外部命令的路径。
 - 动效按下面「动效：先定画面语言，再选类」一节的食谱挑类。判据是**它与时钟的关系**：由 `teachCue` 触发的过渡是确定的（起点由 cue 定、终点由 CSS 时长定），可以放心用；不确定的只有跟时钟无关的循环动画（相位从页面加载就开始算）。
 
 ## 动效：先定画面语言，再选类
@@ -73,7 +75,7 @@ window.teachTransition = 480       // 页内一拍动画播完要多久
 | **整页先在**（讲解默认） | 版面完整、要讲的要素压暗可见 | `dim` |
 | **逐条出现** | 版面是空的，一条一条加上来 | `fade-up` / `zoom-in` / 默认 `fade` |
 
-同一页里混用两种语言，观众分不清"先讲这块后讲那块"是节奏还是失误。
+同一页里混用两种语言，观众分不清"先讲这块后讲那块"是节奏还是失误（不同页各用一种是可以的）。
 
 ### 时长：只改时长，不要覆盖 `transition`
 
@@ -97,7 +99,7 @@ reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` 
 
 **强调型不能当出现型用**：`grow`、`shrink` 从一开始就可见（reveal 让它们 `opacity:1`），拿来做"逐条出现"会让整列一开始全在。它们的语义是"已经在场上，说到时变一下"。
 
-模板额外给四个。它们写在随包模板 deck 的 `<style>` 里，所以**新起的项目自动就有**；老项目的 deck 是当初那一份拷贝，不会跟着更新，需要时从模板抄一段过来：
+模板额外给四个。它们写在随包模板 deck 的 `<style>` 里，所以**从 `assets/teach/deck/index.html` 起的 deck 自动就有**；老项目的 deck 是当初那一份拷贝，不会跟着更新，需要时从模板抄一段过来：
 
 | 类 | 观感 | 用在哪 |
 |---|---|---|
@@ -125,7 +127,7 @@ reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` 
 - **步号从 1 起，1 表示"第一拍之前"**。`data-step="1"` 就是 markup 里写的初态，第一拍把它推到 2。因此一个容器能表达"首拍前 + 每拍各一个"的状态，比这一页的拍数多一个（2 拍 → 3 种形状）。
 - **容器本身不要当 fragment**：它靠同一页上的其他 fragment 数拍（文字条、标注）。页上一共 2 个 fragment，容器就走 1 → 2 → 3。
 - 一个容器一个 `data-step`；要两处独立变形就开两个容器。
-- **只在当前页有效**：跨句不接续（每句都是一次新的页面加载），跨页的连续变形这一版做不到，跨句仍然是硬切。
+- **只在当前页有效**：独立成页时跨句不接续（每句都是一次新的页面加载），跨页的连续变形这一版做不到；共享页是例外，`enter` 会把 `data-step` 回放到上一句留下的拍号，所以同页上可以跨句连续变形（见下一条）。
 - 共享页（`page` / `enter`）下拍号跨句递增，`data-step` 会继续往上数到 4、5、6；按整页编号写 CSS，或者让进页那几拍由 `enter` 先打到位。
 
 ### 依次聚焦
@@ -144,13 +146,13 @@ reveal 内置、不用写 CSS：出现型 `fade-up` / `fade-down` / `fade-left` 
 - **无限循环的"信息型"动画**（转到某个角度时正好说到某句）：循环相位从页面加载就开始计，到开录之间还隔着截图自检等不确定耗时，对不上。纯装饰的循环允许，但只要有重绘，帧数就涨到约 90 fps（6 秒的句子从约 25 帧涨到约 560 帧），别全片铺开。
 - **为了循环动画去改 `width` / `top` / `left`**：走 layout，帧率与帧大小都更差。循环部分只用 `transform` / `opacity`。
 - **照抄 reveal 官方 demo 的 `cubic-bezier(0.77,0,0.175,1)`**：实测前 77% 的时间几乎不动（600 ms 的变形前 460 ms 只走 5 px），单元素变形看起来是"卡住然后突然变"。用 `ease-out` 或 `cubic-bezier(.2,.7,.3,1)`。
-- **一页超过 5 个 fragment**：上一节的上限仍然成立，动效再多也不能超。
+- **一页超过 6 个 fragment**：上一节的上限仍然成立，动效再多也不能超。
 
 ## 与时间轴的关系
 
 - 有词时间戳（`volcengine`）时，`teachCue` 按**词**触发：稿子里 `at_word` 写哪个词，画面就在那个词发音时切换。
-- 没有词时间戳（`deepseek`，默认）时，节拍按 `at_progress` × 该句实测时长触发。这个比例不是随手写的：一页 n 个 fragment → n+1 次变化（换页算第一次），第 k 次落在说话时长的 k/(n+1)，并且分母含尾停留（算法见 `video-teach-storyboard`「页内节拍」）。它与发音不是逐字对齐的关系，**不要**据此承诺"讲到哪个字画面动到哪"。
-- **所有动作要在这一句念完之前播完**，不要靠句尾去补。画面长度严格等于该句音频长度（`timings.json` 的 `durationMs`），DeepSeek 默认不补停顿；要让最后一屏停住约 1 秒，得给音频尾部补静默（见 `video-teach-iterate` 的「页尾停留」），再按新时长重算 cues。
+- 没有词时间戳（`deepseek`，默认）时，节拍按 `at_progress` × 该句实测时长触发。这个比例不是随手写的：一页 n 个 fragment → n+1 次变化（换页算第一次），第 k 个 fragment 落在说话时长的 k/(n+1)，并且分母含尾停留（算法见 `video-teach-storyboard`「页内节拍」）。它与发音不是逐字对齐的关系，**不要**据此承诺"讲到哪个字画面动到哪"。
+- **所有动作要在这一句念完之前播完**，不要靠句尾去补。画面长度等于该句音频长度（`timings.json` 的 `durationMs`；声明了 `meta.transition` 的那句再多出 `exitMs`），DeepSeek 默认不补停顿；要让最后一屏停住约 1 秒，得给音频尾部补静默（见 `video-teach-iterate` 的「页尾停留」），再按新时长重算 cues。
 - 每句结尾的版面必须是**完整构图**，不要留半截动画或空位；最后一屏要能独立看 1 秒以上。
 - 一句话只录一次：句子内的 fragment 顺序错了，改稿子重跑 `sentences: [<id>]`，不会重录别的句子（补过页尾停留的项目要全量重录，见 `video-teach-iterate`）。
 
@@ -174,28 +176,44 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 稿件的 `page` 让几句共用一个 `<section>`，deck 侧只需要把三件事做对（`video-teach-storyboard` 的「一页承载多句」是稿子那一侧）：
 
 1. **`teachPage(n)` 要幂等，并且切到那一页时一个拍都不亮**。共用一页的几句都会调同一个 `n`，而每句都是一次新的 `page.goto`，所以 deck 每次都从第 0 页起来、再被切到 `n`。切换动画重放无所谓（它发生在开录之前），但"开页就亮着第一拍"是错的：稿件的第一条 cue 会因此永远不生效，`enter: 0` 也没法兑现。reveal.js 的写法是 `Reveal.slide(n, 0, -1)`，`-1` 表示停在第 0 个 fragment 之前。
-2. **进页状态由录制器打，deck 不要自己记**。每句开录前录制器的顺序是：`teachPage(n)` → `teachCue(enter)` → 等 300 ms 过场 → 开录。所以第 2 句的 t=0 就已经是上一句结尾的那一屏，deck 不需要、也不该用 `localStorage`、`history.state` 或全局变量去"接着上一句"。`page.goto` 之后这些本来也不该被信任。
+2. **进页状态由录制器打，deck 不要自己记**。每句开录前录制器的顺序是：`teachPage(n)` → `teachCue(enter)` → 等 `teachPageTransition`（缺省 300 ms）过场 → 开录。所以第 2 句的 t=0 就已经是上一句结尾的那一屏，deck 不需要、也不该用 `localStorage`、`history.state` 或全局变量去"接着上一句"。`page.goto` 之后这些本来也不该被信任。
 3. **编号跨句递增**。共享页内 `fragment` 从第 1 句一路数到第 3 句（1、2、3），所以 `teachCue(k)` 只要"点亮 `data-beat ≤ k`"就自然对。如果 deck 按 DOM 顺序数前 k 个元素（模板就是这么做的），而稿子让第二句从 1 重新编号，`teachCue(1)` 会把已经亮着的再确认一次，画面不动——问题出在稿子的编号，不在 deck 的计数方式。
 
 另外：**共享页要求 deck 定义 `teachCue`，即使整段一条 cue 都没有**，因为录制器要用它把 `enter` 打回去。这条 `video_teach_plan` 在花钱前就会检查。
 
-排版上没有新东西，但上限更快撞到：**一页三句、每句两拍**是这类页面的常态规划，再多就该问是不是这几句不该挤在一页（每页 5 个 fragment 的上限仍然成立）。
+排版上没有新东西，但上限更快撞到：**一页两句、每句两拍**是这类页面的常态规划；三句各两拍就是 6，正好到顶，再多就该拆页（每页 6 个 fragment 的上限仍然成立）。
 
 页数与节拍数有几处边界，`video_teach_plan` 会分别处理：稿件声明的页号超过 deck 的页数会被**拒绝**（那一页根本不存在，句子会停在录制器上一次停的地方）；`enter` 超过该页的 fragment 数只是 warning（deck 会夹在页末，但页面一开就全亮，通常不是你要的）；页数**数不出来**（deck 没有 `<section>`，页在 JS 里生成）时也给一条 warning，说清页号没被核对过——别让它变成静默通过。
 
 `page` / `enter` 只对 `engine: slides` 的段有意义；Manim 段由场景自己的时长决定，写上去不会有任何效果。
+
+## 跨句转场：形态归 deck
+
+稿件写了 `meta.transition` 之后，**转场动画是 deck 的事**，代码只管录多长（`video-teach-storyboard` 的「跨句转场」是稿子那一侧）。要在 deck 里做的只有一件：让"翻页"这件事本身值得看。两条路，都不要改录制契约：
+
+- **页切换自带动画**：reveal 的 `transition`（`fade` / `slide` / `zoom` / `convex` …），或者自己写 CSS（模板的命令式 deck 就是给 `.page` 加 `transition: opacity/transform`，`teachPage` 切 `.on` 类）。转场长度就是 `teachPageTransition` 声明的那一个数。
+- **跨页 Auto-Animate**：相邻两个 `<section>` 都写 `data-auto-animate`，元素用 `data-id` 对上，reveal 会把它们补间过去。**这时真正的时长是 `autoAnimateDuration`（默认 1 秒）**，所以要 `Reveal.configure({ autoAnimateDuration: 0.52 })` 并让稿件的 `meta.transition.durationMs` 不小于它 —— 补间比 `exitMs` 长就会在中间被切（观感是"滑到一半就断"）。
+
+三条边界：
+
+1. **`teachPage(n)` 会被在段尾再调一次**，就在录完正文之后、开录下一句之前。所以它必须能在**活页面**上工作、幂等，且带完整的切页动画（不要为了"稳"把动画关掉——那一段正是要录的东西）。
+2. **转场落到的那一页，`enter` 状态就该看得见东西**。录制顺序是 `teachPage(next)` → `teachCue(enterNext)`，`enter` 通常是 0；如果那一页的标题、坐标轴也放在 fragment 里，接缝淡出的就是一张空页。常驻元素放在 fragment **外面**。（这条是约定，代码不判：从 HTML 看不出"整页内容是否都在 fragment 里"。）
+3. **共享页之间没有转场**。两句同页时稿件侧不会被分配 `exitMs`，deck 不需要为此做任何事；也正是因此，`teachCue` 在段尾**不会**被调（只有真的换页时才调）。
+
+代码会替你查这几件事（`video_teach_plan`）：`meta.transition.durationMs` 短于 `teachPageTransition` 会 warn（转场会被截断）、deck 里出现裸选择器的 `.reveal .fragment { transition: … }` 整体覆盖会 warn（D0 的坑，会吃掉所有变体的动效）、某一页里混用 `dim` 与默认 `fade` 会 warn（点明是第几页）；cue 模式还会查多页 deck 有没有 `teachPage`、有没有永远走不到的页、页数数不出来的情形。`transition-duration` 与 `.fragment.dim` 这类变体规则不算覆盖——模板自己就这么写。
 
 ## 检查清单
 
 - `teachReady` 确实被置为 true（放在 `initialize()` 的 `then` 里，不要放在 `DOMContentLoaded`）。
 - 首屏（`teachCue` 还没被调用时）就是可以直接开录的版面，不要空白页。
 - 页模式下切到一页时**一个拍都不亮**（模板 `teachPage` 用 `Reveal.slide(n, 0, -1)`）：第一拍留给稿件的第一条 cue。传 `0` 会让每页的第一拍提前亮起，于是它对应的那条 cue 永远不生效（后面的节拍照常），`enter: 0` 也无法兑现。
-- 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍时）、检查 `teachPage`（页模式下），缺了在**录音之前**就拒绝。
-- 每页的 fragment 数与稿件里这一页的 cue 数一一对应；多出来的 fragment 永远不显示（页末夹住）。页内节拍数 = fragment 数 + 1（换页算第一次变化）。共享页按整页数，不是按句数。
+- 三个全局都在：`video_teach_plan` 会读 HTML 检查 `teachReady`，检查 `teachCue`（稿件里有节拍或 `enter > 0` 时）、检查 `teachPage`（页模式，或多页的 cue 模式），缺了在**录音之前**就拒绝。
+- 每页的 fragment 数不少于稿件里这一页用到的最大编号；多出来的 fragment 永远不显示（页末夹住），只是浪费。页内节拍数 = fragment 数 + 1（换页算第一次变化）。共享页按整页数，不是按句数。
 - 最后一屏是完整版面，动作在念完之前播完；要停留就补音频尾部静默，别靠渲染器。
 - 动效类来自模板（`dim` / `draw` / `count` / `bar`）或 reveal 内置变体，节奏靠 `--teach-dur` 覆盖；deck 里**没有** `.reveal .fragment { transition: … }` 这样的整体覆盖。
 - `data-teach-stage` 的容器自己不是 fragment，但同一页要有足够多的 fragment 给它数拍（2 拍 → 3 种形状）；`data-step` 初值写成 `"1"`。
-- 声明了 `teachPageTransition`（用 reveal 的 `fade` 就是 500）与 `teachTransition`（等于这页实际最长的那段动效）；`video_teach_plan` 只会因为后者报警。
+- 声明了 `teachPageTransition`（用 reveal 的 `fade` 就是 500）与 `teachTransition`（等于这页实际最长的那段动效）；`video_teach_plan` 会因为后者报警，也会因为稿件声明的转场比前者短而报警。
+- 稿件写了 `meta.transition` 时：切页动画是真的有（别在 `teachPage` 里关掉动画），Auto-Animate 的 `autoAnimateDuration` 与 `durationMs` 对齐，转场落点那一页在 `enter` 状态下不是空页。
 - 用 `video_teach_render` 只渲染这一句时，页面上没有外部网络依赖（字体、CDN 图片都会在录屏时抖动）。
 
 ## 让每句话都改变画面
@@ -204,9 +222,9 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 
 写 deck 时守住五条：
 
-1. **一句至少一个 fragment**。一句话讲三个要点就拆三个 fragment，别让一句只停在一个静态版面上。
+1. **一句至少一个 fragment**。一句话讲三个要点就拆三个 fragment，别让一句只停在一个静态版面上。页模式下这句单独占一页时，换页本身就是那次变化，写不写节拍都行。
 2. **每一页的 fragment 数 ≥ 稿件在这一页用到的最大编号**。cue 模式下 `video_teach_plan` 拿整份 deck 的 fragment 总数核对，越界直接拒绝；页模式下按页核对，越界给 warning 并指出是哪一页（此时编号要么改成按页从 1 起，要么让 deck 自己翻译编号）。只有真标记算数：注释与 `<script>` 里的 `class="fragment"` 不算节拍；整份 deck 数不出来时（节拍在 JS 里生成）plan 会明说一句，不会静默跳过。
-3. **同一页别塞超过 5 个 fragment**。reveal 会缩放适配，行数一多字号就被压到看不清；正文超过 10 行就该换页。
+3. **同一页别塞超过 6 个 fragment**。reveal 会缩放适配，行数一多字号就被压到看不清；正文超过 10 行就该换页。
 4. **`teachCue(n)` 是"显示到第 n 步"**，`Reveal.getIndices().f` 是零基下标，两者差一。模板里已经处理，自己写 deck 时注意别再把 `f` 直接当目标值。
 5. **改了这一页的 fragment 数，就重算这一句的 cues**。节拍比例由变化次数算出（见 `video-teach-storyboard`「页内节拍」），重算后只需要重渲染，不用重录旁白。
 
@@ -219,4 +237,4 @@ deck 引入外部素材只有两种方式，判据是**要不要被节拍点亮�
 
 所以"一页内三张卡依次亮"不必拆成三页：一张 `<svg>` 里给三个 `<g>` 各加 `class="fragment"`，就是三个节拍。
 
-**顺序不要依赖 DOM。** 给每个节拍元素加 `data-beat="k"`，`teachCue(k)` 点亮 `data-beat ≤ k`。否则图元在 DOM 里排在文字前面时，点亮顺序会跟稿子对不上。
+**顺序不要依赖 DOM。** 模板的 `teachCue(k)` 是按页内 DOM 顺序推拍的，所以图元排在文字前面时，点亮顺序会跟稿子对不上。要指定顺序就给每个节拍元素加 `data-beat="k"`，并让 `teachCue(k)` 点亮 `data-beat ≤ k`（这需要自己写 `teachCue`，模板不认这个属性）。

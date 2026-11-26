@@ -2,16 +2,18 @@
 
 教学视频的迭代规则只有一条：**音频是时间轴的权威，句子是重录的单位**。任何改动都先问"这会动到哪几句"，再决定重跑多少。
 
-**一个例外要知道**：`volcengine` 合成默认把相邻的几句**合并成一次请求**（为了语气连贯，见下面“合并合成改变了什么”），“重做一句话”会连带重做它所在的那一次请求。**默认的 `deepseek` 则是逐句请求**，所以它反而是最细的粒度：改一句只重合成那一句。画面侧的粒度两种都一样，永远是一句一段。**另一个例外是页尾停留**：项目给音频尾部补过静默之后，改台词要全量重录（`video_teach_narrate` 会重新量所有句子的时长，已补静默的句子会被再补一次），见「页尾停留」。
+**一个例外要知道**：`volcengine` 合成默认把相邻的几句**合并成一次请求**（为了语气连贯，见下面“合并合成改变了什么”），“重做一句话”会连带重做它所在的那一次请求。**默认的 `deepseek` 则是逐句请求**，所以它反而是最细的粒度：改一句只重合成那一句。画面侧的粒度两种都一样，永远是一句一段。**另一个例外是页尾停留**：项目给音频尾部补过静默之后，改台词要全量重录——收窄的 narrate 只重量这一句，其余句子沿用旧 `durationMs`（里面已经含着停留），而补静音脚本看到 `timings.json` 的 sha 变了会给整片再补一次，旧的 1 秒停留就变成 2 秒。见「页尾停留」。
 
 ## 五种改动，五种代价
 
 | 你改了什么 | 要重跑 | 代价 |
 |---|---|---|
-| 某句的 `say`（台词） | `video_teach_narrate` 全量重录 → 补尾停留 → 重算 cues → `video_teach_render` | 全片语音 + 全片画面（已补过静默时不能只重录一句，见「页尾停留」） |
+| 某句的 `say`（台词） | 没补过尾停留：`video_teach_narrate sentences: [<id>]` → 重算这一句的 cues → `video_teach_render sentences: [<id>]`（默认就拼成新版本）。补过尾停留：见「页尾停留」的全量重录 | 一句语音 + 一句画面；成片重新生成 |
 | 某句的 `cues`（画面切换点） | 只 `video_teach_render sentences: [<id>]` | 一句画面，**不用重新合成语音** |
 | 页尾停留（每页切页前约 1 秒无声） | 给每句音频尾部补静默 → 重渲染全片（`durationMs` 变了） | 本机免费；不重录旁白，但**补过的音频再补会叠加** |
-| 某个 deck / scene 的排版 | 该段所有句子的 `render`（画面变了就要重录） | 只画面 |
+| 某个 deck / scene 的排版 | 单页版面或单个 scene：只重录那一句；共享样式或跨句状态：该段所有句子 | 只画面 |
+| 开了跨句转场时改某一页的版面 | 重录**那一句 + 它前一句**（前一句的尾转场正落在这页上） | 两句画面，本机免费 |
+| `meta.transition` 的时长 | 重录**所有带尾转场的句子**（`exitMs` 变了，段长变了） | 多半是整片画面；语音与音频一个字都不用动 |
 | 音色、`speed_ratio` | 全量 `narrate` → 全量 `render` | 全片重来，因为每个词的偏移都变了 |
 
 改版面那一条容易被忽略：同一个 deck 被多句共用时，改版面只影响它自己那句；但如果你在 deck 里改了**跨句共享的状态**（比如第二句要看到第一句留下的元素），就要把这一段从头录。
@@ -47,9 +49,21 @@
 
 判断真假也有边界：比较的是亮度差，所以"暗色元素在暗背景上变化"这种低对比度的动效可能漏报；页里有装饰性循环动画的，末帧本来就不会和截图一致，那是假警报。
 
+## 开了跨句转场之后：重录的边界是「一句 + 它的尾转场」
+
+稿件写了 `meta.transition` 之后，一段画面 = `[正文][尾转场]`，而尾转场录的是**后一句那一页的初态**。这条改变了三件事：
+
+1. **重录一句，就够了**（`sentences: [<id>]`）。它自己的尾转场会跟着一起重录，因为它编在同一段里。
+2. **改后一句的版面，要连带重录前一句**。前一句的尾巴停在旧版面上，接缝会跳。渲染结果的 `seam_findings` 会点名："sentence X 的尾转场仍落到 Y 重录过的那一页 —— 如果那一页版面改了，X 也要重录"。它只报，不自动重录（自动重录会把"只花一句的钱"变成两段）。
+3. **改 `meta.transition.durationMs` 或逐句 `transition`，要重录所有带转场的句子**，因为每段长度都变了。不用重跑 narrate：旁白、音频、`durationMs` 都没变，变的只有 `exitMs`。
+
+账本会替你兜：`video_teach_render` 在装配前对每个复用段量一次时长，与 `durationMs + exitMs` 差过一帧就报 stale 并给出要重录的句子；拼完再量一次成片总长，差过 150 ms 就点名。看到这类消息时**不要**去改 `timings.json` 里的时长——段长以录到的画面为准，手改只会让下一句错位。
+
+`exitMs` 是纯画面、纯静音：转场期间没有旁白。想让转场压着上一句的尾音，这一版做不到（见插件仓库 `docs/TEACH-MOTION.md` §16.4，它不在你的工作区里）。
+
 ## 页尾停留：让最后一屏停住约 1 秒
 
-教学路线里**画面长度严格等于该句音频长度**（`timings.json` 的 `durationMs`），插件没有"尾停留"参数。DeepSeek 语音是 `natural` 策略、不补停顿，所以一句念完画面立刻切页，最后一个节拍几乎不停留。
+教学路线里**画面长度等于该句音频长度**（`timings.json` 的 `durationMs`；声明了 `meta.transition` 的那句再多出 `exitMs`），插件没有"尾停留"参数。DeepSeek 语音是 `natural` 策略、不补停顿，所以一句念完画面立刻切页，最后一个节拍几乎不停留。
 
 正确的做法是给音频补静默，不要改渲染器：
 
@@ -61,17 +75,17 @@
 
 - **`timings.json` 是严格白名单**：只认 `voice` / `sentences` / `sampleRate` / `merge`。往里加自定义键（比如 `tailHoldMs`）会被 `video_teach_render` 拒绝（`unknown key`）。"是否已补过"的标记放旁车文件，例如 `script/.page-hold.json`。
 - **别用 mtime 判断是否已补过**：写文件与 `st_mtime` 的精度差会让刚写完的文件被判成"更旧"，于是重复补一次。改成比对 `timings.json` 的 **sha256**；内容变了（重录过）才重新补。
-- **改了台词要全量重录，不要只重录单句**：`video_teach_narrate sentences: [<id>]` 会从所有音频重新量时长，已经补过静默的句子会带着旧静默再被补一次，各页停留变成 2 秒。全量重录后再跑一次补静默，然后按新时长重算 cues。
+- **改了台词要全量重录，不要只重录单句**：`video_teach_narrate sentences: [<id>]` 只重量被选中的句子，其余句子沿用旧 `durationMs`——里面已经含着补过的静默；而补静音脚本看到 `timings.json` 的 sha 变了，会给整片再补一次，各页停留变成 2 秒。全量重录后再跑一次补静音，然后按新时长重算 cues。
 
 补静默之后 `at_progress` 的分母变长，**必须重算 cues**（见 `video-teach-storyboard` 的「页内节拍」）；否则动作会整体后移，最后一拍贴到句尾。顺序固定为：定稿 → narrate → 补停留 → 重算 cues → render → export。
 
 ## 常见坑
 
-- **改了台词却没重跑 narrate**：`video_teach_render` 会比对稿件与 `timings.json`，句子对不上就拒绝，并说明是哪一句 —— 别绕过它，绕过就会得到一条音画错位的片子。
+- **改了台词却没重跑 narrate**：`timings.json` 的 `text` 来自 narrate，`render` 只核对句子 id 与音色，**文案不比**。改完 `say` 要主动 `narrate`，否则画面与字幕都还是旧文案，而稿件里写着新的一句。
 - **只改 `say` 不改 `cues`**：词变了，`at_word` 指向的词可能消失，校验会拒绝。改台词时顺手看一眼 cues。
 - **音色改了却只重录一句**：`timings.json` 里记着合成用的音色，`video_teach_plan` 会报 `stale`。音色是整片的，别半途换。
 - **重录后忘了 export**：SRT 与 `timeline.json` 是按成片时间轴生成的外部字幕，改了片子要重新 `video_teach_export`，否则字幕对不上新版。
-- **只跑 export 就想改画面里的字幕**：烧进画面的字幕是 `video_teach_render` **拼片时**生成的，export 只写外部 SRT。改了台词只跑 export，会得到「画面里旧字幕、文件里新字幕」的两份时间轴。要改画面里的字，必须重跑 `narrate → render`。
+- **只跑 export 就想改画面里的字幕**：烧进画面的字幕与外部 SRT 同源于 `timings.json`，export 不动画面。会分叉的时机是「重新 narrate 了却没重渲」：文件里是新的、画面里还是旧的。改台词走 `narrate → render → export`。
 - **想只换封面却把整片重渲**：封面是 `video_teach_export` 从 `meta.cover` 那一页截的，改封面页只需重跑 export；文件名跟着最新版本号走，旧片的封面不会被覆盖。
 - **封面只按 16:9 排版**：同一页还会在 4:3（1440×1080）下截一张，写死 `width: 1920px` 的版面会被裁掉两边。
 - **加了页尾停留却没重算 cues**：`at_progress` 的分母变长，动作整体后移、最后一拍贴到句尾。先补停留，再按变化次数重算。
@@ -97,8 +111,7 @@ video_teach_export                                  # 重新出字幕、deck 与
 
 ```
 video_teach_plan
-video_teach_render   sentences: [s02-1]
-video_teach_render   assemble: true                 # 拼成新版本 v00N
+video_teach_render   sentences: [s02-1]      # 默认就拼成新版本 v00N
 video_teach_export
 ```
 
@@ -115,7 +128,7 @@ video_teach_export
 | 项 | 判据 |
 |---|---|
 | 句数 | 该幕 `timings.json` 的句数 = 稿本句数 |
-| 时长 | 成片时长 = 该幕 timings 合计（容差一帧） |
+| 时长 | 成片时长 = 该幕 timings 合计，每句按 `durationMs + exitMs` 累加（容差一帧） |
 | **旁白真的换了** | 只有两条路：PCM 包络相关（同一段 ≈1.0），或直接转写 |
 | 节拍 | 抽帧：句首是压暗态，句内某一刻点亮 |
 
@@ -136,7 +149,7 @@ python3 script/runs.py collect --act <幕>     # 回收：先校验，再写
 
 1. 备份主项目 `timings.json` 与 `storyboard.yaml`；
 2. `timings.json` 按幕序拼接（句 id 已带幕前缀，不改 id）；
-3. `storyboard.yaml` 按幕序补齐各段（含每句 cue），再 `assemble-act --all --join`。
+3. `storyboard.yaml` 按幕序补齐各段（含每句 cue），再跑项目侧的 `python3 script/assemble-act.py --all --join`（插件不随包发这个脚本）。
 
 合并后补三项全片验收：接缝处抽 9–10 秒转写（确认两幕的句子都在，concat 不吞句子）、看一眼末帧、章节表与整片时长对得上。
 
@@ -170,10 +183,10 @@ audio/*.mp3      # 团队要共享音色结果时删掉这一行
 
 ## 手改 `timings.json` 之后能只重录画面吗
 
-能，而且这是它被单独存成文件的原因。`video_teach_render` 只读 `timings.json`，不写它：
+能，而且这是它被单独存成文件的原因。`video_teach_render` 不改 `durationMs` 与 `text`，只把录到的 `exitMs` 回写（没有 `meta.transition` 时一个键都不动）：
 
 - 改了某句的 `durationMs` 或词级时间点 → 直接 `video_teach_render sentences: [<id>]`，不用重新合成语音。
-- 改了稿件的 `say` 或增删句子 → `video_teach_plan` 会报 `narration: stale` 并指出哪几句对不上，这时先 `video_teach_narrate` 补齐，再渲染。
+- 增删句子 → `video_teach_plan` 会报 `narration: stale` 并指出哪几句对不上，这时先 `video_teach_narrate` 补齐，再渲染。只改 `say`（句子 id 不变）**不会**报 stale：文案不在核对范围里，改完要主动 narrate（`TODO.md` C16）。
 - 改了 `meta.voice.speaker` → 全片都要重录，因为每个词的偏移都变了。
 
 改完一定先跑 `video_teach_plan`：它同时会重算内容与时间线的规则（无 cue 句、fragment 越界、场景复用、平均节奏），比直接渲染省一次返工。

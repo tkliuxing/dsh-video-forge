@@ -189,7 +189,7 @@ deck 自己的页切换会被录在**前一句的尾部**——包括 reveal 的
 
 ## 随包附带的 skill
 
-插件带 5 个 skill（由模型用 `skill` 工具加载，其中 4 个也注册为 `/名字` 命令）。
+插件带 9 个 skill（由模型用 `skill` 工具加载，其中 5 个也注册为 `/名字` 命令）。
 它们负责引导工作流；工具本身是自洽的，从不依赖某个 skill 是否被加载过。
 
 | Skill | 覆盖什么 |
@@ -199,6 +199,10 @@ deck 自己的页切换会被录在**前一句的尾部**——包括 reveal 的
 | `video-storyboard`（`/video-storyboard`） | 把剧本拆成 `storyboard/shots.yaml`，一次一个镜头地生成 |
 | `video-iterate` | 重拍还是续拍（`from`）、角色一致性，以及交付前的尾帧自检 |
 | `video-guide`（`/video-guide`） | 端到端用法：配置、能做什么不能做什么、费用、成片落在哪 |
+| `video-teach-storyboard`（`/video-teach-storyboard`） | 教学稿怎么写：`storyboard.yaml`、一句一个录制单元、页内节拍（换页算一次变化）、一页承载多句（`page` / `enter`）、跨句转场、页尾停留、封面页 |
+| `video-teach-slides` | reveal.js 那一段：`teachReady` / `teachCue` / `teachPage` 契约、fragment 排版、动效怎么选与禁用清单、静态资源、字号与字体 |
+| `video-teach-manim` | Manim 那一段：一句一个场景文件、`run_time` 配平、LaTeX 与 dvisvgm 依赖 |
+| `video-teach-iterate` | 教学片返工：改台词 / cues / 版面 / 音色 / 封面 / 页尾停留各自要重跑什么、只重录一句为什么成立、多幕怎么合并 |
 
 ## 工作区就是项目
 

@@ -1,7 +1,7 @@
 /**
  * Bundled `video-*` skill provider.
  *
- * Five skills ship with the plugin and are registered through `ctx.skills`.
+ * Nine skills ship with the plugin and are registered through `ctx.skills`.
  * They are an optional dependency: the tools must work without them, so the
  * provider is mounted only when the `skills` service exists in the composition
  * (see `registerSkills`). The bodies live in `assets/skills/*.md` (plus the
@@ -64,14 +64,14 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-storyboard',
     description:
-      '教学视频的分镜怎么写：storyboard.yaml 的结构、一句一个录制单元、页内节拍怎么算（按每页变化次数铺开、换页算一次变化）、一页承载多句（page / enter）、页尾停留与宣传片结构、字数与 id 规则、封面页（meta.cover，16:9 与 4:3 同一页），以及多幕并行时怎么把稿本拆成一幕一份。在规划旁白驱动的教学视频（3b1b 式动画 + 幻灯片讲解）时使用。',
+      '教学视频的分镜怎么写：storyboard.yaml 的结构、一句一个录制单元、页内节拍怎么算（按每页变化次数铺开、换页算一次变化）、一页承载多句（page / enter）、跨句转场（meta.transition 只写时长与开不开、逐句 transition: none 回硬切、哪些接缝拿不到转场）、页尾停留与宣传片结构、字数与 id 规则、封面页（meta.cover，16:9 与 4:3 同一页），以及多幕并行时怎么把稿本拆成一幕一份。在规划旁白驱动的教学视频（3b1b 式动画 + 幻灯片讲解）时使用。',
     file: 'video-teach-storyboard.md',
     userInvocable: true,
   },
   {
     name: 'video-teach-slides',
     description:
-      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、共享页的 deck 怎么写（teachPage 幂等、进页拍由录制器先打到位）、动效怎么选（dim / fade-up / zoom-in / draw / count / bar 的食谱、只改时长不覆盖 transition、data-teach-stage 页内连续变形、fragment custom 依次聚焦、禁用清单）、静态资源（图标内联、位图外链、只有「往上两层」一种路径）、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 或给它加动效时使用。',
+      '教学视频里 reveal.js 幻灯片那一段的约定：teachCue/teachReady 契约、fragment 排版与每页节拍数、共享页的 deck 怎么写（teachPage 幂等、进页拍由录制器先打到位）、动效怎么选（dim / fade-up / zoom-in / draw / count / bar 的食谱、只改时长不覆盖 transition、data-teach-stage 页内连续变形、fragment custom 依次聚焦、禁用清单）、跨句转场的形态归 deck（页切换动画、Auto-Animate 的 autoAnimateDuration 要与稿件时长对齐、转场落点那一页 enter 状态不能是空页）、静态资源（图标内联、位图外链、只有「往上两层」一种路径）、最后一屏的完整构图、字号与字体、为什么公式不该走 shell。写 engine: slides 的 deck 或给它加动效时使用。',
     file: 'video-teach-slides.md',
     userInvocable: false,
   },
@@ -85,7 +85,7 @@ const SKILLS: readonly BundledSkill[] = [
   {
     name: 'video-teach-iterate',
     description:
-      '教学视频的返工规程：改台词 / 改 cues / 改版面 / 换音色 / 换封面 / 加页尾停留各自要重跑什么，只重录一句为什么成立、尾停留补静音与 timings.json 的硬约束，为什么只跑 export 会让画面里的字幕与外部 SRT 分叉，以及多幕并行时怎么逐幕验收再合并。在修改已生成的讲解视频、追查音画错位、或合并多幕成片时使用。',
+      '教学视频的返工规程：改台词 / 改 cues / 改版面 / 换音色 / 换封面 / 加页尾停留各自要重跑什么，只重录一句为什么成立、开了跨句转场之后重录的边界是「一句 + 它的尾转场」（改后一句的版面要连带重录前一句，seam_findings 只报不自动重录）、尾停留补静音与 timings.json 的硬约束，为什么只跑 export 会让画面里的字幕与外部 SRT 分叉，以及多幕并行时怎么逐幕验收再合并。在修改已生成的讲解视频、追查音画错位、或合并多幕成片时使用。',
     file: 'video-teach-iterate.md',
     userInvocable: false,
   },
