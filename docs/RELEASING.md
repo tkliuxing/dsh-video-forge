@@ -123,6 +123,22 @@ git push origin "vX.Y.Z"                    # 这一步才触发 publish.yml
   了发布）。发完 `0.1.1` 必须确认 `npm view dsh-video-forge@0.1.1 dist.attestations`
   非空——那是 trusted publishing 生效的唯一硬证据；空的话先查 npm 侧 trusted publisher
   的仓库 / workflow 文件名 / environment 三处拼写，再发下一版。
+- **推完 tag 要建 GitHub Release**（`gh release create vX.Y.Z --title "vX.Y.Z — 一句话"
+  --notes-file …`），标题格式与 `v0.1.0` / `v0.3.0` / `v0.4.0` 保持一致。这一步不是归档
+  洁癖：`gh release list` 的 Latest、市场与仓库首页的入口、以及用户判断「该不该升级」
+  都看它。2026-11-26 发 `0.4.0` 时就漏了，npm 的 `latest` 已经翻到 0.4.0，仓库的 Latest
+  还指着 0.3.0；`0.2.0` / `0.2.1` 更是从一开始就没有 release。**判断发版是否完成，以
+  npm `dist-tags` 与 GitHub Release 两处都翻到新版本为准**，CI 绿灯不算。
+
+  note 固定四段，照 `v0.3.0` / `v0.4.0` 写：
+
+  1. 开头一句：这个版本改变了什么，属于修故障还是新增能力。
+  2. `## 这个版本有什么`：只写用户能观察到的变化，一条一个结论加上为什么；内部重构、
+     测试与文档改动不进这里。
+  3. `## 升级提示`：有没有破坏性变更、要不要重启宿主 / 换外部程序、旧行为是否不变，
+     末尾附升级命令。
+  4. provenance：`sigstore logIndex` 链接 + 这次成功的 Actions run 链接；tag 移动过要
+     写明原因（见上面那条例外）。
 
 ## 3. 发布后核对
 
