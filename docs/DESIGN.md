@@ -496,7 +496,9 @@ Config 用 **schemastery**（`@deepseek-ai/schemastery`，DSH 的设置层就是
 
 **验证一律另起实例，绝不使用正在运行的 dsh。**
 
-> 2026-10-19（M5）起，隔离实例的 CLI 用 npm 实包 **`@deepseek-ai/dsh@0.2.1-rc.2`**（0.2.1-rc.2 已是 npm `latest`，也是日常在跑的那个 checkout 的版本），插件的 devDependencies 同步钉在 0.2.1-rc.2；`peerDependencies` 区间不变。M2–M4 的记录用的是 0.2.0-rc.2。
+> 2026-10-19（M5）起，隔离实例的 CLI 用 npm 实包 **`@deepseek-ai/dsh@0.2.1-rc.2`**，插件的 devDependencies 同步钉在 0.2.1-rc.2；`peerDependencies` 区间不变。M2–M4 的记录用的是 0.2.0-rc.2。
+>
+> 2026-11-26 复核：npm `latest` 与日常在跑的那个 checkout 都已是 **0.2.2-rc.5**，而 devDependencies 仍停在 0.2.1-rc.2。这是声明滞后，不影响加载：宿主 `plugin-compatibility.ts` 的 `satisfies()` 固定 `includePrerelease: true`，`^0.2.1-rc.2` 的上界 0.3.0 覆盖 0.2.2。**核对版本以当次 `npm view @deepseek-ai/dsh dist-tags` 为准**，别照本文的历史值。
 
 - 正在运行的实例是 `http://127.0.0.1:3080/`（`DSH_HOME=~/.dsh`、profile `web`），它是用户的工作环境：往里装插件、改设置、跑付费生成都会污染真实配置与会话。
 - 验证实例固定参数：

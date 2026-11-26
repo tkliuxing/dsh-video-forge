@@ -61,6 +61,12 @@ npm 不能给尚不存在的包配置 trusted publisher，所以 `0.1.0` 只能�
    - Repository: `tkliuxing/dsh-video-forge`
    - Workflow filename: `publish.yml`
    - Environment: `publishing`（工作流引用了这个 environment，npm 侧必须填同一个名字）
+
+   > 两条 npm 侧的规则会**静默打死发布**（2026-11-19 在 `0.2.0` 上撞到，别再踩）：
+   > - **配置 2 天内必须完成一次成功发布**才算验证通过；超期后配置**过期、不可使用也不可编辑**，只能删除重建。`0.1.0` 那次 tag 运行跳过了 publish，所以 2026-10-21 建的配置从未被验证，2026-11-19 首次真正跑 OIDC 时 registry 直接回 404。
+   > - **2026-09-03 之后创建的配置默认只允许 `npm stage publish`**：要直接 `npm publish`，必须在表单里显式勾选 **Allow npm publish**；管理 dist-tag 还要单独勾 **Allow npm dist-tag**（npm CLI 需 ≥ 11.21.0 / 12.2.0）。
+   > - registry 对"没有匹配的 trusted publisher"也回 **404 而不是 403**，所以 404 基本等于 OIDC 身份被拒，不是网络或包名问题；对照组是日志里有没有 `Signed provenance statement`。
+
 5. 补上 `0.1.0` 的 tag，并推上去把 CI 门禁跑通：
 
    ```bash
@@ -110,6 +116,9 @@ git push origin "vX.Y.Z"                    # 这一步才触发 publish.yml
   修好树之后把 tag 移到新提交上，并在 release 说明里说明；一旦上线就绝不动。
 - 需要预发布（`next`）时用 **Actions → publish → Run workflow**，把 `dist_tag` 选成
   `next`；`latest` 不受影响。
+- **发布前先确认 trusted publisher 配置还在、没过期**：要么最近 2 天内有过一次成功发布，
+  要么去 npmjs.com → 包 → Settings → Trusted publishing 看一眼；过期只能删除重建（见 §1
+  第 4 步的注）。
 - **第一次真正走 OIDC 的版本是 `0.1.1`**（`0.1.0` 是本地/引导发出去的，tag 那次又跳过
   了发布）。发完 `0.1.1` 必须确认 `npm view dsh-video-forge@0.1.1 dist.attestations`
   非空——那是 trusted publishing 生效的唯一硬证据；空的话先查 npm 侧 trusted publisher
